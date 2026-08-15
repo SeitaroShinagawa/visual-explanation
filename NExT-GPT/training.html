@@ -1,0 +1,501 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NExT-GPT 図解 2 — 学習プロセス</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🧩</text></svg>">
+<link rel="stylesheet" href="assets/style.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/themes/prism-tomorrow.min.css">
+<style>
+/* ===== 3-stage freeze/fire cycle (15s: stage1 0-5s, stage2 5-10s, stage3 10-15s) ===== */
+#stages .stage-label { opacity: 0.25; }
+#stages .lbl1 { animation: st-lbl 15s ease-in-out infinite; }
+#stages .lbl2 { animation: st-lbl 15s ease-in-out infinite; animation-delay: 5s; }
+#stages .lbl3 { animation: st-lbl 15s ease-in-out infinite; animation-delay: 10s; }
+@keyframes st-lbl {
+  0%, 2% { opacity: 0.25; }
+  4%, 30% { opacity: 1; }
+  33%, 100% { opacity: 0.25; }
+}
+/* fire badges appear only during their stage(s) */
+@keyframes st-fire {
+  0%, 2% { opacity: 0; }
+  5%, 30% { opacity: 1; }
+  33%, 100% { opacity: 0; }
+}
+/* input projector: stage 1 and 3 */
+#stages .fire-inproj1 { animation: st-fire 15s ease-in-out infinite; opacity: 0; }
+#stages .fire-inproj3 { animation: st-fire 15s ease-in-out infinite; animation-delay: 10s; opacity: 0; }
+/* output projectors: stage 2 and 3 */
+#stages .fire-outproj2 { animation: st-fire 15s ease-in-out infinite; animation-delay: 5s; opacity: 0; }
+#stages .fire-outproj3 { animation: st-fire 15s ease-in-out infinite; animation-delay: 10s; opacity: 0; }
+/* LoRA: stage 3 only */
+#stages .fire-lora { animation: st-fire 15s ease-in-out infinite; animation-delay: 10s; opacity: 0; }
+/* embeddings of signal tokens: all stages -> gentle pulse instead */
+
+/* ===== stage-2 loss path diagram ===== */
+#lossflow .cap-path { animation: lf-cap 8s ease-in-out infinite; }
+@keyframes lf-cap {
+  0%, 8%  { opacity: 0.25; }
+  14%, 42% { opacity: 1; }
+  50%, 100% { opacity: 0.25; }
+}
+#lossflow .gen-path { animation: lf-gen 8s ease-in-out infinite; }
+@keyframes lf-gen {
+  0%, 50% { opacity: 0.25; }
+  58%, 92% { opacity: 1; }
+  100% { opacity: 0.25; }
+}
+
+/* static state when animations are disabled (prefers-reduced-motion):
+   all stage labels visible, one representative fire badge per module */
+@media (prefers-reduced-motion: reduce) {
+  #stages .stage-label { opacity: 1; }
+  #stages .fire-inproj1, #stages .fire-outproj2, #stages .fire-lora { opacity: 1; }
+}
+</style>
+</head>
+<body>
+
+<nav class="topnav">
+  <a class="home-link" href="../index.html">Visual Explanation</a><span class="sep">/</span>
+  <a href="./index.html">NExT-GPT 概要</a>
+  <a href="architecture.html">1. アーキテクチャ</a>
+  <a href="training.html" class="current">2. 学習プロセス</a>
+  <a href="inference.html">3. 生成プロセス</a>
+</nav>
+
+<header class="page-header">
+  <h1>2. 学習プロセス</h1>
+  <p>凍結された巨大モデル群の「すき間」だけを、3 ステージに分けて学習する。
+  各ステージの役割と、テキスト損失・整合損失・拡散損失の数式⇔コード対応を追います。</p>
+</header>
+
+<main class="article">
+
+<h2 id="overview">3 ステージの全体像</h2>
+<p>
+NExT-GPT の学習は、共通のエントリポイント <code>train.py</code> を
+<strong>フラグを変えて 3 回実行する</strong>ことで進みます
+(<code>scripts/pretrain_enc.sh</code> → <code>pretrain_dec.sh</code> → <code>finetune.sh</code>)。
+どのステージでも ImageBind・Vicuna・拡散モデル本体は凍結のままで、
+学習されるのは接続部だけです。下図は各ステージで 🔥 が付く場所の移り変わりです。
+</p>
+
+<figure class="diagram" id="stages" data-cycle-ms="15000" data-step-count="3">
+<svg viewBox="0 0 900 360" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="3ステージで学習対象が切り替わるアニメーション">
+  <!-- stage labels -->
+  <g font-size="14" font-weight="bold">
+    <text x="80"  y="35" class="stage-label lbl1" fill="#3556d4">Stage 1: エンコード側アラインメント</text>
+    <text x="80"  y="60" class="stage-label lbl2" fill="#1e9e6a">Stage 2: デコード側アラインメント</text>
+    <text x="80"  y="85" class="stage-label lbl3" fill="#7b46c9">Stage 3: 指示チューニング(LoRA)</text>
+  </g>
+
+  <!-- pipeline boxes -->
+  <g>
+    <rect x="40" y="140" width="130" height="70" rx="10" fill="#fff" stroke="#8a93ad" stroke-width="2"/>
+    <text x="105" y="170" font-size="12.5" text-anchor="middle" font-weight="bold">ImageBind</text>
+    <text x="105" y="190" font-size="12" text-anchor="middle">🧊 常に凍結</text>
+
+    <rect x="210" y="140" width="130" height="70" rx="10" fill="#e5eafc" stroke="#3556d4" stroke-width="2"/>
+    <text x="275" y="164" font-size="12.5" text-anchor="middle" font-weight="bold" fill="#3556d4">入力プロジェクタ</text>
+    <text x="275" y="182" font-size="11" text-anchor="middle" fill="#5b6478">GroupProjector</text>
+    <g class="fire-inproj1"><text x="275" y="200" font-size="12" text-anchor="middle" fill="#d43d51">🔥 lr=1e-3</text></g>
+    <g class="fire-inproj3"><text x="275" y="200" font-size="12" text-anchor="middle" fill="#d43d51">🔥 lr=2e-5</text></g>
+
+    <rect x="380" y="120" width="150" height="110" rx="12" fill="#fff" stroke="#1c2333" stroke-width="2.5"/>
+    <text x="455" y="150" font-size="13.5" text-anchor="middle" font-weight="bold">Vicuna-7B</text>
+    <text x="455" y="170" font-size="12" text-anchor="middle">🧊 凍結</text>
+    <rect x="398" y="182" width="114" height="32" rx="7" fill="#efe6fb" stroke="#7b46c9" stroke-width="1.5"/>
+    <text x="455" y="202" font-size="11.5" text-anchor="middle" fill="#7b46c9">LoRA r=128</text>
+    <g class="fire-lora"><text x="545" y="204" font-size="13" text-anchor="middle" fill="#d43d51">🔥</text></g>
+
+    <rect x="570" y="140" width="140" height="70" rx="10" fill="#e0f5ec" stroke="#1e9e6a" stroke-width="2"/>
+    <text x="640" y="164" font-size="12.5" text-anchor="middle" font-weight="bold" fill="#1e9e6a">出力プロジェクタ×3</text>
+    <text x="640" y="182" font-size="11" text-anchor="middle" fill="#5b6478">Transformer</text>
+    <g class="fire-outproj2"><text x="640" y="200" font-size="12" text-anchor="middle" fill="#d43d51">🔥 lr=2e-4</text></g>
+    <g class="fire-outproj3"><text x="640" y="200" font-size="12" text-anchor="middle" fill="#d43d51">🔥 lr=2e-5</text></g>
+
+    <rect x="750" y="140" width="120" height="70" rx="10" fill="#fff" stroke="#8a93ad" stroke-width="2"/>
+    <text x="810" y="165" font-size="12" text-anchor="middle" font-weight="bold">SD2 / ZeroScope</text>
+    <text x="810" y="181" font-size="12" text-anchor="middle" font-weight="bold">/ AudioLDM</text>
+    <text x="810" y="199" font-size="12" text-anchor="middle">🧊 常に凍結</text>
+  </g>
+
+  <!-- arrows -->
+  <g fill="none" stroke="#8a93ad" stroke-width="2">
+    <path class="flow-edge" d="M 170 175 L 208 175"/>
+    <path class="flow-edge" d="M 340 175 L 378 175"/>
+    <path class="flow-edge" d="M 530 175 L 568 175"/>
+    <path class="flow-edge" d="M 710 175 L 748 175"/>
+  </g>
+
+  <!-- data per stage -->
+  <g font-size="11.5" fill="#5b6478">
+    <text x="80" y="270" class="stage-label lbl1">データ: X→テキスト のキャプション対(CC3M / WebVid / AudioCaps)…「見て説明する」練習</text>
+    <text x="80" y="295" class="stage-label lbl2">データ: テキスト→X のキャプション対 …「シグナルトークンを書き、その中身を拡散モデルに伝える」練習</text>
+    <text x="80" y="320" class="stage-label lbl3">データ: 指示データ(LLaVA / Alpaca / VideoChat / MosIT)…モダリティを跨ぐ対話の練習</text>
+  </g>
+</svg>
+<figcaption>
+3 ステージで 🔥(学習対象)が移り変わる様子。シグナルトークン用に拡張された入出力埋め込み
+(<code>embed_tokens</code> / <code>lm_head</code> の新規行)は、プロジェクタを tune するステージで同時に学習される
+(<a href="https://github.com/NExT-GPT/NExT-GPT/blob/60d618b067ee4cb0d70e7075ae79852780b34fc2/nextgpt/model/nextgpt_arch.py#L607-L611" target="_blank" rel="noopener">nextgpt_arch.py L607</a>)。
+</figcaption>
+</figure>
+
+<p>凍結の制御は <code>train.py</code> で「全部凍結してから、フラグの立った部分だけ解凍する」素直な実装です。</p>
+
+<div class="codeblock">
+<div class="codehead"><span class="path">train.py</span> L444–454(抜粋)
+<a href="https://github.com/NExT-GPT/NExT-GPT/blob/60d618b067ee4cb0d70e7075ae79852780b34fc2/train.py#L444-L454" target="_blank" rel="noopener">GitHub ↗</a></div>
+<pre><code class="language-python">model.requires_grad_(False)                      # まず全パラメータを凍結
+
+# freeze/unfreeze the mm input adapters
+model.config.tune_mm_input_adapter = training_args.tune_mm_input_adapter = model_args.tune_mm_input_adapter
+if model_args.tune_mm_input_adapter:
+    for p in model.get_model().mm_input_projector.parameters():
+        p.requires_grad = True                   # --tune_mm_input_adapter True なら解凍
+model.config.freeze_mm_input_adapter = training_args.freeze_mm_input_adapter
+if training_args.freeze_mm_input_adapter:
+    for p in model.get_model().mm_input_projector.parameters():
+        p.requires_grad = False
+# 出力プロジェクタ(img / vid / aud)についても同じパターンが続く …</code></pre>
+</div>
+
+<h2 id="loss">損失関数の全体像 — forward を読む</h2>
+<p>
+すべての損失は <code>NextGPTLlamaForCausalLM.forward</code> の中で計算され、
+単純に<strong>足し算</strong>されます。
+</p>
+
+<div class="callout math">
+<span class="callout-title">全体の損失</span>
+$$\mathcal{L} \;=\; \mathcal{L}_{\text{text}}
+\;+\; \sum_{x \,\in\, \{\text{img},\, \text{vid},\, \text{aud}\}} \Big( \mathcal{L}^{x}_{\text{cap}} + \mathcal{L}^{x}_{\text{gen}} \Big)$$
+どの項が有効になるかはバッチのデータ種別で決まります(キャプション埋め込みやターゲット画像が
+バッチに含まれていれば対応する項が計算される、という実装)。
+</div>
+
+<div class="codeblock">
+<div class="codehead"><span class="path">nextgpt/model/language_model/nextgpt_llama.py</span> L226–257(抜粋)
+<a href="https://github.com/NExT-GPT/NExT-GPT/blob/60d618b067ee4cb0d70e7075ae79852780b34fc2/nextgpt/model/language_model/nextgpt_llama.py#L226-L257" target="_blank" rel="noopener">GitHub ↗</a></div>
+<pre><code class="language-python">text_loss = outputs.loss          # ① LlamaForCausalLM 標準の next-token CE
+loss = text_loss
+
+has_img_gen_loss = True if target_images is not None or target_images_feature is not None else False
+_loss, img_cap_loss, img_loss = self.compute_image_loss(
+    image_caption_embeddings, image_captions,
+    target_images=target_images, has_gen_loss=has_img_gen_loss, has_snr_loss=True,
+    labels=labels, image_signal_token_indices=image_signal_token_indices,
+    hidden_states=outputs.hidden_states)
+if _loss is not None:
+    loss = loss + _loss           # ② 画像の cap_loss + gen_loss を加算
+
+# ③④ compute_video_loss / compute_audio_loss も同様(has_snr_loss=False)</code></pre>
+</div>
+
+<h3 id="loss-text">① テキスト損失 \(\mathcal{L}_{\text{text}}\)</h3>
+<p>
+通常の言語モデル損失(次トークン予測の交差エントロピー)です。
+シグナルトークンも語彙の一部なので、<strong>「どこで <code>&lt;image_00&gt;</code> を書き始めるか」も
+この損失で学習されます</strong>。
+</p>
+<div class="callout math">
+<span class="callout-title">数式</span>
+$$\mathcal{L}_{\text{text}} = -\frac{1}{T}\sum_{t=1}^{T} \log p_\theta\!\left(y_t \mid y_{&lt;t},\, X\right)$$
+\(y\) は応答トークン列(シグナルトークンを含む)、\(X\) はマルチモーダル入力。
+挿入された画像特徴などの位置は <code>IGNORE_INDEX</code> のため対象外です。
+</div>
+
+<h3 id="loss-cap">② キャプション整合損失 \(\mathcal{L}_{\text{cap}}\) — 「教師はテキストエンコーダ」</h3>
+<p>
+シグナルトークン位置の隠れ状態を出力プロジェクタで変換した結果
+\(P_{\text{out}}(\mathbf{h}_S)\) を、
+凍結された拡散モデルの<strong>テキストエンコーダにキャプションを通した埋め込み</strong>
+\(E_{\text{text}}(c)\) に近づけます。
+</p>
+<div class="callout math">
+<span class="callout-title">数式とコードの対応</span>
+$$\mathcal{L}_{\text{cap}} = \frac{1}{N L}\sum_{i=1}^{N}\sum_{\ell=1}^{L}
+\big\lVert\, P_{\text{out}}(\mathbf{h}_S)_{i\ell} - E_{\text{text}}(c)_{i\ell} \,\big\rVert_2$$
+コードの <code>l2_loss</code> は位置ごとのユークリッド距離
+(<code>((u - v) ** 2).sum(dim=-1) ** 0.5</code>)を返し、<code>.mean()</code> で平均しています。
+</div>
+
+<div class="codeblock">
+<div class="codehead"><span class="path">nextgpt/model/language_model/nextgpt_llama.py</span> L318–345(抜粋)
+<a href="https://github.com/NExT-GPT/NExT-GPT/blob/60d618b067ee4cb0d70e7075ae79852780b34fc2/nextgpt/model/language_model/nextgpt_llama.py#L318-L345" target="_blank" rel="noopener">GitHub ↗</a></div>
+<pre><code class="language-python"># labels の中からシグナルトークン区間 [<image_00> … <image_03>] を探す
+start_pos = (labels == image_signal_token_indices[0][1]).nonzero(as_tuple=False).tolist()
+end_pos   = (labels == image_signal_token_indices[-1][1]).nonzero(as_tuple=False).tolist()
+...
+for s, e in zip(start_pos, end_pos):
+    assert e[1] - s[1] + 1 == len(image_signal_token_indices)*2-1   # 空白トークン込みの長さ
+    hidden_embedding.append(hidden_states[self.config.layer_idx][s[0], s[1]:e[1] + 1, :])  # 最終層の隠れ状態
+    input_embedding.append(self.get_input_embeddings()(labels[s[0], s[1]:e[1] + 1]))
+...
+projected_embeddings = self.get_output_image_projector()(hidden_embedding, input_embedding)  # (N, 77, 1024)
+...
+cap_loss = l2_loss(projected_embeddings, image_caption_embeddings).mean()</code></pre>
+</div>
+
+<div class="callout point">
+<span class="callout-title">教師埋め込みは事前計算しておく</span>
+\(E_{\text{text}}(c)\) は学習中に毎回計算せず、<code>preprocess_embeddings.py</code> で
+各キャプションを凍結パイプラインに通した結果
+(<code>pipe(batch_captions, return_prompts_only=True)</code>)を <code>.npy</code> として
+<code>./data/embed/</code> に保存し、データローダが読み込みます
+(<code>pretrain_dec.sh</code> の <code>--*_caption_emb_folder</code>)。
+</div>
+
+<h3 id="loss-gen">③ 拡散生成損失 \(\mathcal{L}_{\text{gen}}\) — 「プロジェクタ出力で本当に生成できるか」</h3>
+<p>
+整合損失だけでは埋め込み空間が揃うだけで、生成品質は保証されません。
+そこで実際にターゲット画像を VAE で潜在変数にし、ノイズを載せ、
+<strong>プロジェクタ出力を条件として UNet にノイズ予測させる</strong>
+標準的な拡散損失も併用します。UNet は凍結なので、勾配は条件(=プロジェクタ)側に流れます。
+</p>
+<div class="callout math">
+<span class="callout-title">数式とコードの対応</span>
+$$\mathcal{L}_{\text{gen}} = \mathbb{E}_{z_0,\, \epsilon \sim \mathcal{N}(0,I),\, t}
+\Big[\, w(t)\,\big\lVert \epsilon - \epsilon_\theta\big(z_t,\, t,\, P_{\text{out}}(\mathbf{h}_S)\big) \big\rVert^2 \,\Big],
+\qquad z_t = \sqrt{\bar\alpha_t}\, z_0 + \sqrt{1-\bar\alpha_t}\,\epsilon$$
+画像のみ Min-SNR 重み \(w(t) = \min(\mathrm{SNR}(t),\, 5)\,/\,\mathrm{SNR}(t)\) を使用
+(<code>has_snr_loss=True</code>、<code>compute_snr</code> は
+<a href="https://arxiv.org/abs/2303.09556" target="_blank" rel="noopener">Min-SNR Diffusion Training</a> の実装を移植)。
+動画・音声は \(w(t)=1\) の素の MSE です。
+</div>
+
+<div class="codeblock">
+<div class="codehead"><span class="path">nextgpt/model/language_model/nextgpt_llama.py</span> L351–387(抜粋)
+<a href="https://github.com/NExT-GPT/NExT-GPT/blob/60d618b067ee4cb0d70e7075ae79852780b34fc2/nextgpt/model/language_model/nextgpt_llama.py#L351-L387" target="_blank" rel="noopener">GitHub ↗</a></div>
+<pre><code class="language-python">latents = self.get_image_vae().encode(target_images).latent_dist.sample()
+latents = latents * self.get_image_vae().config.scaling_factor
+
+noise = torch.randn_like(latents)                                  # ε
+timesteps = torch.randint(0, num_train_timesteps, (bsz,), ...)     # t をランダムに選ぶ
+noisy_latents = self.get_image_noise_scheduler().add_noise(latents, noise, timesteps)  # z_t
+
+target = noise
+model_pred = self.get_image_unet()(noisy_latents, timesteps, projected_embeddings).sample  # ε_θ(z_t, t, c)
+
+if has_snr_loss:   # Min-SNR 重み付け(画像のみ)
+    snr = self.compute_snr(timesteps, self.get_image_noise_scheduler())
+    mse_loss_weights = (torch.stack([snr, 5 * torch.ones_like(timesteps)], dim=1).min(dim=1)[0] / snr)
+    gen_loss = F.mse_loss(model_pred.float(), target.float(), reduction="none")
+    gen_loss = gen_loss.mean(dim=list(range(1, len(loss.shape)))) * mse_loss_weights
+    gen_loss = gen_loss.mean()
+else:
+    gen_loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
+loss += gen_loss</code></pre>
+</div>
+
+<figure class="diagram" id="lossflow" data-cycle-ms="8000" data-step-count="2">
+<svg viewBox="0 0 900 430" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="cap_lossとgen_lossの計算経路アニメーション">
+  <defs>
+    <marker id="arr4" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#8a93ad"/>
+    </marker>
+  </defs>
+
+  <!-- LLM output row -->
+  <text x="40" y="35" font-size="12.5" font-weight="bold" fill="#1c2333">教師データ: 「A cat on the beach」 → 応答 “… &lt;image_00&gt; ▁ &lt;image_01&gt; ▁ …”</text>
+  <rect x="40" y="50" width="300" height="46" rx="9" fill="#fff" stroke="#1c2333" stroke-width="2"/>
+  <text x="190" y="70" font-size="12" text-anchor="middle">Vicuna-7B(凍結)</text>
+  <text x="190" y="88" font-size="10.5" text-anchor="middle" fill="#5b6478">シグナルトークン位置の最終層隠れ状態 h_S</text>
+
+  <path d="M 190 96 L 190 136" fill="none" stroke="#8a93ad" stroke-width="2" marker-end="url(#arr4)"/>
+
+  <rect x="90" y="140" width="200" height="46" rx="9" fill="#e0f5ec" stroke="#1e9e6a" stroke-width="2"/>
+  <text x="190" y="160" font-size="12" text-anchor="middle" fill="#1e9e6a" font-weight="bold">出力プロジェクタ 🔥</text>
+  <text x="190" y="178" font-size="10.5" text-anchor="middle" class="mono" fill="#5b6478">P_out(h_S): (b, 77, 1024)</text>
+
+  <!-- cap loss path -->
+  <g class="cap-path">
+    <path d="M 290 163 C 380 163, 380 120, 470 120" fill="none" stroke="#7b46c9" stroke-width="2.5" marker-end="url(#arr4)"/>
+    <rect x="475" y="95" width="240" height="50" rx="9" fill="#efe6fb" stroke="#7b46c9" stroke-width="2"/>
+    <text x="595" y="115" font-size="12" text-anchor="middle" fill="#7b46c9" font-weight="bold">cap_loss = ‖P_out(h_S) − E_text(c)‖₂</text>
+    <text x="595" y="133" font-size="10.5" text-anchor="middle" fill="#5b6478">教師: キャプション c の CLIP 埋め込み(事前計算 .npy)</text>
+    <text x="470" y="80" font-size="11" fill="#7b46c9">① 埋め込み空間を揃える</text>
+  </g>
+
+  <!-- gen loss path -->
+  <g class="gen-path">
+    <path d="M 190 186 L 190 236" fill="none" stroke="#e07b1f" stroke-width="2.5" marker-end="url(#arr4)"/>
+    <rect x="90" y="240" width="200" height="46" rx="9" fill="#fff" stroke="#e07b1f" stroke-width="2"/>
+    <text x="190" y="260" font-size="12" text-anchor="middle" fill="#e07b1f" font-weight="bold">UNet(凍結)</text>
+    <text x="190" y="278" font-size="10.5" text-anchor="middle" class="mono" fill="#5b6478">ε_θ(z_t, t, P_out(h_S))</text>
+
+    <rect x="420" y="215" width="190" height="42" rx="9" fill="#fdeeda" stroke="#e07b1f" stroke-width="1.5"/>
+    <text x="515" y="232" font-size="11" text-anchor="middle" fill="#e07b1f">ターゲット画像 → VAE(凍結)</text>
+    <text x="515" y="249" font-size="10.5" text-anchor="middle" class="mono" fill="#5b6478">z_t = add_noise(z₀, ε, t)</text>
+    <path d="M 418 240 C 340 240, 330 262, 292 262" fill="none" stroke="#e07b1f" stroke-width="2" marker-end="url(#arr4)"/>
+
+    <path d="M 190 286 L 190 330" fill="none" stroke="#e07b1f" stroke-width="2.5" marker-end="url(#arr4)"/>
+    <rect x="70" y="334" width="240" height="46" rx="9" fill="#fdeeda" stroke="#e07b1f" stroke-width="2"/>
+    <text x="190" y="354" font-size="12" text-anchor="middle" fill="#e07b1f" font-weight="bold">gen_loss = w(t)·‖ε − ε_θ‖²</text>
+    <text x="190" y="372" font-size="10.5" text-anchor="middle" fill="#5b6478">勾配は条件側 = プロジェクタへ流れる</text>
+    <text x="330" y="315" font-size="11" fill="#e07b1f">② 実際の生成品質で仕上げる</text>
+  </g>
+
+  <!-- note -->
+  <text x="475" y="330" font-size="11.5" fill="#5b6478">2 つの損失はどちらも出力プロジェクタ(と</text>
+  <text x="475" y="348" font-size="11.5" fill="#5b6478">シグナルトークン埋め込み)だけを動かす。</text>
+  <text x="475" y="366" font-size="11.5" fill="#5b6478">UNet / VAE / テキストエンコーダは教師役・</text>
+  <text x="475" y="384" font-size="11.5" fill="#5b6478">評価役として凍結のまま使われる。</text>
+</svg>
+<figcaption>
+Stage 2 における 2 つの損失の計算経路。①(紫)はキャプション埋め込みへの整合、
+②(橙)は凍結 UNet を使った拡散ノイズ予測。交互にハイライトされる 2 経路が
+同じプロジェクタ出力 \(P_{\text{out}}(\mathbf{h}_S)\) から分岐している点に注目。
+</figcaption>
+</figure>
+
+<h2 id="stage1">Stage 1: エンコード側アラインメント(pretrain_enc.sh)</h2>
+<p>
+「画像/動画/音声 → その説明文」というキャプション対
+(<code>cc3m_enc</code> / <code>webvid_enc</code> / <code>audiocap_enc</code>)を使い、
+<strong>X を見てキャプションをテキスト生成する</strong>タスクで
+入力プロジェクタを学習します。応答は普通のテキストなので、効いてくる損失は
+\(\mathcal{L}_{\text{text}}\) です。ImageBind の埋め込みが LLM にとって
+「読める外国語」から「母語」になるステージと言えます。
+</p>
+
+<div class="codeblock">
+<div class="codehead"><span class="path">scripts/pretrain_enc.sh</span>(要点)
+<a href="https://github.com/NExT-GPT/NExT-GPT/blob/60d618b067ee4cb0d70e7075ae79852780b34fc2/scripts/pretrain_enc.sh" target="_blank" rel="noopener">GitHub ↗</a></div>
+<pre><code class="language-bash">--dataset_name_list audiocap_enc webvid_enc cc3m_enc \
+--tune_mm_input_adapter True \            # 🔥 入力プロジェクタのみ解凍
+--mm_input_projector_type group \
+--freeze_mm_output_img_adapter True \     # 出力側 3 つは凍結のまま
+--freeze_mm_output_vid_adapter True \
+--freeze_mm_output_aud_adapter True \
+--n_img_tokens 4  --n_vid_tokens 24  --n_aud_tokens 8 \
+--learning_rate 1e-3                      # プロジェクタだけなので大きめの学習率</code></pre>
+</div>
+
+<h2 id="stage2">Stage 2: デコード側アラインメント(pretrain_dec.sh)</h2>
+<p>
+今度は逆向きの「説明文 → X」データ(<code>cc3m_dec</code> など)を使います。
+応答側にシグナルトークン列が埋め込まれた教師データで、
+</p>
+<ol>
+  <li>\(\mathcal{L}_{\text{text}}\): 適切な場所でシグナルトークンを書き出すことを学習</li>
+  <li>\(\mathcal{L}_{\text{cap}}\): シグナルトークンの隠れ状態が「キャプションの意味」を運ぶよう出力プロジェクタを学習</li>
+  <li>\(\mathcal{L}_{\text{gen}}\): その埋め込みで実際にターゲット X が復元できるよう微調整</li>
+</ol>
+<p>
+の 3 つが同時に働きます。Stage 1 で学習した入力プロジェクタは
+<code>--pretrain_mm_input_adapter</code> で読み込んだうえで凍結します。
+</p>
+
+<div class="codeblock">
+<div class="codehead"><span class="path">scripts/pretrain_dec.sh</span>(要点)
+<a href="https://github.com/NExT-GPT/NExT-GPT/blob/60d618b067ee4cb0d70e7075ae79852780b34fc2/scripts/pretrain_dec.sh" target="_blank" rel="noopener">GitHub ↗</a></div>
+<pre><code class="language-bash">--dataset_name_list audiocap_dec webvid_dec cc3m_dec \
+--pretrain_mm_input_adapter ./checkpoints/pretrain_enc_1/mm_input_projector.bin \
+--freeze_mm_input_adapter True \          # Stage 1 の成果は凍結して引き継ぐ
+--tune_mm_output_aud_adapter True \       # 🔥 出力プロジェクタを解凍
+--freeze_mm_output_aud_adapter False \
+--image_caption_emb_folder ./data/embed \ # 事前計算したキャプション埋め込み
+--video_caption_emb_folder ./data/embed \
+--audio_caption_emb_folder ./data/embed \
+--learning_rate 2e-4</code></pre>
+</div>
+
+<div class="callout warn">
+<span class="callout-title">コミットされているスクリプトは「音声の回」の設定</span>
+リポジトリの <code>pretrain_dec.sh</code> は <code>tune_mm_output_aud_adapter True</code> のみ 🔥 で、
+画像・動画の出力プロジェクタは凍結になっています。3 つの出力プロジェクタは独立なので、
+モダリティごとにフラグを差し替えて実行する(または 3 つ同時に True にする)使い方が想定されています。
+</div>
+
+<h2 id="stage3">Stage 3: 指示チューニング(finetune.sh)</h2>
+<p>
+最後に、モダリティを跨ぐ対話・指示追従を教えます。データは
+LLaVA / Alpaca / VideoChat などの既存指示データに加え、
+本論文が構築した <strong>MosIT</strong>(Modality-switching Instruction Tuning、
+モダリティの切り替えを含む多ターン対話 5K)を使用。
+このステージで初めて LLM 本体に LoRA が入ります。
+</p>
+
+<div class="codeblock">
+<div class="codehead"><span class="path">train.py</span> L331–347(抜粋)
+<a href="https://github.com/NExT-GPT/NExT-GPT/blob/60d618b067ee4cb0d70e7075ae79852780b34fc2/train.py#L331-L347" target="_blank" rel="noopener">GitHub ↗</a></div>
+<pre><code class="language-python">if training_args.lora_enable:
+    from peft import LoraConfig, get_peft_model
+    lora_config = LoraConfig(
+        r=training_args.lora_r,                    # 128
+        lora_alpha=training_args.lora_alpha,       # 256
+        target_modules=find_all_linear_names(model),  # LLM 内の全 Linear 層が対象
+        lora_dropout=training_args.lora_dropout,
+        bias=training_args.lora_bias,
+        task_type="CAUSAL_LM",
+    )
+    ...
+    model = get_peft_model(model, lora_config)</code></pre>
+</div>
+
+<div class="codeblock">
+<div class="codehead"><span class="path">scripts/finetune.sh</span>(要点)
+<a href="https://github.com/NExT-GPT/NExT-GPT/blob/60d618b067ee4cb0d70e7075ae79852780b34fc2/scripts/finetune.sh" target="_blank" rel="noopener">GitHub ↗</a></div>
+<pre><code class="language-bash">--lora_enable True --lora_r 128 --lora_alpha 256 \
+--mm_input_projector_lr 2e-5  --mm_output_projector_lr 2e-5 \   # プロジェクタは小さな学習率で追従
+--dataset_name_list audio_instruction video_instruction image_instruction \
+                    llava_instruction alpaca_instruction videochat_instruction \
+                    mosit_instruction \
+--pretrain_mm_input_adapter      ./checkpoints/pretrain_enc_1/mm_input_projector.bin \
+--pretrain_mm_output_img_adapter ./checkpoints/pretrain_dec_1/mm_output_projector.bin \
+--pretrain_mm_output_vid_adapter ./checkpoints/pretrain_dec_1/mm_output_projector.bin \
+--pretrain_mm_output_aud_adapter ./checkpoints/pretrain_dec_1/mm_output_projector.bin \
+--learning_rate 2e-4</code></pre>
+</div>
+
+<p>
+プロジェクタ類を LLM 本体(LoRA)と別の学習率で動かすため、
+<code>nextgpt_trainer.py</code> の <code>create_optimizer</code> が
+<code>mm_input_projector_lr</code> / <code>mm_output_projector_lr</code> 指定時に
+パラメータグループを分けています
+(<a href="https://github.com/NExT-GPT/NExT-GPT/blob/60d618b067ee4cb0d70e7075ae79852780b34fc2/nextgpt_trainer.py#L180" target="_blank" rel="noopener">nextgpt_trainer.py L180–</a>)。
+</p>
+
+<h2 id="summary">まとめ</h2>
+<table>
+  <tr><th></th><th>Stage 1<br>エンコード側</th><th>Stage 2<br>デコード側</th><th>Stage 3<br>指示チューニング</th></tr>
+  <tr><th>データ</th><td>X→T キャプション対<br>(CC3M / WebVid / AudioCaps)</td><td>T→X キャプション対<br>(同データの逆向き利用)</td><td>指示データ+MosIT</td></tr>
+  <tr><th>学習対象 🔥</th><td>入力プロジェクタ</td><td>出力プロジェクタ ×3</td><td>LoRA + 両プロジェクタ</td></tr>
+  <tr><th>主な損失</th><td>\(\mathcal{L}_{\text{text}}\)</td><td>\(\mathcal{L}_{\text{text}} + \mathcal{L}_{\text{cap}} + \mathcal{L}_{\text{gen}}\)</td><td>\(\mathcal{L}_{\text{text}} + \mathcal{L}_{\text{cap}} + \mathcal{L}_{\text{gen}}\)</td></tr>
+  <tr><th>学習率</th><td>1e-3</td><td>2e-4</td><td>2e-4(プロジェクタ 2e-5)</td></tr>
+</table>
+
+<div class="callout point">
+<span class="callout-title">設計の核心</span>
+「LLM とエンコーダを繋ぐ」「LLM と生成モデルを繋ぐ」という 2 つの翻訳問題を
+先に別々に解いておき(Stage 1–2)、最後に全体の振る舞いだけを LoRA で整える(Stage 3)。
+巨大モデルはすべて凍結のまま、更新されるのは全体の約 1% — これが
+NExT-GPT が 1 桁 GPU で学習できる理由です。
+</div>
+
+<nav class="pager">
+  <a href="architecture.html"><span class="dir">← 前へ</span><span class="title">1. アーキテクチャ詳解</span></a>
+  <a class="next" href="inference.html"><span class="dir">次へ →</span><span class="title">3. 生成プロセス</span></a>
+</nav>
+
+</main>
+
+<footer class="site-footer">
+  <p>引用コード: <a href="https://github.com/NExT-GPT/NExT-GPT" target="_blank" rel="noopener">NExT-GPT/NExT-GPT</a>(BSD 3-Clause)</p>
+</footer>
+
+<script>
+MathJax = { tex: { inlineMath: [['\\(', '\\)']], displayMath: [['$$', '$$']] } };
+</script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js" async></script>
+<script src="assets/diagram-controls.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-core.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-python.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-bash.min.js"></script>
+</body>
+</html>
