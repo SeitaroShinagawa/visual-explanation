@@ -31,8 +31,8 @@
 <body>
 
 <nav class="topnav">
-  <a class="home-link" href="../">Visual Explanation</a><span class="sep">/</span>
-  <a href="./" class="current">NExT-GPT 概要</a>
+  <a class="home-link" href="../index.html">Visual Explanation</a><span class="sep">/</span>
+  <a href="./index.html" class="current">NExT-GPT 概要</a>
   <a href="architecture.html">1. アーキテクチャ</a>
   <a href="training.html">2. 学習プロセス</a>
   <a href="inference.html">3. 生成プロセス</a>
@@ -83,7 +83,7 @@ LLM が「何をどのモダリティで出力すべきか」を伝える手段�
 の順に流れます(図は自動でループ再生されます)。
 </p>
 
-<figure class="diagram" id="ov-diagram">
+<figure class="diagram" id="ov-diagram" data-cycle-ms="12000" data-step-count="7">
 <svg viewBox="0 0 940 560" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="NExT-GPT 全体アーキテクチャのデータフロー図">
   <defs>
     <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
@@ -316,7 +316,7 @@ NExT-GPT の生成プロセスです。詳細は<a href="inference.html">生成�
 </div>
 
 <nav class="pager">
-  <a href="../"><span class="dir">← 戻る</span><span class="title">Visual Explanation トップ</span></a>
+  <a href="../index.html"><span class="dir">← 戻る</span><span class="title">Visual Explanation トップ</span></a>
   <a class="next" href="architecture.html"><span class="dir">次へ →</span><span class="title">1. アーキテクチャ詳解</span></a>
 </nav>
 
@@ -327,6 +327,7 @@ NExT-GPT の生成プロセスです。詳細は<a href="inference.html">生成�
   論文: <a href="https://arxiv.org/abs/2309.05519" target="_blank" rel="noopener">NExT-GPT: Any-to-Any Multimodal LLM</a></p>
 </footer>
 
+<script src="assets/diagram-controls.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-core.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-python.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-bash.min.js"></script>

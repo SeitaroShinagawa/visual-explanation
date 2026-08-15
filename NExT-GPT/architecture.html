@@ -73,8 +73,8 @@
 <body>
 
 <nav class="topnav">
-  <a class="home-link" href="../">Visual Explanation</a><span class="sep">/</span>
-  <a href="./">NExT-GPT 概要</a>
+  <a class="home-link" href="../index.html">Visual Explanation</a><span class="sep">/</span>
+  <a href="./index.html">NExT-GPT 概要</a>
   <a href="architecture.html" class="current">1. アーキテクチャ</a>
   <a href="training.html">2. 学習プロセス</a>
   <a href="inference.html">3. 生成プロセス</a>
@@ -242,7 +242,7 @@ DEFAULT_AUDIO_TOKEN = "&lt;audio&gt;"</code></pre>
 トークン ID 列を<strong>埋め込み列</strong>に変換します。下のアニメーションがその動きです。
 </p>
 
-<figure class="diagram" id="splice-fig">
+<figure class="diagram" id="splice-fig" data-cycle-ms="8000" data-step-count="4">
 <svg viewBox="0 0 900 330" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="プレースホルダトークンが画像特徴に置き換えられるアニメーション">
   <defs>
     <marker id="arr2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
@@ -408,7 +408,7 @@ LLM がシグナルトークンを出したら、その位置の隠れ状態を�
         return outputs                    # (b, 77, 1024) など</code></pre>
 </div>
 
-<figure class="diagram" id="outproj">
+<figure class="diagram" id="outproj" data-cycle-ms="4500" data-step-count="4">
 <svg viewBox="0 0 900 260" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="出力プロジェクタの動作アニメーション">
   <defs>
     <marker id="arr3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
@@ -516,7 +516,7 @@ Stage 2 では「キャプションを text_encoder に通した埋め込み」�
 </ul>
 
 <nav class="pager">
-  <a href="./"><span class="dir">← 前へ</span><span class="title">NExT-GPT 概要</span></a>
+  <a href="./index.html"><span class="dir">← 前へ</span><span class="title">NExT-GPT 概要</span></a>
   <a class="next" href="training.html"><span class="dir">次へ →</span><span class="title">2. 学習プロセス</span></a>
 </nav>
 
@@ -526,6 +526,7 @@ Stage 2 では「キャプションを text_encoder に通した埋め込み」�
   <p>引用コード: <a href="https://github.com/NExT-GPT/NExT-GPT" target="_blank" rel="noopener">NExT-GPT/NExT-GPT</a>(BSD 3-Clause)</p>
 </footer>
 
+<script src="assets/diagram-controls.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-core.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-python.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-bash.min.js"></script>

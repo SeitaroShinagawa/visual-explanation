@@ -158,6 +158,24 @@ figure.diagram figcaption {
   text-align: center;
   line-height: 1.7;
 }
+.diagram-controls {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin: 0 0 0.55rem;
+}
+.diagram-controls button {
+  border: 1px solid var(--border);
+  background: #fff;
+  color: var(--fg);
+  border-radius: 8px;
+  padding: 0.35rem 0.65rem;
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+.diagram-controls button:hover { box-shadow: 0 2px 7px rgba(28, 35, 51, 0.12); }
+.diagram-controls button:disabled { opacity: 0.55; cursor: not-allowed; box-shadow: none; }
+figure.diagram.is-paused svg * { animation-play-state: paused !important; }
 
 /* ---------- tables ---------- */
 .article table {

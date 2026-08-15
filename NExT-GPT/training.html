@@ -59,8 +59,8 @@
 <body>
 
 <nav class="topnav">
-  <a class="home-link" href="../">Visual Explanation</a><span class="sep">/</span>
-  <a href="./">NExT-GPT 概要</a>
+  <a class="home-link" href="../index.html">Visual Explanation</a><span class="sep">/</span>
+  <a href="./index.html">NExT-GPT 概要</a>
   <a href="architecture.html">1. アーキテクチャ</a>
   <a href="training.html" class="current">2. 学習プロセス</a>
   <a href="inference.html">3. 生成プロセス</a>
@@ -83,7 +83,7 @@ NExT-GPT の学習は、共通のエントリポイント <code>train.py</code> 
 学習されるのは接続部だけです。下図は各ステージで 🔥 が付く場所の移り変わりです。
 </p>
 
-<figure class="diagram" id="stages">
+<figure class="diagram" id="stages" data-cycle-ms="15000" data-step-count="3">
 <svg viewBox="0 0 900 360" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="3ステージで学習対象が切り替わるアニメーション">
   <!-- stage labels -->
   <g font-size="14" font-weight="bold">
@@ -292,7 +292,7 @@ else:
 loss += gen_loss</code></pre>
 </div>
 
-<figure class="diagram" id="lossflow">
+<figure class="diagram" id="lossflow" data-cycle-ms="8000" data-step-count="2">
 <svg viewBox="0 0 900 430" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="cap_lossとgen_lossの計算経路アニメーション">
   <defs>
     <marker id="arr4" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
@@ -493,6 +493,7 @@ NExT-GPT が 1 桁 GPU で学習できる理由です。
 MathJax = { tex: { inlineMath: [['\\(', '\\)']], displayMath: [['$$', '$$']] } };
 </script>
 <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js" async></script>
+<script src="assets/diagram-controls.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-core.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-python.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-bash.min.js"></script>

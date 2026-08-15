@@ -77,8 +77,8 @@
 <body>
 
 <nav class="topnav">
-  <a class="home-link" href="../">Visual Explanation</a><span class="sep">/</span>
-  <a href="./">NExT-GPT 概要</a>
+  <a class="home-link" href="../index.html">Visual Explanation</a><span class="sep">/</span>
+  <a href="./index.html">NExT-GPT 概要</a>
   <a href="architecture.html">1. アーキテクチャ</a>
   <a href="training.html">2. 学習プロセス</a>
   <a href="inference.html" class="current">3. 生成プロセス</a>
@@ -97,7 +97,7 @@
 推論時の処理は大きく 5 ステップです。まずアニメーションで流れを掴んでください。
 </p>
 
-<figure class="diagram" id="gentime">
+<figure class="diagram" id="gentime" data-cycle-ms="16000" data-step-count="5">
 <svg viewBox="0 0 900 540" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="生成プロセスのタイムラインアニメーション">
   <defs>
     <marker id="arr5" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
@@ -351,7 +351,7 @@ $$\tilde\epsilon_\theta = \epsilon_\theta(z_t, t, \varnothing) + s \cdot \big(\e
 
 <nav class="pager">
   <a href="training.html"><span class="dir">← 前へ</span><span class="title">2. 学習プロセス</span></a>
-  <a class="next" href="./"><span class="dir">最初へ →</span><span class="title">NExT-GPT 概要</span></a>
+  <a class="next" href="./index.html"><span class="dir">最初へ →</span><span class="title">NExT-GPT 概要</span></a>
 </nav>
 
 </main>
@@ -364,6 +364,7 @@ $$\tilde\epsilon_\theta = \epsilon_\theta(z_t, t, \varnothing) + s \cdot \big(\e
 MathJax = { tex: { inlineMath: [['\\(', '\\)']], displayMath: [['$$', '$$']] } };
 </script>
 <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js" async></script>
+<script src="assets/diagram-controls.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-core.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-python.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-bash.min.js"></script>
