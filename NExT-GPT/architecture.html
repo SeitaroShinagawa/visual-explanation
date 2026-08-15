@@ -1,0 +1,523 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NExT-GPT 図解 1 — アーキテクチャ詳解</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🧩</text></svg>">
+<link rel="stylesheet" href="assets/style.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/themes/prism-tomorrow.min.css">
+<style>
+/* ===== splice animation (prepare_inputs_labels_for_multimodal) ===== */
+/* 8s cycle: placeholder token blinks -> disappears -> feature block slides in -> row closes up */
+#splice-fig .ph-token { animation: sp-ph 8s ease-in-out infinite; }
+@keyframes sp-ph {
+  0%, 20%  { opacity: 1; }
+  28%, 100% { opacity: 0; }
+}
+#splice-fig .feat-block { animation: sp-feat 8s ease-in-out infinite; }
+@keyframes sp-feat {
+  0%, 26%  { opacity: 0; transform: translate(0, -110px); }
+  30%      { opacity: 1; transform: translate(0, -110px); }
+  45%, 88% { opacity: 1; transform: translate(0, 0); }
+  96%, 100% { opacity: 0; transform: translate(0, 0); }
+}
+#splice-fig .encoder-path { animation: sp-enc 8s ease-in-out infinite; }
+@keyframes sp-enc {
+  0%   { opacity: 0.35; }
+  10%, 40% { opacity: 1; }
+  55%, 100% { opacity: 0.35; }
+}
+#splice-fig .result-label { animation: sp-label 8s ease-in-out infinite; }
+@keyframes sp-label {
+  0%, 50% { opacity: 0; }
+  60%, 88% { opacity: 1; }
+  96%, 100% { opacity: 0; }
+}
+
+/* ===== output projector animation ===== */
+/* tokens flow into transformer, query tokens light up, 77x768 emerges */
+#outproj .in-dots circle { animation: op-in 4.5s linear infinite; }
+#outproj .in-dots circle:nth-child(2) { animation-delay: 0.5s; }
+#outproj .in-dots circle:nth-child(3) { animation-delay: 1.0s; }
+@keyframes op-in {
+  0%   { transform: translate(0, 0); opacity: 0; }
+  10%  { opacity: 1; }
+  45%  { transform: translate(150px, 0); opacity: 1; }
+  55%, 100% { transform: translate(150px, 0); opacity: 0; }
+}
+#outproj .query-grid rect { animation: op-query 4.5s ease-in-out infinite; }
+@keyframes op-query {
+  0%, 40% { fill: #e9ecf5; }
+  55%, 80% { fill: #b9c8f7; }
+  100% { fill: #e9ecf5; }
+}
+#outproj .out-arrow { animation: op-out 4.5s ease-in-out infinite; }
+@keyframes op-out {
+  0%, 55% { opacity: 0.25; }
+  70%, 90% { opacity: 1; }
+  100% { opacity: 0.25; }
+}
+</style>
+</head>
+<body>
+
+<nav class="topnav">
+  <a class="home-link" href="../">Visual Explanation</a><span class="sep">/</span>
+  <a href="./">NExT-GPT 概要</a>
+  <a href="architecture.html" class="current">1. アーキテクチャ</a>
+  <a href="training.html">2. 学習プロセス</a>
+  <a href="inference.html">3. 生成プロセス</a>
+</nav>
+
+<header class="page-header">
+  <h1>1. アーキテクチャ詳解</h1>
+  <p>ImageBind エンコーダから拡散デコーダまで、NExT-GPT を構成する 5 つの部品を
+  テンソル形状を追いながらコードで確かめます。</p>
+</header>
+
+<main class="article">
+
+<h2 id="parts">5 つの構成部品</h2>
+<p>NExT-GPT のモデル定義は <code>nextgpt/model/nextgpt_arch.py</code> の
+<code>NextGPTMetaModel</code> に集約されています。コンストラクタを見ると、
+モデルが 5 種類の部品の組み立てであることがそのまま読み取れます。</p>
+
+<div class="codeblock">
+<div class="codehead"><span class="path">nextgpt/model/nextgpt_arch.py</span> L36–66(抜粋)
+<a href="https://github.com/NExT-GPT/NExT-GPT/blob/main/nextgpt/model/nextgpt_arch.py#L36-L66" target="_blank" rel="noopener">GitHub ↗</a></div>
+<pre><code class="language-python">class NextGPTMetaModel:
+    def __init__(self, config):
+        super(NextGPTMetaModel, self).__init__(config)
+
+        if hasattr(config, "multimodal_input_tower"):
+            self.multimodal_tower = build_multimodal_tower(config, delay_load=True)   # ① ImageBind
+            self.mm_input_projector = build_input_projector(config)                   # ② 入力プロジェクタ
+
+        if hasattr(config, "image_decoder"):
+            self.image_decoder = builder_decoder(config, "image")                     # ⑤ 拡散デコーダ(画像)
+            ...
+            self.mm_output_img_projector = build_output_projector(                    # ④ 出力プロジェクタ(画像)
+                config, mm_output_img_projector_type,
+                mm_output_img_features,        # 1024 次元(SD2 のテキスト条件空間)
+                mm_output_img_num_query_token) # 77 トークン(CLIP と同じ系列長)
+        # video_decoder / audio_decoder も同様に構築(query 数: 動画 77 / 音声 1)</code></pre>
+</div>
+
+<p>③(LLM 本体)は <code>nextgpt/model/language_model/nextgpt_llama.py</code> の
+<code>NextGPTLlamaForCausalLM</code> で、HuggingFace の <code>LlamaForCausalLM</code> を継承しつつ
+上の <code>NextGPTMetaModel</code> を混ぜ込む、LLaVA と同じ多重継承スタイルです。</p>
+
+<table>
+  <tr><th>#</th><th>部品</th><th>実体</th><th>役割</th><th>学習</th></tr>
+  <tr><td>①</td><td>マルチモーダルエンコーダ</td><td>ImageBind-Huge</td><td>画像/動画/音声 → 1024 次元埋め込み</td><td>🧊 凍結</td></tr>
+  <tr><td>②</td><td>入力プロジェクタ</td><td>GroupProjector</td><td>1024 次元 → LLM の 4096 次元空間</td><td>🔥 Stage 1</td></tr>
+  <tr><td>③</td><td>LLM</td><td>Vicuna-7B v1.5</td><td>理解・推論・テキストとシグナルトークンの生成</td><td>🧊(Stage 3 で LoRA 🔥)</td></tr>
+  <tr><td>④</td><td>出力プロジェクタ ×3</td><td>TransformersProjector</td><td>シグナルトークンの隠れ状態 → 拡散モデルの条件埋め込み</td><td>🔥 Stage 2</td></tr>
+  <tr><td>⑤</td><td>拡散デコーダ ×3</td><td>SD2 / ZeroScope / AudioLDM</td><td>条件埋め込みから画像・動画・音声を生成</td><td>🧊 凍結</td></tr>
+</table>
+
+<h2 id="encoder">① ImageBind エンコーダ — 3 モダリティを 1 本で</h2>
+<p>
+入力側のエンコーダは 1 つだけです。ImageBind は画像・動画・音声(ほか計 6 モダリティ)を
+<strong>同一の埋め込み空間</strong>に写像するモデルなので、モダリティごとに別々のエンコーダと
+プロジェクタを用意する必要がありません。ラッパの <code>forward</code> は
+モダリティ名で入力を振り分けるだけの薄い実装です。
+</p>
+
+<div class="codeblock">
+<div class="codehead"><span class="path">nextgpt/model/multimodal_encoder/imagebind_encoder.py</span> L57–81(抜粋)
+<a href="https://github.com/NExT-GPT/NExT-GPT/blob/main/nextgpt/model/multimodal_encoder/imagebind_encoder.py" target="_blank" rel="noopener">GitHub ↗</a></div>
+<pre><code class="language-python">@torch.no_grad()                      # ← エンコーダは常に勾配なし=凍結
+def forward(self, inputs, modality='image'):
+    _inputs = {}
+    if modality == 'image':
+        _inputs.update({ModalityType.VISION: inputs})  # [1, 3, 224, 224]
+        _modality = ModalityType.VISION
+    elif modality == 'audio':
+        _inputs.update({ModalityType.AUDIO: inputs})   # [1, 3, 1, 128, 204]
+        _modality = ModalityType.AUDIO
+    elif modality == 'video':
+        _inputs.update({ModalityType.VISION: inputs})  # [1, 15, 3, 2, 224, 224]
+        _modality = ModalityType.VISION
+    ...
+    embeddings = self.multimodal_tower(_inputs)
+    return embeddings[_modality]</code></pre>
+</div>
+
+<div class="callout point">
+<span class="callout-title">ポイント: 出力は「1 入力 = 1 ベクトル」</span>
+ImageBind の出力はパッチ列ではなく、入力 1 件につき 1 本のグローバル埋め込み(1024 次元)です。
+動画も ImageBind 内部でフレームを集約して 1 本になります。したがって LLM の系列に挿入される
+マルチモーダル「トークン」は非常にコンパクトで、これが NExT-GPT の軽量さの源泉です
+(パッチ 576 トークンを挿入する LLaVA-1.5 との大きな違い)。
+音声は <code>[3, 1, 128, 204]</code> = メルスペクトログラムの 3 クリップとして入ります。
+</div>
+
+<h2 id="input-projector">② 入力プロジェクタ — LLM が読める表現へ</h2>
+<p>
+ImageBind の 1024 次元埋め込みを Vicuna の隠れ次元 4096 に写像します。
+プロジェクタ種別は設定で切り替えられ(<code>linear</code> / <code>mlp</code> / <code>group</code>)、
+学習スクリプトでは <code>--mm_input_projector_type group</code> が指定されています。
+</p>
+
+<div class="codeblock">
+<div class="codehead"><span class="path">nextgpt/model/multimodal_projector/builder.py</span> L49–64(抜粋)
+<a href="https://github.com/NExT-GPT/NExT-GPT/blob/main/nextgpt/model/multimodal_projector/builder.py" target="_blank" rel="noopener">GitHub ↗</a></div>
+<pre><code class="language-python">def build_input_projector(config, delay_load=False, **kwargs):
+    projector_type = getattr(config, "mm_input_projector_type", "linear")
+    if projector_type == "linear":
+        return nn.Linear(in_features=config.mm_hidden_size, out_features=config.hidden_size)
+    if projector_type == "mlp":
+        return MLP(in_features=config.mm_hidden_size, out_features=config.hidden_size, num_layers=2)
+    if projector_type == "group":
+        return GroupProjector(in_features=config.mm_hidden_size,   # 1024 (ImageBind)
+                              out_features=config.hidden_size,     # 4096 (Vicuna-7B)
+                              **kwargs)</code></pre>
+</div>
+
+<p>
+<code>GroupProjector</code>(<a href="https://github.com/NExT-GPT/NExT-GPT/blob/main/nextgpt/model/multimodal_projector/projector.py" target="_blank" rel="noopener">projector.py</a>)は
+<a href="https://arxiv.org/abs/2202.11094" target="_blank" rel="noopener">GroupViT</a> 由来の
+グルーピング機構で、入力トークン列を学習可能なグループトークンに段階的に集約します
+(64 グループ → 8 グループ)。論文でいう
+<strong>“concept-level” のアラインメント</strong> — パッチの寄せ集めではなく意味概念の単位で
+LLM に渡す — をここが担います。
+</p>
+
+<p>エンコードの呼び出し側はシンプルで、タワー → プロジェクタの 2 段です。</p>
+
+<div class="codeblock">
+<div class="codehead"><span class="path">nextgpt/model/nextgpt_arch.py</span> L370–383
+<a href="https://github.com/NExT-GPT/NExT-GPT/blob/main/nextgpt/model/nextgpt_arch.py#L370-L383" target="_blank" rel="noopener">GitHub ↗</a></div>
+<pre><code class="language-python">def encode_images(self, images):
+    image_features = self.get_model().get_multimodal_tower()(images, modality='image')
+    image_features = self.get_model().mm_input_projector(image_features)
+    return image_features
+
+def encode_videos(self, videos):
+    video_features = self.get_model().get_multimodal_tower()(videos, modality='video')
+    video_features = self.get_model().mm_input_projector(video_features)
+    return video_features
+
+def encode_audios(self, audios):
+    audio_features = self.get_model().get_multimodal_tower()(audios, modality='audio')
+    audio_features = self.get_model().mm_input_projector(audio_features)
+    return audio_features</code></pre>
+</div>
+
+<h2 id="splice">プレースホルダの接合 — マルチモーダル入力が LLM に入るまで</h2>
+<p>
+会話テキスト中のマルチモーダル入力は、トークナイズの段階では
+<strong>プレースホルダトークン</strong>として表現されます。通常の語彙 ID と衝突しない負の値です。
+</p>
+
+<div class="codeblock">
+<div class="codehead"><span class="path">nextgpt/constants.py</span> L19–39(抜粋)
+<a href="https://github.com/NExT-GPT/NExT-GPT/blob/main/nextgpt/constants.py" target="_blank" rel="noopener">GitHub ↗</a></div>
+<pre><code class="language-python">IMAGE_TOKEN_INDEX = -200
+DEFAULT_IMAGE_TOKEN = "&lt;image&gt;"
+...
+VIDEO_TOKEN_INDEX = -300
+DEFAULT_VIDEO_TOKEN = "&lt;video&gt;"
+...
+AUDIO_TOKEN_INDEX = -400
+DEFAULT_AUDIO_TOKEN = "&lt;audio&gt;"</code></pre>
+</div>
+
+<p>
+モデルの forward 直前に呼ばれる
+<code>prepare_inputs_labels_for_multimodal</code>(<a href="https://github.com/NExT-GPT/NExT-GPT/blob/main/nextgpt/model/nextgpt_arch.py#L385" target="_blank" rel="noopener">nextgpt_arch.py L385</a>)が、
+このプレースホルダの位置にエンコード済み特徴を「接ぎ木」して、
+トークン ID 列を<strong>埋め込み列</strong>に変換します。下のアニメーションがその動きです。
+</p>
+
+<figure class="diagram" id="splice-fig">
+<svg viewBox="0 0 900 330" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="プレースホルダトークンが画像特徴に置き換えられるアニメーション">
+  <defs>
+    <marker id="arr2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#3556d4"/>
+    </marker>
+  </defs>
+
+  <!-- encoder path (top) -->
+  <g class="encoder-path">
+    <rect x="60" y="30" width="70" height="52" rx="8" fill="#e5eafc" stroke="#3556d4" stroke-width="2"/>
+    <text x="95" y="60" font-size="20" text-anchor="middle">🖼️</text>
+    <text x="95" y="100" font-size="10" text-anchor="middle" fill="#5b6478">入力画像</text>
+    <path d="M 130 56 L 190 56" fill="none" stroke="#3556d4" stroke-width="2" marker-end="url(#arr2)" class="flow-edge"/>
+    <rect x="192" y="34" width="104" height="44" rx="8" fill="#fff" stroke="#3556d4" stroke-width="2"/>
+    <text x="244" y="53" font-size="11" text-anchor="middle" fill="#3556d4" font-weight="bold">ImageBind</text>
+    <text x="244" y="69" font-size="9.5" text-anchor="middle" fill="#5b6478" class="mono">[b, 1024]</text>
+    <path d="M 296 56 L 356 56" fill="none" stroke="#3556d4" stroke-width="2" marker-end="url(#arr2)" class="flow-edge"/>
+    <rect x="358" y="34" width="120" height="44" rx="8" fill="#e5eafc" stroke="#3556d4" stroke-width="2"/>
+    <text x="418" y="53" font-size="11" text-anchor="middle" fill="#3556d4" font-weight="bold">入力プロジェクタ</text>
+    <text x="418" y="69" font-size="9.5" text-anchor="middle" fill="#5b6478" class="mono">[b, 4096]</text>
+    <text x="418" y="20" font-size="11" text-anchor="middle" fill="#5b6478">encode_images()</text>
+  </g>
+
+  <!-- token row -->
+  <text x="60" y="160" font-size="12" fill="#5b6478" font-weight="bold">input_ids(トークン ID 列)</text>
+  <g font-size="11">
+    <rect x="60"  y="175" width="78" height="34" rx="6" fill="#e9ecf5" stroke="#8a93ad"/>
+    <text x="99" y="197" text-anchor="middle" class="mono">USER:</text>
+    <!-- placeholder -->
+    <g class="ph-token">
+      <rect x="146" y="175" width="76" height="34" rx="6" fill="#fbe4e8" stroke="#d43d51" stroke-width="2" stroke-dasharray="5 3"/>
+      <text x="184" y="192" text-anchor="middle" class="mono" fill="#d43d51">&lt;image&gt;</text>
+      <text x="184" y="205" text-anchor="middle" class="mono" fill="#d43d51" font-size="9">= -200</text>
+    </g>
+    <!-- feature block that slides into the gap (starts near projector) -->
+    <g class="feat-block">
+      <rect x="146" y="175" width="76" height="34" rx="6" fill="#3556d4"/>
+      <text x="184" y="197" text-anchor="middle" fill="#fff" class="mono" font-size="10">img feat</text>
+    </g>
+    <!-- rest of the sentence -->
+    <g class="tail-tokens">
+      <rect x="230" y="175" width="150" height="34" rx="6" fill="#e9ecf5" stroke="#8a93ad"/>
+      <text x="305" y="197" text-anchor="middle">何が写っていますか?</text>
+      <rect x="388" y="175" width="110 " height="34" rx="6" fill="#e9ecf5" stroke="#8a93ad"/>
+      <text x="443" y="197" text-anchor="middle" class="mono">ASSISTANT:</text>
+      <rect x="506" y="175" width="40" height="34" rx="6" fill="#e9ecf5" stroke="#8a93ad"/>
+      <text x="526" y="197" text-anchor="middle" class="mono">…</text>
+    </g>
+  </g>
+
+  <!-- labels below -->
+  <g class="result-label">
+    <path d="M 184 218 L 184 240" stroke="#3556d4" stroke-width="2" fill="none" marker-end="url(#arr2)"/>
+    <text x="80" y="262" font-size="12" fill="#3556d4" font-weight="bold">new_input_embeds: プレースホルダ位置に特徴ベクトルを挿入した埋め込み列</text>
+    <text x="80" y="284" font-size="11" fill="#5b6478">挿入位置の labels は IGNORE_INDEX (-100) — 画像特徴そのものは損失計算の対象外</text>
+    <text x="80" y="306" font-size="11" fill="#5b6478">以降 LLM には input_ids ではなく inputs_embeds が渡される</text>
+  </g>
+</svg>
+<figcaption>
+<code>prepare_inputs_labels_for_multimodal</code> の動作。<code>&lt;image&gt;</code>(ID = −200)の位置で系列を分割し、
+通常トークンは <code>embed_tokens</code> で埋め込みに、プレースホルダ位置には
+<code>encode_images()</code> の出力(4096 次元)がそのまま挿入される。
+</figcaption>
+</figure>
+
+<div class="codeblock">
+<div class="codehead"><span class="path">nextgpt/model/nextgpt_arch.py</span> L503–527(抜粋・整形)
+<a href="https://github.com/NExT-GPT/NExT-GPT/blob/main/nextgpt/model/nextgpt_arch.py#L503-L527" target="_blank" rel="noopener">GitHub ↗</a></div>
+<pre><code class="language-python"># プレースホルダで分割された各断片を順に連結していく
+for i, _token_indices in zip(range(num_images + num_videos + num_audios + 1),
+                             _specfical_token_indices[1:]):
+    cur_new_input_embeds.append(cur_input_embeds_no_im[i])   # 通常テキストの埋め込み断片
+    cur_new_labels.append(cur_labels_noim[i])
+    if _token_indices in image_token_indices:
+        cur_mm_features = image_features[cur_image_idx]      # ← encode_images() の出力
+        cur_mm_features = cur_mm_features.unsqueeze(0) if cur_mm_features.ndim == 1 else cur_mm_features
+        cur_image_idx += 1
+        cur_new_input_embeds.append(cur_mm_features)         # 特徴ベクトルを直接挿入
+        cur_new_labels.append(torch.full((cur_mm_features.shape[0],), IGNORE_INDEX, ...))
+    elif _token_indices in video_token_indices:
+        ...  # 動画・音声も同様</code></pre>
+</div>
+
+<h2 id="signal-tokens">③′ シグナルトークン — LLM に「生成の指示書」を書かせる語彙</h2>
+<p>
+出力側の鍵がシグナルトークンです。モデル初期化時にトークナイザへ
+<strong>画像 4 個・動画 24 個・音声 8 個</strong>の特殊トークンを追加し、
+埋め込み行列も拡張します(新規行は既存埋め込みの平均で初期化)。
+</p>
+
+<div class="codeblock">
+<div class="codehead"><span class="path">nextgpt/model/nextgpt_arch.py</span> L585–605(抜粋)
+<a href="https://github.com/NExT-GPT/NExT-GPT/blob/main/nextgpt/model/nextgpt_arch.py#L585-L605" target="_blank" rel="noopener">GitHub ↗</a></div>
+<pre><code class="language-python">def initialize_vision_tokenizer(self, model_args, tokenizer):
+    # add modality tokens
+    signal_token_list = []
+    signal_token_list.extend([f"&lt;image_{i:02d}&gt;" for i in range(model_args.n_img_tokens)])  # 4 個
+    signal_token_list.extend([f"&lt;video_{i:02d}&gt;" for i in range(model_args.n_vid_tokens)])  # 24 個
+    signal_token_list.extend([f"&lt;audio_{i:02d}&gt;" for i in range(model_args.n_aud_tokens)])  # 8 個
+
+    num_new_tokens = tokenizer.add_tokens(signal_token_list, special_tokens=True)
+    self.resize_token_embeddings(len(tokenizer))
+    if num_new_tokens &gt; 0:
+        input_embeddings  = self.get_input_embeddings().weight.data
+        output_embeddings = self.get_output_embeddings().weight.data
+        input_embeddings_avg  = input_embeddings[:-num_new_tokens].mean(dim=0, keepdim=True)
+        output_embeddings_avg = output_embeddings[:-num_new_tokens].mean(dim=0, keepdim=True)
+        input_embeddings[-num_new_tokens:]  = input_embeddings_avg   # 平均ベクトルで初期化
+        output_embeddings[-num_new_tokens:] = output_embeddings_avg</code></pre>
+</div>
+
+<p>
+学習データ側では、応答テキスト中の <code>&lt;image&gt;</code> をシグナルトークン列に展開します。
+このとき<strong>スペース区切り</strong>で連結される点が重要です。
+</p>
+
+<div class="codeblock">
+<div class="codehead"><span class="path">nextgpt/dataset/dataset_utils.py</span> L184–186(抜粋)
+<a href="https://github.com/NExT-GPT/NExT-GPT/blob/main/nextgpt/dataset/dataset_utils.py" target="_blank" rel="noopener">GitHub ↗</a></div>
+<pre><code class="language-python"># if the GPT output image or video or audio, it should be replaced by the signal tokens.
+sentence["value"] = sentence["value"].replace(
+    DEFAULT_IMAGE_TOKEN,
+    ' '.join([f"&lt;image_{i:02d}&gt;" for i in range(data_args.n_img_tokens)]))</code></pre>
+</div>
+
+<div class="callout warn">
+<span class="callout-title">なぜコードのあちこちに「n×2 − 1」が現れるのか</span>
+スペース区切りのため、トークナイズ後の系列は
+<code>&lt;image_00&gt; ▁ &lt;image_01&gt; ▁ &lt;image_02&gt; ▁ &lt;image_03&gt;</code> のように
+シグナルトークンと空白トークンが交互に並び、長さは 4×2−1 = 7 になります。
+損失計算(<code>nextgpt_llama.py</code> L327)や生成時の検出(同 L747 の <code>generated_ids[0, gen_idx:end_idx:2]</code>、
+ストライド 2 で 1 個おきに取り出す)に出てくる
+<code>len(signal_token_indices)*2-1</code> はこの空白込みの長さです。
+</div>
+
+<h2 id="output-projector">④ 出力プロジェクタ — 隠れ状態を「拡散モデルの言葉」に翻訳</h2>
+<p>
+LLM がシグナルトークンを出したら、その位置の隠れ状態を拡散モデルが理解できる
+条件埋め込みに変換する必要があります。これを担うのが各モダリティの出力プロジェクタ
+(<code>--mm_output_*_projector_type transformer</code>)で、実体は
+4 層エンコーダ + 4 層デコーダの小さな Transformer です。
+</p>
+
+<div class="codeblock">
+<div class="codehead"><span class="path">nextgpt/model/multimodal_projector/projector.py</span> L224–249(抜粋)
+<a href="https://github.com/NExT-GPT/NExT-GPT/blob/main/nextgpt/model/multimodal_projector/projector.py" target="_blank" rel="noopener">GitHub ↗</a></div>
+<pre><code class="language-python">class TransformersProjector(nn.Module):
+    def __init__(self, in_features, out_features, num_query_token, **kwargs):
+        super().__init__()
+        hidden_dim = 512
+        self.in_fc = nn.Linear(in_features, hidden_dim)          # 4096 → 512
+        self.tfm = nn.Transformer(batch_first=True, norm_first=True,
+                                  d_model=hidden_dim, num_encoder_layers=4, num_decoder_layers=4,
+                                  dim_feedforward=hidden_dim * 4, dropout=0.0, nhead=4)
+        self.out_fc = nn.Linear(hidden_dim, out_features)        # 512 → 1024(SD2)等
+        self.query_embs = nn.Parameter(torch.randn(1, num_query_token, hidden_dim))  # 77 個の学習可能クエリ
+
+    def forward(self, x, input_embs):
+        x = x + input_embs                # 隠れ状態 + シグナルトークンの入力埋め込み
+        x = self.in_fc(x)
+        x = self.tfm(x, self.query_embs.repeat(x.shape[0], 1, 1))  # クエリが情報を吸い上げる
+        outputs = self.out_fc(x)
+        return outputs                    # (b, 77, 1024) など</code></pre>
+</div>
+
+<figure class="diagram" id="outproj">
+<svg viewBox="0 0 900 260" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="出力プロジェクタの動作アニメーション">
+  <defs>
+    <marker id="arr3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#8a93ad"/>
+    </marker>
+  </defs>
+  <!-- left: signal hidden states -->
+  <text x="55" y="40" font-size="12" font-weight="bold" fill="#d43d51">シグナルトークン位置の</text>
+  <text x="55" y="58" font-size="12" font-weight="bold" fill="#d43d51">隠れ状態 h + 入力埋め込み e</text>
+  <g>
+    <rect x="55" y="75" width="120" height="30" rx="6" fill="#fbe4e8" stroke="#d43d51"/>
+    <text x="115" y="95" font-size="10.5" text-anchor="middle" class="mono">(b, 2n−1, 4096)</text>
+  </g>
+  <g class="in-dots">
+    <circle cx="190" cy="90" r="5" fill="#d43d51"/>
+    <circle cx="190" cy="90" r="5" fill="#d43d51"/>
+    <circle cx="190" cy="90" r="5" fill="#d43d51"/>
+  </g>
+  <path d="M 180 90 L 345 90" fill="none" stroke="#8a93ad" stroke-width="2" marker-end="url(#arr3)"/>
+
+  <!-- middle: transformer -->
+  <rect x="350" y="45" width="200" height="150" rx="12" fill="#fff" stroke="#3556d4" stroke-width="2.5"/>
+  <text x="450" y="70" font-size="13" font-weight="bold" text-anchor="middle" fill="#3556d4">TransformersProjector</text>
+  <text x="450" y="88" font-size="10" text-anchor="middle" fill="#5b6478">nn.Transformer(4 enc + 4 dec, d=512)</text>
+  <!-- query token grid -->
+  <g class="query-grid">
+    <rect x="370" y="105" width="18" height="18" rx="3"/>
+    <rect x="392" y="105" width="18" height="18" rx="3"/>
+    <rect x="414" y="105" width="18" height="18" rx="3"/>
+    <rect x="436" y="105" width="18" height="18" rx="3"/>
+    <rect x="458" y="105" width="18" height="18" rx="3"/>
+    <rect x="480" y="105" width="18" height="18" rx="3"/>
+    <rect x="502" y="105" width="18" height="18" rx="3"/>
+  </g>
+  <text x="530" y="119" font-size="10" fill="#5b6478">× 77</text>
+  <text x="450" y="145" font-size="10.5" text-anchor="middle" fill="#5b6478">学習可能な query_embs が</text>
+  <text x="450" y="161" font-size="10.5" text-anchor="middle" fill="#5b6478">デコーダ側で情報を吸い上げる</text>
+  <text x="450" y="183" font-size="10" text-anchor="middle" fill="#d43d51">🔥 Stage 2 の学習対象</text>
+
+  <!-- right: output -->
+  <g class="out-arrow">
+    <path d="M 550 120 L 640 120" fill="none" stroke="#3556d4" stroke-width="2.5" marker-end="url(#arr3)"/>
+  </g>
+  <rect x="645" y="90" width="200" height="60" rx="10" fill="#e5eafc" stroke="#3556d4" stroke-width="2"/>
+  <text x="745" y="113" font-size="12" font-weight="bold" text-anchor="middle" fill="#3556d4">prompt_embeds</text>
+  <text x="745" y="132" font-size="10.5" text-anchor="middle" class="mono" fill="#5b6478">(b, 77, 1024)</text>
+  <text x="745" y="175" font-size="10.5" text-anchor="middle" fill="#5b6478">CLIP テキストエンコーダの出力と</text>
+  <text x="745" y="192" font-size="10.5" text-anchor="middle" fill="#5b6478">同じ形 = SD2 にそのまま渡せる</text>
+</svg>
+<figcaption>
+出力プロジェクタ(画像用)の動作。シグナルトークン位置の隠れ状態(空白トークン込みで 2n−1 個)を
+77 個の学習可能クエリで再符号化し、Stable Diffusion のテキスト条件
+(CLIP の 77×1024)と同じ形の埋め込みを作る。動画用も同形、音声用はクエリ 1 個で
+AudioLDM のクラス埋め込み(512 次元)を作る。
+</figcaption>
+</figure>
+
+<table>
+  <tr><th>モダリティ</th><th>query 数</th><th>出力次元</th><th>合わせる先</th></tr>
+  <tr><td>画像</td><td>77</td><td>1024</td><td>SD2 の CLIP テキスト埋め込み(OpenCLIP ViT-H)</td></tr>
+  <tr><td>動画</td><td>77</td><td>1024</td><td>ZeroScope のテキスト埋め込み</td></tr>
+  <tr><td>音声</td><td>1</td><td>512</td><td>AudioLDM の CLAP クラス埋め込み</td></tr>
+</table>
+
+<h2 id="decoder">⑤ 拡散デコーダ — 既製パイプラインをそのまま接続</h2>
+<p>
+デコーダは diffusers のパイプラインをカスタムした薄いラッパで、
+構築時に VAE・UNet・テキストエンコーダのすべてを凍結します。
+</p>
+
+<div class="codeblock">
+<div class="codehead"><span class="path">nextgpt/model/multimodal_decoder/builder.py</span> L8–35(抜粋)
+<a href="https://github.com/NExT-GPT/NExT-GPT/blob/main/nextgpt/model/multimodal_decoder/builder.py" target="_blank" rel="noopener">GitHub ↗</a></div>
+<pre><code class="language-python">def builder_decoder(config, decoder_modality="image"):
+    if decoder_modality == "video":
+        video_decoder = TextToVideoSDPipeline.from_pretrained(config.video_decoder)  # cerspense/zeroscope_v2_XL
+        video_decoder.vae.requires_grad_(False)
+        video_decoder.unet.requires_grad_(False)
+        video_decoder.text_encoder.requires_grad_(False)
+        return video_decoder
+    elif decoder_modality == "audio":
+        audio_decoder = AudioLDMPipeline.from_pretrained(config.audio_decoder)       # cvssp/audioldm
+        ...
+    elif decoder_modality == "image":
+        if config.image_decoder == "stabilityai/stable-diffusion-2":
+            scheduler = EulerDiscreteScheduler.from_pretrained(config.image_decoder, subfolder="scheduler")
+            image_decoder = StableDiffusionPipeline.from_pretrained(config.image_decoder, scheduler=scheduler)
+        ...</code></pre>
+</div>
+
+<div class="callout point">
+<span class="callout-title">text_encoder も凍結して持っているのはなぜ?</span>
+凍結された text_encoder は推論では使いませんが、<strong>学習では教師信号の供給源</strong>になります。
+Stage 2 では「キャプションを text_encoder に通した埋め込み」に出力プロジェクタの出力を
+近づける損失(cap_loss)を計算します。詳細は<a href="training.html#stage2">学習編 Stage 2</a> へ。
+</div>
+
+<h2 id="summary">まとめ: パラメータの全体像</h2>
+<p><code>print_model_parameters</code>(<a href="https://github.com/NExT-GPT/NExT-GPT/blob/main/nextgpt/model/language_model/nextgpt_llama.py#L889" target="_blank" rel="noopener">nextgpt_llama.py L889</a>)が数えている区分がそのまま全体像です。</p>
+<ul>
+  <li>🧊 <strong>凍結(大部分)</strong>: ImageBind(約 1B)、Vicuna-7B、SD2 / ZeroScope / AudioLDM</li>
+  <li>🔥 <strong>学習対象(約 1%)</strong>: 入力プロジェクタ(<code>mm_input_projector</code>)、
+      出力プロジェクタ ×3(<code>mm_output_{img,vid,aud}_projector</code>)、
+      シグナルトークン分の入出力埋め込み、Stage 3 の LoRA(r=128)</li>
+</ul>
+
+<nav class="pager">
+  <a href="./"><span class="dir">← 前へ</span><span class="title">NExT-GPT 概要</span></a>
+  <a class="next" href="training.html"><span class="dir">次へ →</span><span class="title">2. 学習プロセス</span></a>
+</nav>
+
+</main>
+
+<footer class="site-footer">
+  <p>引用コード: <a href="https://github.com/NExT-GPT/NExT-GPT" target="_blank" rel="noopener">NExT-GPT/NExT-GPT</a>(BSD 3-Clause)</p>
+</footer>
+
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-core.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-python.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-bash.min.js"></script>
+</body>
+</html>
