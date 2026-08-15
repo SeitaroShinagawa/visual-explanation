@@ -95,7 +95,7 @@
 
 <div class="codeblock">
 <div class="codehead"><span class="path">nextgpt/model/nextgpt_arch.py</span> L36–66(抜粋)
-<a href="https://github.com/NExT-GPT/NExT-GPT/blob/main/nextgpt/model/nextgpt_arch.py#L36-L66" target="_blank" rel="noopener">GitHub ↗</a></div>
+<a href="https://github.com/NExT-GPT/NExT-GPT/blob/60d618b067ee4cb0d70e7075ae79852780b34fc2/nextgpt/model/nextgpt_arch.py#L36-L66" target="_blank" rel="noopener">GitHub ↗</a></div>
 <pre><code class="language-python">class NextGPTMetaModel:
     def __init__(self, config):
         super(NextGPTMetaModel, self).__init__(config)
@@ -137,7 +137,7 @@
 
 <div class="codeblock">
 <div class="codehead"><span class="path">nextgpt/model/multimodal_encoder/imagebind_encoder.py</span> L57–81(抜粋)
-<a href="https://github.com/NExT-GPT/NExT-GPT/blob/main/nextgpt/model/multimodal_encoder/imagebind_encoder.py" target="_blank" rel="noopener">GitHub ↗</a></div>
+<a href="https://github.com/NExT-GPT/NExT-GPT/blob/60d618b067ee4cb0d70e7075ae79852780b34fc2/nextgpt/model/multimodal_encoder/imagebind_encoder.py" target="_blank" rel="noopener">GitHub ↗</a></div>
 <pre><code class="language-python">@torch.no_grad()                      # ← エンコーダは常に勾配なし=凍結
 def forward(self, inputs, modality='image'):
     _inputs = {}
@@ -173,7 +173,7 @@ ImageBind の 1024 次元埋め込みを Vicuna の隠れ次元 4096 に写像�
 
 <div class="codeblock">
 <div class="codehead"><span class="path">nextgpt/model/multimodal_projector/builder.py</span> L49–64(抜粋)
-<a href="https://github.com/NExT-GPT/NExT-GPT/blob/main/nextgpt/model/multimodal_projector/builder.py" target="_blank" rel="noopener">GitHub ↗</a></div>
+<a href="https://github.com/NExT-GPT/NExT-GPT/blob/60d618b067ee4cb0d70e7075ae79852780b34fc2/nextgpt/model/multimodal_projector/builder.py" target="_blank" rel="noopener">GitHub ↗</a></div>
 <pre><code class="language-python">def build_input_projector(config, delay_load=False, **kwargs):
     projector_type = getattr(config, "mm_input_projector_type", "linear")
     if projector_type == "linear":
@@ -187,7 +187,7 @@ ImageBind の 1024 次元埋め込みを Vicuna の隠れ次元 4096 に写像�
 </div>
 
 <p>
-<code>GroupProjector</code>(<a href="https://github.com/NExT-GPT/NExT-GPT/blob/main/nextgpt/model/multimodal_projector/projector.py" target="_blank" rel="noopener">projector.py</a>)は
+<code>GroupProjector</code>(<a href="https://github.com/NExT-GPT/NExT-GPT/blob/60d618b067ee4cb0d70e7075ae79852780b34fc2/nextgpt/model/multimodal_projector/projector.py" target="_blank" rel="noopener">projector.py</a>)は
 <a href="https://arxiv.org/abs/2202.11094" target="_blank" rel="noopener">GroupViT</a> 由来の
 グルーピング機構で、入力トークン列を学習可能なグループトークンに段階的に集約します
 (64 グループ → 8 グループ)。論文でいう
@@ -199,7 +199,7 @@ LLM に渡す — をここが担います。
 
 <div class="codeblock">
 <div class="codehead"><span class="path">nextgpt/model/nextgpt_arch.py</span> L370–383
-<a href="https://github.com/NExT-GPT/NExT-GPT/blob/main/nextgpt/model/nextgpt_arch.py#L370-L383" target="_blank" rel="noopener">GitHub ↗</a></div>
+<a href="https://github.com/NExT-GPT/NExT-GPT/blob/60d618b067ee4cb0d70e7075ae79852780b34fc2/nextgpt/model/nextgpt_arch.py#L370-L383" target="_blank" rel="noopener">GitHub ↗</a></div>
 <pre><code class="language-python">def encode_images(self, images):
     image_features = self.get_model().get_multimodal_tower()(images, modality='image')
     image_features = self.get_model().mm_input_projector(image_features)
@@ -224,7 +224,7 @@ def encode_audios(self, audios):
 
 <div class="codeblock">
 <div class="codehead"><span class="path">nextgpt/constants.py</span> L19–39(抜粋)
-<a href="https://github.com/NExT-GPT/NExT-GPT/blob/main/nextgpt/constants.py" target="_blank" rel="noopener">GitHub ↗</a></div>
+<a href="https://github.com/NExT-GPT/NExT-GPT/blob/60d618b067ee4cb0d70e7075ae79852780b34fc2/nextgpt/constants.py" target="_blank" rel="noopener">GitHub ↗</a></div>
 <pre><code class="language-python">IMAGE_TOKEN_INDEX = -200
 DEFAULT_IMAGE_TOKEN = "&lt;image&gt;"
 ...
@@ -237,7 +237,7 @@ DEFAULT_AUDIO_TOKEN = "&lt;audio&gt;"</code></pre>
 
 <p>
 モデルの forward 直前に呼ばれる
-<code>prepare_inputs_labels_for_multimodal</code>(<a href="https://github.com/NExT-GPT/NExT-GPT/blob/main/nextgpt/model/nextgpt_arch.py#L385" target="_blank" rel="noopener">nextgpt_arch.py L385</a>)が、
+<code>prepare_inputs_labels_for_multimodal</code>(<a href="https://github.com/NExT-GPT/NExT-GPT/blob/60d618b067ee4cb0d70e7075ae79852780b34fc2/nextgpt/model/nextgpt_arch.py#L385" target="_blank" rel="noopener">nextgpt_arch.py L385</a>)が、
 このプレースホルダの位置にエンコード済み特徴を「接ぎ木」して、
 トークン ID 列を<strong>埋め込み列</strong>に変換します。下のアニメーションがその動きです。
 </p>
@@ -310,7 +310,7 @@ DEFAULT_AUDIO_TOKEN = "&lt;audio&gt;"</code></pre>
 
 <div class="codeblock">
 <div class="codehead"><span class="path">nextgpt/model/nextgpt_arch.py</span> L503–527(抜粋・整形)
-<a href="https://github.com/NExT-GPT/NExT-GPT/blob/main/nextgpt/model/nextgpt_arch.py#L503-L527" target="_blank" rel="noopener">GitHub ↗</a></div>
+<a href="https://github.com/NExT-GPT/NExT-GPT/blob/60d618b067ee4cb0d70e7075ae79852780b34fc2/nextgpt/model/nextgpt_arch.py#L503-L527" target="_blank" rel="noopener">GitHub ↗</a></div>
 <pre><code class="language-python"># プレースホルダで分割された各断片を順に連結していく
 for i, _token_indices in zip(range(num_images + num_videos + num_audios + 1),
                              _specfical_token_indices[1:]):
@@ -335,7 +335,7 @@ for i, _token_indices in zip(range(num_images + num_videos + num_audios + 1),
 
 <div class="codeblock">
 <div class="codehead"><span class="path">nextgpt/model/nextgpt_arch.py</span> L585–605(抜粋)
-<a href="https://github.com/NExT-GPT/NExT-GPT/blob/main/nextgpt/model/nextgpt_arch.py#L585-L605" target="_blank" rel="noopener">GitHub ↗</a></div>
+<a href="https://github.com/NExT-GPT/NExT-GPT/blob/60d618b067ee4cb0d70e7075ae79852780b34fc2/nextgpt/model/nextgpt_arch.py#L585-L605" target="_blank" rel="noopener">GitHub ↗</a></div>
 <pre><code class="language-python">def initialize_vision_tokenizer(self, model_args, tokenizer):
     # add modality tokens
     signal_token_list = []
@@ -361,7 +361,7 @@ for i, _token_indices in zip(range(num_images + num_videos + num_audios + 1),
 
 <div class="codeblock">
 <div class="codehead"><span class="path">nextgpt/dataset/dataset_utils.py</span> L184–186(抜粋)
-<a href="https://github.com/NExT-GPT/NExT-GPT/blob/main/nextgpt/dataset/dataset_utils.py" target="_blank" rel="noopener">GitHub ↗</a></div>
+<a href="https://github.com/NExT-GPT/NExT-GPT/blob/60d618b067ee4cb0d70e7075ae79852780b34fc2/nextgpt/dataset/dataset_utils.py" target="_blank" rel="noopener">GitHub ↗</a></div>
 <pre><code class="language-python"># if the GPT output image or video or audio, it should be replaced by the signal tokens.
 sentence["value"] = sentence["value"].replace(
     DEFAULT_IMAGE_TOKEN,
@@ -388,7 +388,7 @@ LLM がシグナルトークンを出したら、その位置の隠れ状態を�
 
 <div class="codeblock">
 <div class="codehead"><span class="path">nextgpt/model/multimodal_projector/projector.py</span> L224–249(抜粋)
-<a href="https://github.com/NExT-GPT/NExT-GPT/blob/main/nextgpt/model/multimodal_projector/projector.py" target="_blank" rel="noopener">GitHub ↗</a></div>
+<a href="https://github.com/NExT-GPT/NExT-GPT/blob/60d618b067ee4cb0d70e7075ae79852780b34fc2/nextgpt/model/multimodal_projector/projector.py" target="_blank" rel="noopener">GitHub ↗</a></div>
 <pre><code class="language-python">class TransformersProjector(nn.Module):
     def __init__(self, in_features, out_features, num_query_token, **kwargs):
         super().__init__()
@@ -481,7 +481,7 @@ AudioLDM のクラス埋め込み(512 次元)を作る。
 
 <div class="codeblock">
 <div class="codehead"><span class="path">nextgpt/model/multimodal_decoder/builder.py</span> L8–35(抜粋)
-<a href="https://github.com/NExT-GPT/NExT-GPT/blob/main/nextgpt/model/multimodal_decoder/builder.py" target="_blank" rel="noopener">GitHub ↗</a></div>
+<a href="https://github.com/NExT-GPT/NExT-GPT/blob/60d618b067ee4cb0d70e7075ae79852780b34fc2/nextgpt/model/multimodal_decoder/builder.py" target="_blank" rel="noopener">GitHub ↗</a></div>
 <pre><code class="language-python">def builder_decoder(config, decoder_modality="image"):
     if decoder_modality == "video":
         video_decoder = TextToVideoSDPipeline.from_pretrained(config.video_decoder)  # cerspense/zeroscope_v2_XL
@@ -507,7 +507,7 @@ Stage 2 では「キャプションを text_encoder に通した埋め込み」�
 </div>
 
 <h2 id="summary">まとめ: パラメータの全体像</h2>
-<p><code>print_model_parameters</code>(<a href="https://github.com/NExT-GPT/NExT-GPT/blob/main/nextgpt/model/language_model/nextgpt_llama.py#L889" target="_blank" rel="noopener">nextgpt_llama.py L889</a>)が数えている区分がそのまま全体像です。</p>
+<p><code>print_model_parameters</code>(<a href="https://github.com/NExT-GPT/NExT-GPT/blob/60d618b067ee4cb0d70e7075ae79852780b34fc2/nextgpt/model/language_model/nextgpt_llama.py#L889" target="_blank" rel="noopener">nextgpt_llama.py L889</a>)が数えている区分がそのまま全体像です。</p>
 <ul>
   <li>🧊 <strong>凍結(大部分)</strong>: ImageBind(約 1B)、Vicuna-7B、SD2 / ZeroScope / AudioLDM</li>
   <li>🔥 <strong>学習対象(約 1%)</strong>: 入力プロジェクタ(<code>mm_input_projector</code>)、

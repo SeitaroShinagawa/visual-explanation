@@ -141,7 +141,7 @@ NExT-GPT の学習は、共通のエントリポイント <code>train.py</code> 
 <figcaption>
 3 ステージで 🔥(学習対象)が移り変わる様子。シグナルトークン用に拡張された入出力埋め込み
 (<code>embed_tokens</code> / <code>lm_head</code> の新規行)は、プロジェクタを tune するステージで同時に学習される
-(<a href="https://github.com/NExT-GPT/NExT-GPT/blob/main/nextgpt/model/nextgpt_arch.py#L607-L611" target="_blank" rel="noopener">nextgpt_arch.py L607</a>)。
+(<a href="https://github.com/NExT-GPT/NExT-GPT/blob/60d618b067ee4cb0d70e7075ae79852780b34fc2/nextgpt/model/nextgpt_arch.py#L607-L611" target="_blank" rel="noopener">nextgpt_arch.py L607</a>)。
 </figcaption>
 </figure>
 
@@ -149,7 +149,7 @@ NExT-GPT の学習は、共通のエントリポイント <code>train.py</code> 
 
 <div class="codeblock">
 <div class="codehead"><span class="path">train.py</span> L444–454(抜粋)
-<a href="https://github.com/NExT-GPT/NExT-GPT/blob/main/train.py#L444-L454" target="_blank" rel="noopener">GitHub ↗</a></div>
+<a href="https://github.com/NExT-GPT/NExT-GPT/blob/60d618b067ee4cb0d70e7075ae79852780b34fc2/train.py#L444-L454" target="_blank" rel="noopener">GitHub ↗</a></div>
 <pre><code class="language-python">model.requires_grad_(False)                      # まず全パラメータを凍結
 
 # freeze/unfreeze the mm input adapters
@@ -180,7 +180,7 @@ $$\mathcal{L} \;=\; \mathcal{L}_{\text{text}}
 
 <div class="codeblock">
 <div class="codehead"><span class="path">nextgpt/model/language_model/nextgpt_llama.py</span> L226–257(抜粋)
-<a href="https://github.com/NExT-GPT/NExT-GPT/blob/main/nextgpt/model/language_model/nextgpt_llama.py#L226-L257" target="_blank" rel="noopener">GitHub ↗</a></div>
+<a href="https://github.com/NExT-GPT/NExT-GPT/blob/60d618b067ee4cb0d70e7075ae79852780b34fc2/nextgpt/model/language_model/nextgpt_llama.py#L226-L257" target="_blank" rel="noopener">GitHub ↗</a></div>
 <pre><code class="language-python">text_loss = outputs.loss          # ① LlamaForCausalLM 標準の next-token CE
 loss = text_loss
 
@@ -226,7 +226,7 @@ $$\mathcal{L}_{\text{cap}} = \frac{1}{N L}\sum_{i=1}^{N}\sum_{\ell=1}^{L}
 
 <div class="codeblock">
 <div class="codehead"><span class="path">nextgpt/model/language_model/nextgpt_llama.py</span> L318–345(抜粋)
-<a href="https://github.com/NExT-GPT/NExT-GPT/blob/main/nextgpt/model/language_model/nextgpt_llama.py#L318-L345" target="_blank" rel="noopener">GitHub ↗</a></div>
+<a href="https://github.com/NExT-GPT/NExT-GPT/blob/60d618b067ee4cb0d70e7075ae79852780b34fc2/nextgpt/model/language_model/nextgpt_llama.py#L318-L345" target="_blank" rel="noopener">GitHub ↗</a></div>
 <pre><code class="language-python"># labels の中からシグナルトークン区間 [<image_00> … <image_03>] を探す
 start_pos = (labels == image_signal_token_indices[0][1]).nonzero(as_tuple=False).tolist()
 end_pos   = (labels == image_signal_token_indices[-1][1]).nonzero(as_tuple=False).tolist()
@@ -270,7 +270,7 @@ $$\mathcal{L}_{\text{gen}} = \mathbb{E}_{z_0,\, \epsilon \sim \mathcal{N}(0,I),\
 
 <div class="codeblock">
 <div class="codehead"><span class="path">nextgpt/model/language_model/nextgpt_llama.py</span> L351–387(抜粋)
-<a href="https://github.com/NExT-GPT/NExT-GPT/blob/main/nextgpt/model/language_model/nextgpt_llama.py#L351-L387" target="_blank" rel="noopener">GitHub ↗</a></div>
+<a href="https://github.com/NExT-GPT/NExT-GPT/blob/60d618b067ee4cb0d70e7075ae79852780b34fc2/nextgpt/model/language_model/nextgpt_llama.py#L351-L387" target="_blank" rel="noopener">GitHub ↗</a></div>
 <pre><code class="language-python">latents = self.get_image_vae().encode(target_images).latent_dist.sample()
 latents = latents * self.get_image_vae().config.scaling_factor
 
@@ -365,7 +365,7 @@ Stage 2 における 2 つの損失の計算経路。①(紫)はキャプショ�
 
 <div class="codeblock">
 <div class="codehead"><span class="path">scripts/pretrain_enc.sh</span>(要点)
-<a href="https://github.com/NExT-GPT/NExT-GPT/blob/main/scripts/pretrain_enc.sh" target="_blank" rel="noopener">GitHub ↗</a></div>
+<a href="https://github.com/NExT-GPT/NExT-GPT/blob/60d618b067ee4cb0d70e7075ae79852780b34fc2/scripts/pretrain_enc.sh" target="_blank" rel="noopener">GitHub ↗</a></div>
 <pre><code class="language-bash">--dataset_name_list audiocap_enc webvid_enc cc3m_enc \
 --tune_mm_input_adapter True \            # 🔥 入力プロジェクタのみ解凍
 --mm_input_projector_type group \
@@ -393,7 +393,7 @@ Stage 2 における 2 つの損失の計算経路。①(紫)はキャプショ�
 
 <div class="codeblock">
 <div class="codehead"><span class="path">scripts/pretrain_dec.sh</span>(要点)
-<a href="https://github.com/NExT-GPT/NExT-GPT/blob/main/scripts/pretrain_dec.sh" target="_blank" rel="noopener">GitHub ↗</a></div>
+<a href="https://github.com/NExT-GPT/NExT-GPT/blob/60d618b067ee4cb0d70e7075ae79852780b34fc2/scripts/pretrain_dec.sh" target="_blank" rel="noopener">GitHub ↗</a></div>
 <pre><code class="language-bash">--dataset_name_list audiocap_dec webvid_dec cc3m_dec \
 --pretrain_mm_input_adapter ./checkpoints/pretrain_enc_1/mm_input_projector.bin \
 --freeze_mm_input_adapter True \          # Stage 1 の成果は凍結して引き継ぐ
@@ -423,7 +423,7 @@ LLaVA / Alpaca / VideoChat などの既存指示データに加え、
 
 <div class="codeblock">
 <div class="codehead"><span class="path">train.py</span> L331–347(抜粋)
-<a href="https://github.com/NExT-GPT/NExT-GPT/blob/main/train.py#L331-L347" target="_blank" rel="noopener">GitHub ↗</a></div>
+<a href="https://github.com/NExT-GPT/NExT-GPT/blob/60d618b067ee4cb0d70e7075ae79852780b34fc2/train.py#L331-L347" target="_blank" rel="noopener">GitHub ↗</a></div>
 <pre><code class="language-python">if training_args.lora_enable:
     from peft import LoraConfig, get_peft_model
     lora_config = LoraConfig(
@@ -440,7 +440,7 @@ LLaVA / Alpaca / VideoChat などの既存指示データに加え、
 
 <div class="codeblock">
 <div class="codehead"><span class="path">scripts/finetune.sh</span>(要点)
-<a href="https://github.com/NExT-GPT/NExT-GPT/blob/main/scripts/finetune.sh" target="_blank" rel="noopener">GitHub ↗</a></div>
+<a href="https://github.com/NExT-GPT/NExT-GPT/blob/60d618b067ee4cb0d70e7075ae79852780b34fc2/scripts/finetune.sh" target="_blank" rel="noopener">GitHub ↗</a></div>
 <pre><code class="language-bash">--lora_enable True --lora_r 128 --lora_alpha 256 \
 --mm_input_projector_lr 2e-5  --mm_output_projector_lr 2e-5 \   # プロジェクタは小さな学習率で追従
 --dataset_name_list audio_instruction video_instruction image_instruction \
@@ -458,7 +458,7 @@ LLaVA / Alpaca / VideoChat などの既存指示データに加え、
 <code>nextgpt_trainer.py</code> の <code>create_optimizer</code> が
 <code>mm_input_projector_lr</code> / <code>mm_output_projector_lr</code> 指定時に
 パラメータグループを分けています
-(<a href="https://github.com/NExT-GPT/NExT-GPT/blob/main/nextgpt_trainer.py#L180" target="_blank" rel="noopener">nextgpt_trainer.py L180–</a>)。
+(<a href="https://github.com/NExT-GPT/NExT-GPT/blob/60d618b067ee4cb0d70e7075ae79852780b34fc2/nextgpt_trainer.py#L180" target="_blank" rel="noopener">nextgpt_trainer.py L180–</a>)。
 </p>
 
 <h2 id="summary">まとめ</h2>

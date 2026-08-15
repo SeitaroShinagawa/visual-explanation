@@ -200,7 +200,7 @@
 
 <div class="codeblock">
 <div class="codehead"><span class="path">predict.py</span> L154–168(抜粋)
-<a href="https://github.com/NExT-GPT/NExT-GPT/blob/main/predict.py#L154-L168" target="_blank" rel="noopener">GitHub ↗</a></div>
+<a href="https://github.com/NExT-GPT/NExT-GPT/blob/60d618b067ee4cb0d70e7075ae79852780b34fc2/predict.py#L154-L168" target="_blank" rel="noopener">GitHub ↗</a></div>
 <pre><code class="language-python">image_signal_token_indices = [self.tokenizer(f"&lt;image_{i:02d}&gt;").input_ids for i in range(self.model_config.n_img_tokens)]
 video_signal_token_indices = [self.tokenizer(f"&lt;video_{i:02d}&gt;").input_ids for i in range(self.model_config.n_vid_tokens)]
 audio_signal_token_indices = [self.tokenizer(f"&lt;audio_{i:02d}&gt;").input_ids for i in range(self.model_config.n_aud_tokens)]
@@ -235,7 +235,7 @@ HuggingFace 標準の <code>generate</code> に委譲します。
 
 <div class="codeblock">
 <div class="codehead"><span class="path">nextgpt/model/language_model/nextgpt_llama.py</span> L602–615(抜粋)
-<a href="https://github.com/NExT-GPT/NExT-GPT/blob/main/nextgpt/model/language_model/nextgpt_llama.py#L602-L615" target="_blank" rel="noopener">GitHub ↗</a></div>
+<a href="https://github.com/NExT-GPT/NExT-GPT/blob/60d618b067ee4cb0d70e7075ae79852780b34fc2/nextgpt/model/language_model/nextgpt_llama.py#L602-L615" target="_blank" rel="noopener">GitHub ↗</a></div>
 <pre><code class="language-python">outputs = super().generate(
     inputs_embeds=inputs_embeds,
     max_new_tokens=max_new_tokens,
@@ -256,7 +256,7 @@ HuggingFace 標準の <code>generate</code> に委譲します。
 
 <div class="codeblock">
 <div class="codehead"><span class="path">nextgpt/model/language_model/nextgpt_llama.py</span> L677–681(抜粋)
-<a href="https://github.com/NExT-GPT/NExT-GPT/blob/main/nextgpt/model/language_model/nextgpt_llama.py#L677-L681" target="_blank" rel="noopener">GitHub ↗</a></div>
+<a href="https://github.com/NExT-GPT/NExT-GPT/blob/60d618b067ee4cb0d70e7075ae79852780b34fc2/nextgpt/model/language_model/nextgpt_llama.py#L677-L681" target="_blank" rel="noopener">GitHub ↗</a></div>
 <pre><code class="language-python">layer_idx = getattr(self.config, "layer_idx", -1)
 hidden_embedding = [x[layer_idx] for x in outputs.hidden_states[1:]]  # 生成ステップごとの最終層
 hidden_embedding = torch.cat(hidden_embedding, dim=1)                 # (1, 生成長, 4096)</code></pre>
@@ -271,7 +271,7 @@ hidden_embedding = torch.cat(hidden_embedding, dim=1)                 # (1, 生�
 
 <div class="codeblock">
 <div class="codehead"><span class="path">nextgpt/model/language_model/nextgpt_llama.py</span> L688–728(抜粋・整形)
-<a href="https://github.com/NExT-GPT/NExT-GPT/blob/main/nextgpt/model/language_model/nextgpt_llama.py#L688-L728" target="_blank" rel="noopener">GitHub ↗</a></div>
+<a href="https://github.com/NExT-GPT/NExT-GPT/blob/60d618b067ee4cb0d70e7075ae79852780b34fc2/nextgpt/model/language_model/nextgpt_llama.py#L688-L728" target="_blank" rel="noopener">GitHub ↗</a></div>
 <pre><code class="language-python"># Find up to max_num_rets [IMG] tokens, and their corresponding scores.
 all_gen_img_idx = [i for i, x in enumerate(generated_ids[0, :] == image_signal_token_indices[0][1]) if x][:max_num_imgs]
 all_gen_vid_idx = [i for i, x in enumerate(generated_ids[0, :] == video_signal_token_indices[0][1]) if x][:max_num_vids]
@@ -299,7 +299,7 @@ Stable Diffusion にテキストの代わりに渡します。
 
 <div class="codeblock">
 <div class="codehead"><span class="path">nextgpt/model/language_model/nextgpt_llama.py</span> L745–773(抜粋)
-<a href="https://github.com/NExT-GPT/NExT-GPT/blob/main/nextgpt/model/language_model/nextgpt_llama.py#L745-L773" target="_blank" rel="noopener">GitHub ↗</a></div>
+<a href="https://github.com/NExT-GPT/NExT-GPT/blob/60d618b067ee4cb0d70e7075ae79852780b34fc2/nextgpt/model/language_model/nextgpt_llama.py#L745-L773" target="_blank" rel="noopener">GitHub ↗</a></div>
 <pre><code class="language-python">for gen_idx in all_gen_idx:
     end_idx = gen_idx + n_img_tokens*2-1
     gen_list = generated_ids[0, gen_idx:end_idx:2].cpu().detach().numpy().tolist()  # ストライド2で空白を飛ばす
