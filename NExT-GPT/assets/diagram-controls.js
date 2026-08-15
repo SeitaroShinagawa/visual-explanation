@@ -38,7 +38,7 @@
     const applyState = () => {
       figure.classList.toggle('is-paused', !state.playing);
       autoplayButton.textContent = state.playing ? '自動再生: ON' : '自動再生: OFF';
-      stepButton.disabled = state.playing;
+      stepButton.disabled = false; // stepping is always available; it pauses autoplay first
     };
 
     const startOneStep = () => {
