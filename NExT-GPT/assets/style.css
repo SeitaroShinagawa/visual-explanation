@@ -24,7 +24,7 @@ html { scroll-behavior: smooth; scroll-padding-top: 4.2rem; }
 
 body {
   margin: 0;
-  font-family: "Hiragino Sans", "Noto Sans JP", "Yu Gothic UI", "Meiryo", sans-serif;
+  font-family: "Hiragino Sans", "Noto Sans CJK JP", "Noto Sans JP", "Yu Gothic UI", "Meiryo", sans-serif;
   background: var(--bg);
   color: var(--fg);
   line-height: 1.95;
@@ -228,7 +228,7 @@ figure.diagram figcaption {
 .site-footer a { color: var(--accent); }
 
 /* ---------- SVG diagram shared parts ---------- */
-.diagram text { font-family: "Hiragino Sans", "Noto Sans JP", sans-serif; }
+.diagram text { font-family: "Hiragino Sans", "Noto Sans CJK JP", "Noto Sans JP", sans-serif; }
 .diagram .mono { font-family: Consolas, Menlo, monospace; }
 
 /* flowing dash animation for "data flow" edges */
