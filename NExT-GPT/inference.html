@@ -65,6 +65,13 @@
   60%, 94% { opacity: 1; }
   99%, 100% { opacity: 0; }
 }
+
+/* static state when animations are disabled (prefers-reduced-motion):
+   show every phase of the timeline at once */
+@media (prefers-reduced-motion: reduce) {
+  #gentime .tok, #gentime .detect, #gentime .extract,
+  #gentime .den, #gentime .den-frame, #gentime .den-final { opacity: 1; }
+}
 </style>
 </head>
 <body>

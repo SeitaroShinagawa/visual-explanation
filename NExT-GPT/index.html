@@ -290,7 +290,7 @@ GroupProjector)は <a href="architecture.html#input-projector">アーキテク�
 <h3>生成はシグナルトークンが鍵</h3>
 <p>
 推論時、LLM の出力に <code>&lt;image_00&gt; &lt;image_01&gt; …</code> のようなシグナルトークン列が現れると、
-その位置の<strong>最終層の隠れ状態</strong>が抜き出され、出力プロジェクタで 77×768 の
+その位置の<strong>最終層の隠れ状態</strong>が抜き出され、出力プロジェクタで 77×1024 の
 <code>prompt_embeds</code>(CLIP テキスト埋め込み互換)に変換されて拡散パイプラインに渡されます。
 つまり<strong>「テキストプロンプトの代わりに LLM の思考ベクトルで画像を生成する」</strong>のが
 NExT-GPT の生成プロセスです。詳細は<a href="inference.html">生成編</a>へ。

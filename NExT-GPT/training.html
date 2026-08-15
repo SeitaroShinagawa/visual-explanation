@@ -47,6 +47,13 @@
   58%, 92% { opacity: 1; }
   100% { opacity: 0.25; }
 }
+
+/* static state when animations are disabled (prefers-reduced-motion):
+   all stage labels visible, one representative fire badge per module */
+@media (prefers-reduced-motion: reduce) {
+  #stages .stage-label { opacity: 1; }
+  #stages .fire-inproj1, #stages .fire-outproj2, #stages .fire-lora { opacity: 1; }
+}
 </style>
 </head>
 <body>

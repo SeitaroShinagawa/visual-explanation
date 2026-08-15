@@ -90,6 +90,7 @@ code {
   background: #e9ecf5;
   border-radius: 5px;
   padding: 0.1em 0.35em;
+  overflow-wrap: anywhere; /* long paths/identifiers wrap instead of widening the page */
 }
 pre code { background: transparent; padding: 0; font-size: 0.83rem; line-height: 1.65; }
 
@@ -148,6 +149,8 @@ figure.diagram {
   overflow-x: auto;
 }
 figure.diagram svg { display: block; margin: 0 auto; max-width: 100%; height: auto; }
+/* keep diagram text readable on narrow viewports: the figure scrolls instead of shrinking */
+figure.diagram svg { min-width: 720px; }
 figure.diagram figcaption {
   margin-top: 0.7rem;
   font-size: 0.85rem;
@@ -163,6 +166,9 @@ figure.diagram figcaption {
   width: 100%;
   font-size: 0.9rem;
   background: var(--card-bg);
+  /* on narrow viewports the table scrolls inside itself instead of widening the page */
+  display: block;
+  overflow-x: auto;
 }
 .article th, .article td {
   border: 1px solid var(--border);
@@ -249,11 +255,12 @@ figure.diagram figcaption {
   50% { opacity: 0.55; }
 }
 
-/* respect reduced-motion: freeze all animations */
+/* respect reduced-motion: disable animations entirely.
+   Elements whose base state is invisible get explicit static states
+   in each page's own stylesheet under the same media query. */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
-    animation-duration: 0.001s !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: 0.001s !important;
+    animation: none !important;
+    transition: none !important;
   }
 }

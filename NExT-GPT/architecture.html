@@ -58,6 +58,16 @@
   70%, 90% { opacity: 1; }
   100% { opacity: 0.25; }
 }
+
+/* static state when animations are disabled (prefers-reduced-motion):
+   show the "after splice" frame and the lit projector output */
+@media (prefers-reduced-motion: reduce) {
+  #splice-fig .ph-token { opacity: 0; }
+  #splice-fig .feat-block, #splice-fig .result-label { opacity: 1; }
+  #outproj .in-dots { display: none; }
+  #outproj .query-grid rect { fill: #b9c8f7; }
+  #outproj .out-arrow { opacity: 1; }
+}
 </style>
 </head>
 <body>
