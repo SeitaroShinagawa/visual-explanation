@@ -1,6 +1,6 @@
 # visual-explanation
 
-論文とコードをアニメーション図解で読み解く GitHub Pages シリーズ。
+アニメーション図解で読み解く GitHub Pages シリーズ。
 
 ## 収録コンテンツ
 
