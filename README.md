@@ -7,6 +7,7 @@
 | トピック | パス | 内容 |
 |---|---|---|
 | [NExT-GPT](NExT-GPT/) | `NExT-GPT/` | Any-to-Any マルチモーダル LLM(ICML 2024)の学習・生成プロセスをコード引用+アニメーション SVG で解説(概要 / アーキテクチャ / 学習 / 生成の 4 ページ構成) |
+| [CoDi-2](CoDi-2/) | `CoDi-2/` | In-Context・Interleaved・Interactive な any-to-any 生成を行う MLLM(CVPR 2024)。テキストは離散トークン、それ以外は連続ベクトルとして生成する仕組みを同じ 4 ページ構成で解説 |
 
 ## GitHub Pages の公開設定
 
