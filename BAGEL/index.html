@@ -110,8 +110,13 @@ LLM は「拡散モデルに渡すプロンプト」も「条件ベクトル」�
 $$\mathcal{L} \;=\; \lambda_{\text{ce}}\,\mathcal{L}_{\text{CE}} \;+\; \lambda_{\text{mse}}\,\mathcal{L}_{\text{MSE}}$$
 \(\mathcal{L}_{\text{CE}}\) は普通の次トークン予測、
 \(\mathcal{L}_{\text{MSE}}\) は Rectified Flow の速度場回帰です。
-既定値は <code>ce_weight = mse_weight = 1.0</code>。
-NExT-GPT の「整合損失+拡散損失+CE」や CoDi-2 の 3 項構成と違い、
+公開コードの既定値は <code>ce_weight = mse_weight = 1.0</code> ですが、
+論文の学習レシピ(Table 3)では <strong>CE : MSE = 0.25 : 1</strong> が使われています。
+この非対称な重みには理由があり、論文 §4.2 のアブレーションで
+「学習率を上げると MSE は速く下がるが CE は悪化する」という綱引きが観測されたため、
+<strong>2 つの目的関数に別々の重みを割り当てて折り合いをつけた</strong>と説明されています。
+<br><br>
+いずれにせよ、NExT-GPT の「整合損失+拡散損失+CE」や CoDi-2 の 3 項構成と違い、
 <strong>接着のための損失(モダリティ整合項)が 1 つも要りません</strong> ——
 接着すべき外部モデルがそもそも無いからです。
 対応は<a href="training.html#losses">学習編</a>で 1 行ずつ突き合わせます。
@@ -284,7 +289,41 @@ BAGEL の全体データフロー。テキストと画像で<strong>出口が 2 
 <p>
 本シリーズの 3 モデルを並べると、
 <strong>LLM と画像生成器の距離がどんどん縮まっていく</strong>流れがはっきり見えます。
+実はこの流れは、論文 §2.1 が<strong>統一モデルの設計空間を 3 つに分類</strong>したものと、そのまま対応します。
 </p>
+
+<table>
+  <tr><th>論文の分類(§2.1)</th><th>やり方</th><th>本シリーズの該当モデル</th></tr>
+  <tr>
+    <td><strong>Quantized AR</strong></td>
+    <td>画像を離散トークンに量子化し、テキストと同じ Next-Token-Prediction で生成する</td>
+    <td>—(Chameleon / Emu3 / Janus 系)</td>
+  </tr>
+  <tr>
+    <td><strong>External Diffuser</strong></td>
+    <td>LLM が潜在トークン列を自己回帰生成し、それを「意味的な条件」として外部の拡散モデルに渡す</td>
+    <td><strong>NExT-GPT・CoDi-2</strong></td>
+  </tr>
+  <tr>
+    <td><strong>Integrated Transformer</strong></td>
+    <td>LLM と拡散モデルを 1 つの Transformer に統合し、両者を切り替えながら動かす</td>
+    <td><strong>BAGEL</strong></td>
+  </tr>
+</table>
+
+<div class="callout point">
+<span class="callout-title">論文が External Diffuser 方式に下す評価(§2.1)</span>
+著者たちは、NExT-GPT や CoDi-2 が採る方式の長所を認めた上で、その限界をこう述べています ——
+“Its primary drawback, however, is the <strong>compression of the LLM context into a relatively small number of
+latent tokens</strong>. This introduces an <strong>explicit bottleneck</strong> between understanding and generation modules,
+risking substantial information loss—particularly in long-context multimodal reasoning.
+Such a constraint might <strong>contradict the scaling philosophy of large foundational models</strong>.”
+<br><br>
+つまり「77×1024」や「1×1024」という細さそのものが問題だ、という診断です。
+そして Integrated Transformer を選ぶ理由を
+“maintaining a <strong>bottleneck-free context</strong> throughout all transformer blocks”
+と述べています。<strong>本シリーズを 3 作続けて読むと、この一文の重みが実感できます。</strong>
+</div>
 
 <figure class="diagram" id="lineage-fig" data-cycle-ms="12000" data-step-count="3">
 <svg viewBox="0 0 900 400" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="NExT-GPT・CoDi-2・BAGEL で LLM と生成器の距離が縮む図">
@@ -423,6 +462,56 @@ BAGEL は<strong>「LLM に、絵の具を直接触らせる」</strong>方式�
 (だから 5T トークン規模の事前学習が要ります)。
 </div>
 
+<h2 id="emerging">なぜ「Emerging Properties」なのか</h2>
+<p>
+論文のタイトルにもなっている <em>emerging properties</em> とは何を指すのか。
+論文は、大規模言語モデルの文脈で使われる定義をそのまま持ち込みます。
+</p>
+<div class="callout point">
+<span class="callout-title">論文 §6 の定義</span>
+“An ability is emerging if it is <strong>not present in earlier training stages</strong> but is
+<strong>present in later pre-trainings</strong>.”
+<br><br>
+重要なのは、この立ち上がりが<strong>損失曲線には現れない</strong>という点です。
+論文は「loss curves do not explicitly signal the emergence of new capabilities」と述べ、
+だからこそ<strong>過去のチェックポイントを掘り起こしてベンチマークを回し直す</strong>という方法を採っています。
+</div>
+
+<p>
+その結果が、BAGEL でもっとも面白い数字です。
+「ピーク性能の 85% に到達するまでに何トークン必要だったか」を能力ごとに測ると、
+<strong>タスクの複雑さに応じてきれいに階段状に並びます</strong>。
+</p>
+
+<table>
+  <tr><th>能力</th><th>指標</th><th>85% 到達に要したトークン</th></tr>
+  <tr><td>マルチモーダル理解</td><td>VLM ベンチマーク平均</td><td><strong>約 0.18T</strong></td></tr>
+  <tr><td>画像生成</td><td>GenEval</td><td><strong>約 0.68T</strong></td></tr>
+  <tr><td>画像編集</td><td>GEdit-Bench</td><td><strong>約 2.64T</strong></td></tr>
+  <tr><td>知的な編集<br>(複雑な推論を要する編集)</td><td>IntelligentBench</td><td><strong>約 3.61T</strong></td></tr>
+</table>
+
+<p>
+理解と生成が<strong>先に</strong>立ち上がり、両者を組み合わせる編集が<strong>その後</strong>、
+そして推論を要する編集が<strong>最後</strong>に来る。
+とくに IntelligentBench のスコアは、3T トークンを超えたあたりから急に伸びはじめ、
+学習後半で <strong>15 から 45 へ 3 倍</strong>になったと報告されています。
+それ以前のモデルは「よく分からないので入力画像をほぼそのまま返す」という
+逃げの挙動を見せていた、という観察も添えられています。
+</p>
+
+<div class="callout math">
+<span class="callout-title">二重エンコーダの効き方も、ここで数字になる</span>
+論文は「ViT トークンを外す」アブレーションも報告しています。
+結果は<strong>GEdit-Bench(素直な編集)にはほとんど影響しないのに、
+Intelligent Edit では 16% 低下</strong>。
+<br><br>
+つまり VAE のピクセル情報だけでも「言われた通りに塗り替える」ことはできるが、
+<strong>「何を意味する編集なのか」を考えるには意味レベルの視覚情報が要る</strong>、ということです。
+<a href="architecture.html#dual">アーキテクチャ編</a>で見る二重エンコーダの設計は、
+この一点のために存在していると言ってもよさそうです。
+</div>
+
 <h2 id="code-structure">コードベースの構成</h2>
 <p>公開リポジトリのうち、本解説で読むファイルは次の通りです。</p>
 
@@ -453,17 +542,17 @@ BAGEL は<strong>「LLM に、絵の具を直接触らせる」</strong>方式�
 後者が「MoT が 1 層の中で何をしているか」を担当します。
 </p>
 
-<div class="callout warn">
-<span class="callout-title">本解説が読んだもの・読めなかったもの</span>
+<div class="callout point">
+<span class="callout-title">本解説の依拠する一次資料</span>
 コードは <a href="https://github.com/ByteDance-Seed/Bagel/tree/a2fa77dd8caeefc41e6607ae0ec17408d3f4ee9f" target="_blank" rel="noopener">コミット <code>a2fa77d</code></a>(Apache-2.0)を
 実際にクローンして読み、引用の行番号もすべてそこから転記しています。
-一方<strong>論文本文(<a href="https://arxiv.org/abs/2505.14683" target="_blank" rel="noopener">arXiv:2505.14683</a>)は
-作業環境のネットワーク制限で PDF を直接取得できませんでした</strong>。
-そのため論文側の記述は、公式 README・TRAIN.md と、
-複数の二次情報で一致が確認できた範囲(学習 4 ステージ、PT 2.5T / CT 2.6T トークン、
-Generalized Causal Attention と Diffusion Forcing の方針など)に限って引用し、
-<strong>コードから直接読めた事実と区別して書いています</strong>。
-数値の細部は原論文でご確認ください。
+論文は <a href="https://arxiv.org/abs/2505.14683" target="_blank" rel="noopener">arXiv:2505.14683v3</a>(2025-07-27)を参照しました。
+<br><br>
+本シリーズの方針どおり、<strong>論文とコードで食い違う箇所はどちらかに寄せず両方を書いています</strong>。
+本トピックでは次の 2 件が該当します ——
+① <a href="training.html#cfgdrop">CFG ドロップアウト率</a>(論文 §2.3 は ViT を 0.5・clean VAE を 0.1 とするが、
+コードの既定は ViT / VAE ともに 0.3)、
+② <a href="training.html#losses">損失の重み</a>(論文 Table 3 は CE : MSE = 0.25 : 1、コードの既定は 1 : 1)。
 </div>
 
 <h2 id="digest">学習と生成の見どころ(ダイジェスト)</h2>

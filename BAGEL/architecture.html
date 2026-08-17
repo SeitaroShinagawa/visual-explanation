@@ -192,8 +192,10 @@ BAGEL は 1 枚の画像を<strong>2 つの経路で別々にトークン化</st
   <text x="20" y="236" font-size="10.5" fill="#d43d51" font-weight="bold">両方を使う</text>
 </svg>
 <figcaption>
-論文が報告するアブレーションでは、<strong>ViT と VAE を組み合わせることで「知的な編集」の性能が大きく伸びる</strong>とされています。
-ピクセルだけでは「何を意味する編集か」が分からず、意味だけでは「元の画素をどう保つか」が分からない、ということです。
+論文のアブレーションによれば、<strong>ViT トークンを外すと GEdit-Bench(素直な編集)はほぼ無傷なのに、
+IntelligentBench(推論を要する編集)は 16% 低下</strong>します。
+ピクセルだけでは「何を意味する編集か」が分からず、意味だけでは「元の画素をどう保つか」が分からない ——
+2 経路はそれぞれ違う仕事をしています。
 </figcaption>
 </figure>
 
@@ -408,14 +410,27 @@ MoT の 1 層。<strong>重みは二重、attention は一重</strong>。
 </figure>
 
 <div class="callout point">
-<span class="callout-title">MoE との違い</span>
+<span class="callout-title">MoE との違い、そして論文のアブレーション(§2.4)</span>
 一般的な MoE は「FFN だけを複数用意し、ルータが確率的に選ぶ」方式です。BAGEL の MoT は
 <strong>①FFN だけでなく attention の射影も LayerNorm も分ける</strong>、
-<strong>②選択はルータではなくトークンの種別で決定的に決まる</strong>という 2 点で異なります。
-論文は 1.5B 規模で Dense / MoE / MoT を比較し、
-理解と生成の両立という観点で MoT を採用したと報告しています。
-「生成タスクが理解タスクの重みを壊す(干渉)」問題を、
-容量を分けることで正面から回避する設計です。
+<strong>②選択はルータではなくトークンの種別で決定的に決まる</strong>(hard routing)という 2 点で異なります。
+<br><br>
+論文は 1.5B の Qwen2.5 を使い、データもハイパーパラメータも固定して 3 案を比較しています。
+<ul style="margin:0.6rem 0 0.6rem 1.2rem">
+  <li><strong>Dense</strong>: 複製なし</li>
+  <li><strong>MoE</strong>: 各ブロックの FFN <em>だけ</em>を複製して生成エキスパートにする</li>
+  <li><strong>MoT</strong>: Qwen2.5 の学習対象パラメータを<strong>丸ごと</strong>複製する</li>
+</ul>
+重要なのは<strong>3 案とも学習・推論時の FLOPs が同一</strong>だという点です
+(パラメータ数は 2 倍でも、1 トークンが通る経路は片方だけなので)。
+結果は MoT が一貫して最良で、とくに生成タスク(MSE 損失)での差が大きく、
+収束も最速かつ最終損失も最小でした。理解タスク(CE 損失)は
+異種データを混ぜる性質上ステップ間の揺れが大きいものの、やはり MoT が優勢です。
+<br><br>
+論文はこの結果を、
+<strong>理解と生成という 2 つの目的が、パラメータ空間の異なる領域へモデルを引っぱっている</strong>
+可能性を示すものだと解釈しています。容量を分けることは、
+その綱引き(=最適化上の干渉)を正面から回避する手段だ、というわけです。
 </div>
 
 <h2 id="attn">3. Generalized Causal Attention — 1 枚のマスクに 3 つの規則</h2>
@@ -424,6 +439,17 @@ MoT の 1 層。<strong>重みは二重、attention は一重</strong>。
 <strong>「まだ生成していない画像」を列の中に置きながら、答えを覗かせない</strong>ことです。
 BAGEL はこれを <code>attn_modes</code> という 3 値のラベルで解決します。
 </p>
+
+<div class="callout point">
+<span class="callout-title">論文 §2.2 の定義</span>
+“These tokens are first partitioned into <strong>multiple consecutive splits</strong>, each containing tokens from a
+single modality (e.g., either text, ViT, or VAE). <strong>Tokens in one split may attend to all tokens in preceding
+splits.</strong> Inside each split, we adopt <strong>causal attention on text tokens</strong>, and keep the
+<strong>bidirectional attention on vision tokens</strong>.”
+<br><br>
+コードの <code>split_lens</code> / <code>attn_modes</code> は、この “split” をそのまま実装したものです。
+そして論文 §2.3 が、生成対象だけを隠す 3 つ目のモード(<code>'noise'</code>)を追加します。
+</div>
 
 <table>
   <tr><th>モード</th><th>付く対象</th><th>ブロック内部</th><th>他から見えるか</th></tr>
@@ -730,7 +756,7 @@ FlexAttention を使わない場合の実装(<code>prepare_attention_mask_per_sa
 <table>
   <tr><th>要素</th><th>実体</th><th>状態</th></tr>
   <tr><td>言語モデル</td><td>Qwen2.5-7B 系(<code>Qwen2MoTDecoderLayer</code> に差し替え、QK-Norm を有効化)</td><td>学習</td></tr>
-  <tr><td>ViT</td><td>SigLIP so400m / patch 14 / 最大 980px、NaViT 化。<strong>最終層を 1 枚落として使う</strong>(<code>vit_config.num_hidden_layers -= 1</code>)</td><td>学習</td></tr>
+  <tr><td>ViT</td><td><strong>SigLIP2-so400m/14</strong>(論文 §2.2)。<strong>384 解像度の事前学習済みモデルを初期値とし、位置埋め込みを補間して最大 980×980 まで拡張</strong>したうえで NaViT 化。コードでは<strong>最終層を 1 枚落として使う</strong>(<code>vit_config.num_hidden_layers -= 1</code>)</td><td>学習</td></tr>
   <tr><td>VAE</td><td>FLUX の AutoEncoder(8× 圧縮 / 16ch / <code>scale 0.3611</code>, <code>shift 0.1159</code>)</td><td><strong>凍結 🧊</strong></td></tr>
   <tr><td>接続層</td><td><code>connector</code>(ViT→LLM 2 層 MLP)/ <code>vae2llm</code>(64→hidden)/ <code>llm2vae</code>(hidden→64, ゼロ初期化)</td><td>学習</td></tr>
   <tr><td>位置符号</td><td>RoPE(要素単位)+ 2D sin-cos 固定テーブル(画像内)+ <code>TimestepEmbedder</code>(時刻)</td><td>sin-cos は固定</td></tr>
@@ -763,8 +789,10 @@ packed_sequence[packed_vae_token_indexes] = packed_latent</code></pre>
 <p>
 拡散 Transformer では時刻 \(t\) を AdaLN で全層に注入するのが定石ですが、
 BAGEL は<strong>入力埋め込みに 1 回足すだけ</strong>です。
-LLM 側のアーキテクチャに一切手を加えず、
-「時刻もまた入力の一部」として扱う —— 統一モデルらしい割り切りと言えます。
+論文 §2.2 はこの選択を
+“This modification <strong>preserves performance while yielding a cleaner architecture</strong>”
+と説明しています。LLM 側のアーキテクチャに一切手を加えずに済むことが、
+性能を落とさずに得られる —— 統一モデルらしい割り切りです。
 </p>
 
 <nav class="pager">

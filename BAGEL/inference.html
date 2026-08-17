@@ -334,6 +334,33 @@ README の説明「higher values allocate more steps at the start (affects layou
 </figcaption>
 </figure>
 
+<h3>生成し終えた画像は、文脈の中で「きれいなもの」に差し替えられる</h3>
+<p>
+interleaved な生成(画像を出したあと、それを踏まえてさらにテキストや画像を出す)では、
+生成中に使っていたノイズ入りトークンをそのまま文脈に残すわけにはいきません。
+論文 §2.3 は、この後始末を明示しています。
+</p>
+<div class="callout point">
+<span class="callout-title">論文 §2.3 より</span>
+“During inference, the generalized causal structure allows us to <strong>cache key-value (KV) pairs</strong> of the
+generated multimodal context and thus accelerate multimodal decoding.
+<strong>Only the KV pairs of clean VAE tokens and ViT tokens are stored</strong>;
+once an image is fully generated, <strong>the corresponding noised VAE tokens in the context are replaced by their
+clean counterparts</strong>.”
+</div>
+<p>
+学習時に <code>'noise'</code> モードが「ノイズ入りトークンを他から見えなくする」役割を果たしていたのと、
+きれいに対応しています ——
+<strong>ノイズ入りトークンは最初から最後まで文脈に寄与しない</strong>。
+生成が終わればお役御免で、その位置には確定した潜在(あるいは ViT 特徴)が座り直します。
+だから次の生成ステップは、あたかも最初からその画像が入力として与えられていたかのように進みます。
+</p>
+<p>
+公開コードでこれを担うのが <code>InterleaveInferencer.update_context_image()</code> です。
+<a href="#context">前述</a>のとおり、生成された画像を次の文脈に入れるときは
+<code>timestep=0</code>(= ノイズなし)の VAE トークンとして積み直されます。
+</p>
+
 <h2 id="cfg">二重の CFG — 3 つの文脈を並走させる</h2>
 <p>
 BAGEL の guidance は 2 種類あります。
@@ -521,12 +548,37 @@ The planning process is enclosed within &lt;think&gt; &lt;/think&gt; tags, i.e. 
 LLM が書いた「計画」は<strong>そのまま KV キャッシュに積まれ、
 画像生成の 50 ステップすべてで attention の対象になります</strong>。
 外部拡散モデル方式なら、この計画は結局 CLIP テキスト埋め込みに圧縮し直さなければなりません。
-README のベンチマーク表で <code>BAGEL + CoT</code> が GenEval 0.82 → 0.88、
-WISE 0.52 → 0.70 と伸びているのは、この「考えたことがそのまま条件になる」構造の効果です。
+論文が報告する CoT の効果は、この「考えたことがそのまま条件になる」構造で説明できます。
 <br><br>
 なお生成された思考は <code>gen_context</code> にだけ足され、
 <code>cfg_text_context</code> / <code>cfg_img_context</code> には足されません。
 つまり<strong>思考の内容もまた CFG で強調される条件の一部</strong>になります。
+</div>
+
+<h3>Self-CoT で実際にどれだけ伸びるか</h3>
+<table>
+  <tr><th>ベンチマーク</th><th>測るもの</th><th>BAGEL</th><th>BAGEL w/ Self-CoT</th></tr>
+  <tr><td>WISE</td><td>世界知識を要する T2I</td><td>0.52</td><td><strong>0.70</strong></td></tr>
+  <tr><td>IntelligentBench</td><td>推論を要する編集</td><td>44.9</td><td><strong>55.3</strong></td></tr>
+  <tr><td>KRIS-Bench</td><td>知識ベースの編集</td><td>56.21</td><td><strong>60.18</strong></td></tr>
+  <tr><td>RISEBench</td><td>推論情報つき視覚編集</td><td>6.1</td><td><strong>11.9</strong></td></tr>
+</table>
+<p>
+とくに WISE の +0.18 は大きく、オープンソースの従来最高(MetaQuery-XL の 0.55)を
+大きく上回って 0.70 に達します。
+論文は、CoT なしでは短いプロンプトから正しい画像を作れないケースでも、
+思考を挟むと成功する例を示しています。
+</p>
+
+<div class="callout warn">
+<span class="callout-title">⚠️ よくある取り違え: GenEval の 0.82 → 0.88 は CoT の効果ではない</span>
+GenEval で BAGEL が報告する 2 つの数字 <strong>0.82</strong> と <strong>0.88</strong> は、
+<strong>LLM リライタ(プロンプト書き換え)の有無</strong>による差です(論文 Table 5 の <code>†</code> 印)。
+リライタなしの 0.82 でも、FLUX.1-dev(0.82・こちらはリライタあり)と並び、
+従来 SOTA の統一モデル Janus-Pro-7B(0.80)を上回ります。
+<strong>CoT の効果を示す数字は、上の表にある WISE / IntelligentBench / KRIS / RISE の方</strong>です。
+GenEval は物体数や色などの構図的な正確さを測るベンチマークで、
+世界知識や多段推論をあまり必要としないため、CoT の効きどころとは別物だと考えるのが自然です。
 </div>
 
 <h2 id="params">推論ハイパーパラメータ早見表</h2>

@@ -14,19 +14,44 @@ BAGEL は**外部の拡散モデルを一切持たず、LLM 本体が Rectified 
 |---|---|
 | `index.html` | 概要・全体アーキテクチャのアニメ図・NExT-GPT / CoDi-2 との系譜比較・章立て |
 | `architecture.html` | 二重視覚エンコーダ(ViT/VAE)/ MoT の 2 エキスパート / Generalized Causal Attention をテンソル形状を追って詳解 |
-| `training.html` | 4 ステージ学習、`sequence_plan` → パッキング、Rectified Flow の MSE と テキスト CE、CFG ドロップアウト、Diffusion Forcing |
+| `training.html` | 4 ステージ学習と論文 Table 3 のハイパーパラメータ、データ構成と採択比率、`sequence_plan` → パッキング、Rectified Flow の MSE と テキスト CE、CFG ドロップアウト、Diffusion Forcing、推論拡張データ |
 | `inference.html` | `generate_text` と `generate_image` の 2 ループ、KV キャッシュ再利用、二重 CFG と CFG-Renorm、think モード |
 
 - 対象コード: 公式リポジトリのコミット [`a2fa77d`](https://github.com/ByteDance-Seed/Bagel/tree/a2fa77dd8caeefc41e6607ae0ec17408d3f4ee9f)(Apache-2.0)
-- 参照した一次資料: 上記コード全体(`modeling/bagel/`, `data/`, `train/`, `inferencer.py`, `app.py`, `TRAIN.md`, `README.md`)
-- **論文本文は取得できなかった**: 作業環境のネットワーク制限で arxiv.org / huggingface.co / bagel-ai.org へ到達できず、
-  PDF を直接読めていない。そのため論文側の記述(4 ステージ構成、PT 2.5T / CT 2.6T トークン、
-  Alignment 段階の 378×378、Generalized Causal Attention と Diffusion Forcing の方針、
-  MoT vs Dense vs MoE のアブレーション、ViT+VAE 併用の効果)は、
-  **公式 README/TRAIN.md と複数の二次情報で一致が確認できた範囲に限定**して記載し、
-  ページ上でも出典を明示する callout を置いた。数値の細部は原論文の確認を要する。
+- 参照した一次資料: 上記コード全体(`modeling/bagel/`, `data/`, `train/`, `inferencer.py`, `app.py`, `TRAIN.md`, `README.md`)/
+  論文 [arXiv:2505.14683v3](https://arxiv.org/abs/2505.14683)(2025-07-27)本文
 - 設計方針(作成時の選択): 言語=日本語 / 深さ=コード+数式対応 / 図=CSS 自動ループ+ステップ操作
   / スタイルは CoDi-2 トピックの `assets/style.css` をそのまま複製(トピックを自己完結させる方針)
+
+## 論文とコードで食い違う点(両論併記した箇所)
+
+本シリーズの方針どおり、どちらかに寄せず両方をページ上に明記した。
+
+| 項目 | 論文 | 公開コードの既定値 | 記載場所 |
+|---|---|---|---|
+| 損失の重み | CE : MSE = **0.25 : 1**(Table 3) | `ce_weight = mse_weight = 1.0` | `index.html` / `training.html#losses` |
+| CFG ドロップアウト率 | text 0.1 / **ViT 0.5** / **clean VAE 0.1**(§2.3) | text 0.1 / ViT 0.3 / VAE 0.3 | `training.html#cfgdrop` |
+
+いずれも公開コードが「学習レシピそのもの」ではなく雛形として提供されていることに由来すると思われる。
+とくに CFG ドロップアウトは、論文設定では ViT を落とす確率が VAE の 5 倍で、
+「意味は無視するが画素は保つ」状況を重点的に経験させる設計になっており、
+コードの 0.3 / 0.3(対等)とは意味合いが異なる。
+
+## 論文がコードの「謎挙動」を説明してくれた箇所
+
+調査中にコードだけ読んで疑問符をつけていた 2 点は、論文 §2.3 を読むと**仕様どおり**だと判明した。
+コードの `split` が、論文でいう **group** に対応する。
+
+- **動画 split の attn モードが `'noise'` ではなく `'full'`** → “apply **full attention** within each group”。
+  後続フレームは先行フレームの**ノイジーな表現を条件にする**(diffusion forcing)ので、隠してはいけない
+- **同じ split 内のフレームが同じ timestep を共有する** → “**The noise level is the same inside each group**”
+
+論文の “adds independent noise levels to different images” と併せて読むと、
+**独立なのは group 間、共有されるのは group 内**という設計であることが分かる。
+group サイズが「1 枚ずつ独立」と「全部同じ」の中間を調整するつまみになっている。
+なお論文は “**randomly** group consecutive images” と書くが、
+公開されている `_add_video` は 1 クリップを丸ごと 1 group にするため、
+ランダムなグループ分割そのものはリリースされたデータコードには含まれていない。
 
 ## このトピック固有の読みどころ(調査で見つかった実装の癖)
 
@@ -45,10 +70,8 @@ BAGEL は**外部の拡散モデルを一切持たず、LLM 本体が Rectified 
 5. **`has_mse` と `mse_loss_indexes` は切り出し方が違う** — 予測は `mse_loss_indexes`、
    教師は `packed_timesteps > 0`。両者の一致はデータ側の不変条件
    (`loss==1` のときだけ `randn()`、それ以外は `-inf`)に依存している。自作データセットでは要注意。
-6. **動画 split は `'noise'` ではなく `'full'` になる** — `attn_modes.append` は `split_start` のみ実行され、
-   先頭フレームには `frame_delta` が付くため `'noise'` の条件を外れる。
-   結果ノイジーなフレームが後続から見え、これが diffusion forcing の実装になっている。
-   同時に、**同一 split 内のフレームは同じ timestep を共有する**(`timestep` が `split_start` でしか引き直されない)。
+6. **動画 split は `'noise'` ではなく `'full'` になり、split 内で timestep を共有する** —
+   上記「論文が説明してくれた箇所」を参照。コードの `split` = 論文の `group`。
 7. **`special_token_loss` は公開データコードで一度も 1 にならない** — パッカー側は
    `<|im_end|>` / `<|vision_end|>` にも CE を置ける作りだが、4 つのデータセット実装はすべて 0 固定。
    「いつ画像を出すか」をモデルに学ばせるフックが用意されているが未使用で、
@@ -64,6 +87,17 @@ BAGEL は**外部の拡散モデルを一切持たず、LLM 本体が Rectified 
 11. **テキスト生成中は Gen Expert が一度も動かない** — `generate_text` は `mode="und"` 固定。
     「14B のうち 7B が活性化」という表現の実体。
 12. **`vit_config.num_hidden_layers -= 1`** — `app.py` が SigLIP の最終層を 1 枚落として読み込む。
+13. **CE:MSE = 0.25:1 には理由がある** — 論文 §4.2 のアブレーションで
+    「学習率を上げると MSE は速く収束するが CE は悪化する」という綱引きが観測され、
+    学習率を一本化したまま損失側の重みで折り合いをつけた結果。
+14. **AdamW の `eps` が 1e-15** — 損失スパイクを抑えるため(論文 §4)。通常の 1e-8 より 7 桁小さい。
+15. **PT/CT/SFT の学習率スケジューラが Constant** — 「学習を再開せずにデータを足せるように」という理由が
+    論文に明記されている。実運用を意識した選択。
+16. **CT で timestep shift を 1.0 → 4.0 に上げる** — 解像度を上げると
+    適切なノイズレベル分布が変わるための調整。推論側の `timestep_shift`(既定 3.0)と同じ式。
+17. **emerging の定義が「損失に現れない」ことを前提にしている** — だから論文は
+    過去チェックポイントを掘り起こしてベンチマークを回し直すという方法を採っている。
+    85% 到達トークン数は 理解 0.18T / 生成 0.68T / 編集 2.64T / 知的編集 3.61T。
 
 ## 作成プロセス(他トピック作成時のテンプレート)
 
@@ -81,9 +115,12 @@ NExT-GPT / CoDi-2 の手順([CoDi-2/README.md](../CoDi-2/README.md))を踏襲。
    後者(素朴な行列版)を図解の下敷きにした
 4. **マスク図は手で描かず生成する** — 12×12 のマスク行列は Python で実際に構成し、
    その結果を SVG の `<rect>` 群として出力してページに埋めた(目視で描くと必ず間違える)
-5. 一次資料に到達できない場合は、**到達できなかったことをページに明記**する。
-   今回は arXiv・HuggingFace・プロジェクトページがすべて egress 制限で不達だったため、
-   コード由来の記述と論文由来の記述を明確に分けた
+5. **コードだけで説明できない挙動には印をつけて保留し、論文で答え合わせする**。
+   今回は作業環境の egress 制限で arXiv に到達できず、初稿はコード由来の記述と
+   二次情報由来の記述を分けて書いた。その後に論文本文を入手して全面的に突き合わせたところ、
+   保留していた 2 件(動画 split の attn モード / timestep 共有)は**仕様どおり**と判明し、
+   逆に**新たに 2 件の論文⇔コード不一致**(損失重み・CFG ドロップアウト率)が見つかった。
+   「分からないことを分からないまま書いておく」と、後から差分だけを直せる
 
 ### 2. ページ作成
 

@@ -123,7 +123,7 @@
     <text x="680" y="152" font-size="10.5" fill="#5b6478">生成データから高品質部分集合</text>
     <text x="680" y="176" font-size="10.5" fill="#5b6478">を作って仕上げ</text>
     <text x="680" y="200" font-size="10.5" fill="#5b6478">公開コードの fine-tuning 例も</text>
-    <text x="680" y="218" font-size="10.5" fill="#5b6478">この段階に相当(lr 2e-5)</text>
+    <text x="680" y="218" font-size="10.5" fill="#5b6478">この段階に相当(lr 2.5e-5)</text>
   </g>
 
   <text x="30" y="272" font-size="11.5" fill="#5b6478">論文が「emerging properties」と呼ぶのは、この過程で能力が<tspan font-weight="bold">段階的に立ち上がる</tspan>こと ——</text>
@@ -137,13 +137,96 @@
 </figcaption>
 </figure>
 
-<div class="callout warn">
+<div class="callout point">
 <span class="callout-title">出典について</span>
-ステージ構成とトークン数は<strong>論文側の記述</strong>です(本解説の作業環境では PDF を直接取得できず、
-公式 README・TRAIN.md と複数の二次情報で一致が確認できた範囲に限って記載しています)。
+ステージ構成・トークン数・ハイパーパラメータは論文 Table 3 の値です。
 以降のコードの説明はすべて、クローンした
 <a href="https://github.com/ByteDance-Seed/Bagel/tree/a2fa77dd8caeefc41e6607ae0ec17408d3f4ee9f" target="_blank" rel="noopener">コミット <code>a2fa77d</code></a>
-の実ファイルからの引用です。
+の実ファイルからの引用です。<strong>両者が食い違う箇所は都度 ⚠️ で明示します</strong>
+(本ページでは <a href="#losses">損失の重み</a> と <a href="#cfgdrop">CFG ドロップアウト率</a> の 2 件)。
+</div>
+
+<h3>論文 Table 3 の主要ハイパーパラメータ</h3>
+<table>
+  <tr><th></th><th>Alignment</th><th>PT</th><th>CT</th><th>SFT</th></tr>
+  <tr><th>学習率</th><td>1×10⁻³</td><td>1×10⁻⁴</td><td>1×10⁻⁴</td><td>2.5×10⁻⁵</td></tr>
+  <tr><th>スケジューラ</th><td>Cosine</td><td colspan="3">Constant(<strong>データを足しても学習を再開せずに済むよう</strong>定数にしている)</td></tr>
+  <tr><th>損失重み (CE : MSE)</th><td>—</td><td colspan="3"><strong>0.25 : 1</strong></td></tr>
+  <tr><th>学習ステップ</th><td>5K</td><td>200K</td><td>100K</td><td>15K</td></tr>
+  <tr><th>累積トークン</th><td>4.9B</td><td><strong>2.5T</strong></td><td><strong>2.6T</strong></td><td>72.7B</td></tr>
+  <tr><th>EMA 減衰</th><td>—</td><td>0.9999</td><td>0.9999</td><td>0.995</td></tr>
+  <tr><th>rank ごとの系列長</th><td colspan="2">32K–36K</td><td colspan="2">40K–45K</td></tr>
+  <tr><th>最大文脈長</th><td>16K</td><td>16K</td><td>40K</td><td>40K</td></tr>
+  <tr><th>生成解像度<br>(短辺下限, 長辺上限)</th><td>—</td><td>(256, 512)</td><td>(512, 1024)</td><td>(512, 1024)</td></tr>
+  <tr><th>理解解像度</th><td>(378, 378)</td><td>(224, 980)</td><td>(378, 980)</td><td>(378, 980)</td></tr>
+  <tr><th>拡散 timestep shift</th><td>—</td><td>1.0</td><td><strong>4.0</strong></td><td><strong>4.0</strong></td></tr>
+</table>
+<p>
+最適化は全ステージ AdamW(\(\beta_1{=}0.9,\ \beta_2{=}0.95\))。
+特徴的なのは <strong>\(\epsilon = 1{\times}10^{-15}\)</strong> という極端に小さな値で、
+論文はこれを<strong>損失スパイクを抑えるため</strong>だと説明しています。
+また CT 以降で解像度を上げる際、<strong>timestep shift も 1.0 から 4.0 に上げています</strong> ——
+解像度が上がるとトークン数が増え、同じノイズ量でも実質的な難易度が変わるため、
+「適切なノイズレベル分布を保つ」ための調整です
+(<a href="inference.html#image">生成編</a>で見る推論時の <code>timestep_shift</code> と同じ式です)。
+</p>
+
+<h2 id="data">何を、どれだけ食わせたか</h2>
+<p>
+論文 Table 1 のデータ統計です。<strong>灰色で示された 3 行が interleaved データ</strong>で、
+BAGEL の「複雑な編集能力」を支えているのはここだと論文は主張しています。
+</p>
+<table>
+  <tr><th>データ種別</th><th>件数</th><th>トークン数</th></tr>
+  <tr><td>テキストのみ</td><td>400M</td><td>0.4T</td></tr>
+  <tr><td>画像テキスト対(理解用)</td><td>500M</td><td>0.5T</td></tr>
+  <tr><td>画像テキスト対(生成用)</td><td>1600M</td><td>2.6T</td></tr>
+  <tr><td><strong>interleaved 理解データ</strong></td><td>100M</td><td>0.5T</td></tr>
+  <tr><td><strong>interleaved 生成データ: 動画由来</strong></td><td>45M</td><td>0.7T</td></tr>
+  <tr><td><strong>interleaved 生成データ: web 由来</strong></td><td>20M</td><td>0.4T</td></tr>
+</table>
+
+<h3>ステージごとのサンプリング比率</h3>
+<p>
+同じデータ集合でも、ステージごとに<strong>引く確率</strong>を変えていきます(論文 Table 3)。
+</p>
+<table>
+  <tr><th>データ</th><th>Alignment</th><th>PT</th><th>CT</th><th>SFT</th></tr>
+  <tr><td>テキスト</td><td>0.0</td><td>0.05</td><td>0.05</td><td>0.05</td></tr>
+  <tr><td>画像テキスト対(T2I)</td><td>0.0</td><td>0.6</td><td>0.4</td><td>0.3</td></tr>
+  <tr><td>画像テキスト対(I2T)</td><td><strong>1.0</strong></td><td>0.1</td><td>0.1</td><td>0.05</td></tr>
+  <tr><td><strong>interleaved 理解</strong></td><td>0.0</td><td>0.1</td><td>0.15</td><td>0.2</td></tr>
+  <tr><td><strong>interleaved 生成: 動画</strong></td><td>0.0</td><td>0.1</td><td>0.15</td><td>0.2</td></tr>
+  <tr><td><strong>interleaved 生成: web</strong></td><td>0.0</td><td>0.05</td><td>0.15</td><td>0.2</td></tr>
+  <tr><td colspan="5" style="text-align:left"><em>interleaved 系の合計</em>: 0.0 → <strong>0.25</strong> → <strong>0.45</strong> → <strong>0.6</strong></td></tr>
+</table>
+<p>
+段階が進むほど interleaved の比率が上がっていくのが一目で分かります。
+Alignment では I2T(画像→テキスト)だけ、PT では T2I が 6 割を占め、
+CT・SFT で interleaved に重心が移る —— という設計です。
+</p>
+
+<div class="callout math">
+<span class="callout-title">なぜ生成データを多めに引くのか(論文 §4.1)</span>
+論文は 1.5B モデルで、生成データと理解データの比率を振るアブレーションを行っています。
+生成の比率を 50%(1g1u)から 80%(4g1u)に上げると <strong>MSE 損失は一貫して下がり、
+絶対値で 0.4% の改善</strong>(rectified flow では実用上かなり大きい差)。
+一方 CE 損失には一貫した傾向が見られず、最大の差でも 0.07 で下流ベンチマークへの影響は無視できる ——
+だから<strong>生成サンプルは理解サンプルよりずっと多く引くべきだ</strong>、というのが結論です。
+Table 3 の比率(PT で T2I 0.6 対 I2T 0.1)は、この知見の反映です。
+</div>
+
+<div class="callout math">
+<span class="callout-title">なぜ CE : MSE = 0.25 : 1 なのか(論文 §4.2)</span>
+学習率のアブレーションでは、2 つの損失が<strong>正反対の反応</strong>を示しました ——
+<strong>学習率を上げると MSE の収束は速くなるが、CE は悪化する</strong>。
+1 つの学習率で両方を満足させることはできません。
+そこで著者らは学習率を一本化したまま、<strong>損失側に別々の重みを割り当てて</strong>この綱引きに折り合いをつけました。
+これが Table 3 の 0.25 : 1 です。
+<br><br>
+<span style="color:#e07b1f">⚠️</span> なお<strong>公開コードの既定値は
+<code>ce_weight = mse_weight = 1.0</code></strong> で、論文のレシピとは異なります。
+再現を試みる場合は <code>--ce-weight 0.25</code> 相当の指定が要ります。
 </div>
 
 <h2 id="seq">データがシーケンスになるまで</h2>
@@ -604,7 +687,7 @@ Rectified Flow の学習。拡散モデルの複雑なノイズスケジュー�
   <tr>
     <td>\(\lambda_{\text{ce}},\ \lambda_{\text{mse}}\)</td>
     <td><code>ce_weight</code>, <code>mse_weight</code></td>
-    <td>どちらも既定 <strong>1.0</strong></td>
+    <td>コードの既定はどちらも <strong>1.0</strong>。<span style="color:#e07b1f">⚠️</span> ただし論文 Table 3 の学習レシピは <strong>0.25 : 1</strong></td>
   </tr>
   <tr>
     <td>正規化</td>
@@ -631,14 +714,28 @@ MSE 損失は「生成器への入力を模倣する」ためではなく、
 BAGEL は条件の種類ごとに独立した確率を持ちます。
 </p>
 <table>
-  <tr><th>引数</th><th>既定値</th><th>落とすもの</th><th>推論時の対応物</th></tr>
-  <tr><td><code>text_cond_dropout_prob</code></td><td>0.1</td><td>テキストブロックを丸ごとスキップ</td><td><code>cfg_text_scale</code></td></tr>
-  <tr><td><code>vae_cond_dropout_prob</code></td><td>0.3</td><td>条件用 clean VAE ブロックをスキップ</td><td rowspan="2"><code>cfg_img_scale</code></td></tr>
-  <tr><td><code>vit_cond_dropout_prob</code></td><td>0.3</td><td>ViT ブロックをスキップ</td></tr>
+  <tr><th>引数</th><th>コードの既定値</th><th>論文 §2.3</th><th>落とすもの</th><th>推論時の対応物</th></tr>
+  <tr><td><code>text_cond_dropout_prob</code></td><td>0.1</td><td>0.1</td><td>テキストブロックを丸ごとスキップ</td><td><code>cfg_text_scale</code></td></tr>
+  <tr><td><code>vit_cond_dropout_prob</code></td><td>0.3</td><td><strong>0.5</strong></td><td>ViT ブロックをスキップ</td><td rowspan="2"><code>cfg_img_scale</code></td></tr>
+  <tr><td><code>vae_cond_dropout_prob</code></td><td>0.3</td><td><strong>0.1</strong></td><td>条件用 clean VAE ブロックをスキップ</td></tr>
 </table>
+
+<div class="callout warn">
+<span class="callout-title">⚠️ 論文とコードで数字が食い違う</span>
+論文 §2.3 は
+“we randomly drop <strong>text, ViT, and clean VAE tokens</strong> with probabilities
+<strong>0.1, 0.5, and 0.1</strong>, respectively”
+と明記していますが、公開コードの既定値は ViT / VAE ともに <code>0.3</code> です。
+<br><br>
+差の意味は小さくありません。論文の設定では
+<strong>ViT(意味)を落とす確率が VAE(画素)の 5 倍</strong>で、
+「元画像の意味は無視するが画素は保つ」状況を重点的に経験させることになります。
+コードの 0.3 / 0.3 は両者を対等に扱う設定です。
+公開コードは学習レシピそのものではなく雛形として提供されているので、
+論文の再現を狙うなら <code>--vit-cond-dropout-prob 0.5 --vae-cond-dropout-prob 0.1</code> を明示するのが安全です。
+</div>
+
 <p>
-画像条件の方が落とす確率が高い(0.3)のは、
-<strong>編集タスクで「元画像を無視した生成」も同じくらい経験させたい</strong>からだと読めます。
 実装では単に <code>continue</code> でブロックを列から外すだけですが、
 <code>curr_rope_id += 1</code> だけは実行して<strong>位置 ID は進めます</strong> ——
 落としても後続の位置がずれない、という配慮です。
@@ -665,24 +762,104 @@ BAGEL は条件の種類ごとに独立した確率を持ちます。
                     current_sequence_plan['frame_delta'] = frame_indexes[idx + 1] - frame_idx</code></pre>
 </div>
 
-<div class="callout warn">
-<span class="callout-title">⚠️ コードを読むと分かる 2 つの副作用</span>
-<strong>①動画 split の attention モードは <code>'noise'</code> ではなく <code>'full'</code> になります。</strong>
-<code>attn_modes.append</code> は <code>split_start</code> のときだけ実行され、
-その先頭フレームには <code>frame_delta</code> が付いているため、
-<code>if item['loss'] == 1 and 'frame_delta' not in item.keys()</code> の条件を外れるからです。
-結果、<strong>ノイズ入りのフレームが後続フレームから見える</strong>状態になります ——
-これは論文が言う diffusion forcing(先行フレームのノイジーな表現を条件に次を予測する)そのものです。
+<div class="callout point">
+<span class="callout-title">論文 §2.3 が定める diffusion forcing</span>
+“For interleaved multi-image generation, we adopt the <strong>diffusion forcing</strong> strategy,
+which adds <strong>independent noise levels to different images</strong> and
+<strong>conditions each image on noisy representations of preceding images</strong>.
+Additionally, to enhance generation consistency, we randomly <strong>group</strong> consecutive images
+and apply <strong>full attention within each group</strong>.
+<strong>The noise level is the same inside each group.</strong>”
+</div>
+
+<p>
+この一段落を読んでからコードに戻ると、一見不可解だった 2 つの挙動がぴたりと説明できます。
+<strong>コードの「split」は、論文でいう「group」そのもの</strong>です。
+</p>
+
+<table>
+  <tr><th>コードの挙動</th><th>なぜそうなるか</th><th>論文での対応</th></tr>
+  <tr>
+    <td>動画 split の attn モードが <code>'noise'</code> ではなく <code>'full'</code> になる</td>
+    <td><code>attn_modes.append</code> は <code>split_start</code> のときだけ実行され、
+    先頭フレームには <code>frame_delta</code> が付くので
+    <code>'frame_delta' not in item.keys()</code> の条件を外れる</td>
+    <td>“apply <strong>full attention</strong> within each group”/
+    後続は<strong>ノイジーな表現を条件にする</strong>ので、隠してはいけない</td>
+  </tr>
+  <tr>
+    <td>同じ split 内のフレームが<strong>同じ時刻 \(t\)</strong> を共有する</td>
+    <td><code>timestep = np.random.randn()</code> が <code>split_start</code> のときだけ実行され、
+    2 フレーム目以降は直前の値を使い回す</td>
+    <td>“The noise level is <strong>the same inside each group</strong>”</td>
+  </tr>
+</table>
+
+<div class="callout point">
+<span class="callout-title">「独立なノイズレベル」はどの単位か</span>
+論文の “independent noise levels to different images” と
+“the noise level is the same inside each group” は一見矛盾して読めますが、
+<strong>独立なのは group 間、共有されるのは group 内</strong>と読むと整合します。
+コードもまさにそうなっており、<code>split_start</code> ごとに新しい \(t\) が引かれます。
 <br><br>
-<strong>②同じ split 内のフレームは同じ時刻 \(t\) を共有します。</strong>
-<code>timestep = np.random.randn()</code> が <code>split_start</code> のときだけ実行され、
-2 フレーム目以降は直前の値を使い回すためです。
-「フレームごとに独立なノイズレベル」を期待して読むと食い違うので、
-自前の動画データを足すときはここを確認してください。
-<br><br>
-また <code>frame_delta</code> は RoPE の位置 ID を<strong>実際のフレーム間隔だけ進める</strong>のに使われます
+つまり「1 枚ずつ違うノイズを載せる」のが極端側、「全部同じ」がもう一方の極端側で、
+<strong>group のサイズがその中間を連続的に調整するつまみ</strong>になっている、という設計です。
+論文が “randomly group” と書いているとおり、この分割はランダムに決まります
+(公開されている <code>_add_video</code> は 1 クリップを丸ごと 1 group にするので、
+ランダムなグループ分割そのものはリリースされたデータコードには含まれていません)。
+</div>
+
+<p>
+なお <code>frame_delta</code> は RoPE の位置 ID を<strong>実際のフレーム間隔だけ進める</strong>のに使われます
 (<code>curr_rope_id += item['frame_delta']</code>)。
 飛ばしてサンプリングしたフレーム列でも、時間的な距離が位置符号に反映されます。
+</p>
+
+<h2 id="reasoning">Think モードを支える推論拡張データ</h2>
+<p>
+<a href="inference.html#think">生成編</a>で見る「まず考えてから描く」モードは、
+専用に作られた <strong>50 万件の推論拡張データ</strong>によって学習されます(論文 §3.3.4)。
+著者の仮説は明快で、
+<strong>「画像生成の前に言語で推論させると、視覚的な目標が明確になり計画が改善するのではないか」</strong>。
+</p>
+<table>
+  <tr><th>カテゴリ</th><th>作り方</th></tr>
+  <tr>
+    <td><strong>Text-to-Image</strong></td>
+    <td>まず<strong>曖昧で短い</strong>クエリを人手で用意し、in-context learning で Qwen2.5-72B に
+    「クエリ・生成指針・詳細プロンプト」の組を量産させる。詳細プロンプトを FLUX.1-dev に渡して目標画像を作り、
+    <em>(クエリ, 推論トレース, 画像)</em> の三つ組にする</td>
+  </tr>
+  <tr>
+    <td><strong>Free-form image manipulation</strong></td>
+    <td>元画像・目標画像・ユーザクエリを VLM に与え、DeepSeek-R1 が書いた推論トレースを手本として
+    推論文を生成させる。素材は OmniEdit などの編集データと、
+    <strong>動画 interleaved データ</strong>(大きな動き・視点変化・人物の相互作用が自然に含まれる)から取る</td>
+  </tr>
+  <tr>
+    <td><strong>Conceptual edits</strong></td>
+    <td>「物体をデザインスケッチに変換する」のような、画素の局所変更では済まない高次の変換。
+    web interleaved データから画像対を選び、VLM の 3 段パイプライン
+    (①もっともらしい入出力対を選ぶ → ②対応する質問文を作る → ③品質と整合性を審査して捨てる)で QA を構築する</td>
+  </tr>
+</table>
+<p>
+推論トレースの長さには上限が課されていて、free-form manipulation では
+<strong>「60 トークン程度かそれ以下」</strong>、conceptual edits では
+<strong>「200 トークン程度かそれ以下」</strong>と、生成用プロンプトの中で明示的に指示されています
+(論文 Table 11–13)。長く語らせるのではなく、
+<strong>「何を変え、何を保つか」を短く言い切らせる</strong>のが狙いだと読めます。
+</p>
+<div class="callout point">
+<span class="callout-title">推論トレースの中身は「差分の言語化」</span>
+論文が例示するプロンプトは、VLM に対してこう指示しています ——
+“The reasoning/analysis should include <strong>what should be changed</strong> in the answer image
+compared to the question image and <strong>what should be kept the same</strong>.
+The reasoning should highlight that <strong>the input image structure and layout should be kept the same</strong>.”
+<br><br>
+つまり教えているのは推論一般ではなく、<strong>編集タスク特有の「差分の記述」</strong>です。
+これが <a href="inference.html#think">think モード</a>で
+「文脈に足される計画」の正体になります。
 </div>
 
 <h2 id="packing">シーケンスパッキング — バッチの正体</h2>
