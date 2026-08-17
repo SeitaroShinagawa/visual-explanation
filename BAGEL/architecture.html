@@ -1,0 +1,792 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BAGEL 1. アーキテクチャ詳解 — MoT・二重エンコーダ・一般化因果注意</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🥯</text></svg>">
+<link rel="stylesheet" href="assets/style.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/themes/prism-tomorrow.min.css">
+<style>
+/* ===== dual encoder diagram (10s) ===== */
+#dualenc .d1 { animation: de-turn 10s ease-in-out infinite backwards; }
+#dualenc .d2 { animation: de-turn 10s ease-in-out infinite backwards; animation-delay: 5s; }
+@keyframes de-turn {
+  0%, 2% { opacity: 0.3; }
+  7%, 45% { opacity: 1; }
+  50%, 100% { opacity: 0.3; }
+}
+
+/* ===== MoT routing diagram (12s, 4 steps) ===== */
+@keyframes mot-step {
+  0%, 22%, 100% { opacity: 0.32; }
+  4%, 18% { opacity: 1; }
+}
+#motflow .m1 { animation: mot-step 12s ease-in-out infinite backwards; animation-delay: 0s; }
+#motflow .m2 { animation: mot-step 12s ease-in-out infinite backwards; animation-delay: 3s; }
+#motflow .m3 { animation: mot-step 12s ease-in-out infinite backwards; animation-delay: 6s; }
+#motflow .m4 { animation: mot-step 12s ease-in-out infinite backwards; animation-delay: 9s; }
+
+/* ===== attention mask diagram (12s, 4 row groups) ===== */
+@keyframes mask-row {
+  0%, 22%, 100% { opacity: 0.22; }
+  4%, 18% { opacity: 1; }
+}
+#maskgrid .r1 { animation: mask-row 12s ease-in-out infinite backwards; animation-delay: 0s; }
+#maskgrid .r2 { animation: mask-row 12s ease-in-out infinite backwards; animation-delay: 3s; }
+#maskgrid .r3 { animation: mask-row 12s ease-in-out infinite backwards; animation-delay: 6s; }
+#maskgrid .r4 { animation: mask-row 12s ease-in-out infinite backwards; animation-delay: 9s; }
+#maskgrid .n1 { animation: mask-row 12s ease-in-out infinite backwards; animation-delay: 0s; }
+#maskgrid .n2 { animation: mask-row 12s ease-in-out infinite backwards; animation-delay: 3s; }
+#maskgrid .n3 { animation: mask-row 12s ease-in-out infinite backwards; animation-delay: 6s; }
+#maskgrid .n4 { animation: mask-row 12s ease-in-out infinite backwards; animation-delay: 9s; }
+
+@media (prefers-reduced-motion: reduce) {
+  #dualenc .d1, #dualenc .d2 { opacity: 1; }
+  #motflow .m1, #motflow .m2, #motflow .m3, #motflow .m4 { opacity: 1; }
+  #maskgrid .r1, #maskgrid .r2, #maskgrid .r3, #maskgrid .r4,
+  #maskgrid .n1, #maskgrid .n2, #maskgrid .n3, #maskgrid .n4 { opacity: 1; }
+}
+</style>
+</head>
+<body>
+
+<nav class="topnav">
+  <a class="home-link" href="../index.html">Visual Explanation</a><span class="sep">/</span>
+  <a href="./index.html">BAGEL 概要</a>
+  <a href="architecture.html" class="current">1. アーキテクチャ</a>
+  <a href="training.html">2. 学習プロセス</a>
+  <a href="inference.html">3. 生成プロセス</a>
+</nav>
+
+<header class="page-header">
+  <h1>1. アーキテクチャ詳解</h1>
+  <p>BAGEL の設計を支える 3 つの仕掛け ——
+  <strong>二重の視覚エンコーダ</strong>・<strong>Mixture-of-Transformer-Experts</strong>・
+  <strong>Generalized Causal Attention</strong> を、テンソル形状とコードで確認します。</p>
+</header>
+
+<main class="article">
+
+<h2 id="birdseye">まず全体の骨格</h2>
+<p>
+<code>Bagel.__init__</code> を読むと、このモデルが何を持っているかが 30 行で分かります。
+生成用(<code>visual_gen</code>)と理解用(<code>visual_und</code>)が独立したフラグになっていて、
+それぞれが自分用の部品を足していく構造です。
+</p>
+
+<div class="codeblock">
+<div class="codehead"><span class="path">modeling/bagel/bagel.py</span> L61–99
+<a href="https://github.com/ByteDance-Seed/Bagel/blob/a2fa77dd8caeefc41e6607ae0ec17408d3f4ee9f/modeling/bagel/bagel.py#L61-L99" target="_blank" rel="noopener">GitHub ↗</a></div>
+<pre><code class="language-python">class Bagel(PreTrainedModel):
+    def __init__(self, language_model, vit_model, config: BagelConfig):
+        super().__init__(config)
+        self.language_model = language_model
+        self.hidden_size = config.llm_config.hidden_size
+        self.use_moe = "Mo" in config.llm_config.layer_module   # ← MoT を使うかの判定
+        self.num_heads = config.llm_config.num_attention_heads
+
+        if config.visual_gen:                                    # ===== 生成側 =====
+            self.latent_patch_size = config.latent_patch_size    # 2
+            self.timestep_shift = config.timestep_shift
+            self.latent_downsample = config.vae_config.downsample * config.latent_patch_size  # 8*2 = 16
+            self.max_latent_size = config.max_latent_size        # 64
+            self.latent_channel = config.vae_config.z_channels   # 16
+            self.patch_latent_dim = self.latent_patch_size ** 2 * self.latent_channel  # 2^2*16 = 64
+            self.time_embedder = TimestepEmbedder(self.hidden_size)
+            self.vae2llm = nn.Linear(self.patch_latent_dim, self.hidden_size)   # 64  → hidden
+            self.llm2vae = nn.Linear(self.hidden_size, self.patch_latent_dim)   # hidden → 64
+            self.latent_pos_embed = PositionEmbedding(self.max_latent_size, self.hidden_size)
+
+        if config.visual_und:                                    # ===== 理解側 =====
+            self.vit_model = vit_model
+            self.vit_patch_size = config.vit_config.patch_size          # 14
+            self.vit_max_num_patch_per_side = config.vit_max_num_patch_per_side  # 70
+            self.vit_hidden_size = config.vit_config.hidden_size
+            self.connector = MLPconnector(self.vit_hidden_size, self.hidden_size, config.connector_act)
+            self.vit_pos_embed = PositionEmbedding(self.vit_max_num_patch_per_side, self.hidden_size)
+        ...
+
+    def _init_weights(self):
+        if self.config.visual_gen:
+            nn.init.constant_(self.llm2vae.weight, 0)   # ← 出力ヘッドをゼロ初期化
+            nn.init.constant_(self.llm2vae.bias, 0)</code></pre>
+</div>
+
+<div class="callout point">
+<span class="callout-title">ここで読み取れること</span>
+LLM と外界をつなぐ部品は<strong>たった 3 つの線形層</strong>です:
+<code>vae2llm</code>(潜在→LLM)・<code>llm2vae</code>(LLM→潜在)・<code>connector</code>(ViT→LLM)。
+NExT-GPT や CoDi-2 の「射影 MLP」と同じ役回りに見えますが、決定的に違う点があります ——
+<strong>その先に別のモデルが待っていない</strong>。<code>llm2vae</code> の出力は拡散モデルへの条件ではなく、
+<strong>拡散過程そのものの予測値(速度場)</strong>です。
+<br><br>
+そして <code>llm2vae</code> は<strong>ゼロ初期化</strong>されています。
+学習開始時、モデルが予測する速度場は恒等的に 0 —— つまり
+「何もしない」状態から学習が始まります。
+DiT 系でおなじみの、残差ブランチをゼロから立ち上げる作法がここでも使われています。
+</div>
+
+<h2 id="dual">1. 二重の視覚エンコーダ — 同じ画像を 2 回符号化する</h2>
+<p>
+BAGEL は 1 枚の画像を<strong>2 つの経路で別々にトークン化</strong>します。
+</p>
+
+<figure class="diagram" id="dualenc" data-cycle-ms="10000" data-step-count="2">
+<svg viewBox="0 0 900 330" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="ViT経路とVAE経路の二重エンコーダ図">
+  <defs>
+    <marker id="arrd" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#8a93ad"/>
+    </marker>
+  </defs>
+
+  <rect x="20" y="130" width="90" height="70" rx="9" fill="#f2f4fa" stroke="#c2c9db" stroke-width="2"/>
+  <text x="65" y="160" font-size="20" text-anchor="middle">🖼️</text>
+  <text x="65" y="182" font-size="10" text-anchor="middle" fill="#5b6478">同じ 1 枚</text>
+
+  <!-- ViT path -->
+  <g class="d1">
+    <path d="M 112 150 C 130 150, 134 80, 152 80" fill="none" stroke="#3556d4" stroke-width="2" marker-end="url(#arrd)"/>
+    <text x="196" y="34" font-size="13" font-weight="bold" fill="#3556d4">経路 A: 意味レベル(理解のため)</text>
+    <rect x="156" y="52" width="150" height="56" rx="9" fill="#e5eafc" stroke="#3556d4" stroke-width="2"/>
+    <text x="231" y="74" font-size="11.5" text-anchor="middle" fill="#3556d4" font-weight="bold">リサイズ + patchify</text>
+    <text x="231" y="92" font-size="10" text-anchor="middle" class="mono" fill="#5b6478">最大 980px / patch 14</text>
+    <path d="M 308 80 L 340 80" fill="none" stroke="#8a93ad" stroke-width="2" marker-end="url(#arrd)"/>
+    <rect x="344" y="52" width="150" height="56" rx="9" fill="#fff" stroke="#3556d4" stroke-width="2"/>
+    <text x="419" y="74" font-size="11.5" text-anchor="middle" fill="#3556d4" font-weight="bold">SigLIP ViT (NaViT)</text>
+    <text x="419" y="92" font-size="10" text-anchor="middle" fill="#5b6478">可変解像度・パック入力</text>
+    <path d="M 496 80 L 528 80" fill="none" stroke="#8a93ad" stroke-width="2" marker-end="url(#arrd)"/>
+    <rect x="532" y="52" width="150" height="56" rx="9" fill="#e5eafc" stroke="#3556d4" stroke-width="2"/>
+    <text x="607" y="74" font-size="11.5" text-anchor="middle" fill="#3556d4" font-weight="bold">connector (2 層 MLP)</text>
+    <text x="607" y="92" font-size="10" text-anchor="middle" class="mono" fill="#5b6478">vit_hidden → hidden</text>
+    <path d="M 684 80 L 716 80" fill="none" stroke="#8a93ad" stroke-width="2" marker-end="url(#arrd)"/>
+    <rect x="720" y="52" width="160" height="56" rx="9" fill="#efe6fb" stroke="#7b46c9" stroke-width="2"/>
+    <text x="800" y="74" font-size="11.5" text-anchor="middle" fill="#7b46c9" font-weight="bold">Und Expert が処理</text>
+    <text x="800" y="92" font-size="10" text-anchor="middle" fill="#5b6478">テキストと同じ重み</text>
+    <text x="156" y="126" font-size="10.5" fill="#5b6478">「何が写っているか」を担当。生成対象にはならず、条件としてのみ使われる。</text>
+  </g>
+
+  <!-- VAE path -->
+  <g class="d2">
+    <path d="M 112 180 C 130 180, 134 250, 152 250" fill="none" stroke="#1e9e6a" stroke-width="2" marker-end="url(#arrd)"/>
+    <text x="196" y="204" font-size="13" font-weight="bold" fill="#1e9e6a">経路 B: ピクセルレベル(生成のため)</text>
+    <rect x="156" y="222" width="150" height="56" rx="9" fill="#e0f5ec" stroke="#1e9e6a" stroke-width="2"/>
+    <text x="231" y="244" font-size="11.5" text-anchor="middle" fill="#1e9e6a" font-weight="bold">リサイズ(stride 16)</text>
+    <text x="231" y="262" font-size="10" text-anchor="middle" class="mono" fill="#5b6478">512〜1024px</text>
+    <path d="M 308 250 L 340 250" fill="none" stroke="#8a93ad" stroke-width="2" marker-end="url(#arrd)"/>
+    <rect x="344" y="222" width="150" height="56" rx="9" fill="#fff" stroke="#1e9e6a" stroke-width="2"/>
+    <text x="419" y="244" font-size="11.5" text-anchor="middle" fill="#1e9e6a" font-weight="bold">FLUX VAE encoder 🧊</text>
+    <text x="419" y="262" font-size="10" text-anchor="middle" class="mono" fill="#5b6478">H/8 × W/8 × 16ch</text>
+    <path d="M 496 250 L 528 250" fill="none" stroke="#8a93ad" stroke-width="2" marker-end="url(#arrd)"/>
+    <rect x="532" y="222" width="150" height="56" rx="9" fill="#e0f5ec" stroke="#1e9e6a" stroke-width="2"/>
+    <text x="607" y="244" font-size="11.5" text-anchor="middle" fill="#1e9e6a" font-weight="bold">2×2 パッチ化 + vae2llm</text>
+    <text x="607" y="262" font-size="10" text-anchor="middle" class="mono" fill="#5b6478">64 → hidden</text>
+    <path d="M 684 250 L 716 250" fill="none" stroke="#8a93ad" stroke-width="2" marker-end="url(#arrd)"/>
+    <rect x="720" y="222" width="160" height="56" rx="9" fill="#fbe4e8" stroke="#d43d51" stroke-width="2"/>
+    <text x="800" y="244" font-size="11.5" text-anchor="middle" fill="#d43d51" font-weight="bold">Gen Expert が処理</text>
+    <text x="800" y="262" font-size="10" text-anchor="middle" fill="#5b6478">専用の重み</text>
+    <text x="156" y="298" font-size="10.5" fill="#5b6478">「どんな画素だったか」を担当。条件にもなり、ノイズを載せれば生成対象にもなる。</text>
+  </g>
+
+  <text x="20" y="220" font-size="10.5" fill="#d43d51" font-weight="bold">画像編集では</text>
+  <text x="20" y="236" font-size="10.5" fill="#d43d51" font-weight="bold">両方を使う</text>
+</svg>
+<figcaption>
+論文が報告するアブレーションでは、<strong>ViT と VAE を組み合わせることで「知的な編集」の性能が大きく伸びる</strong>とされています。
+ピクセルだけでは「何を意味する編集か」が分からず、意味だけでは「元の画素をどう保つか」が分からない、ということです。
+</figcaption>
+</figure>
+
+<h3>解像度と語数の対応</h3>
+<p>
+2 つの経路は<strong>数字がきれいに噛み合うよう</strong>に設計されています。
+</p>
+<table>
+  <tr><th></th><th>ViT 経路</th><th>VAE 経路</th></tr>
+  <tr><th>前処理(<code>app.py</code>)</th>
+    <td><code>ImageTransform(980, 224, 14)</code></td>
+    <td><code>ImageTransform(1024, 512, 16)</code></td></tr>
+  <tr><th>1 トークンが担う画素</th>
+    <td>14 × 14(patch_size)</td>
+    <td>16 × 16(VAE の 8× 圧縮 × 2×2 パッチ)</td></tr>
+  <tr><th>最大の辺</th>
+    <td>980 px → 980/14 = <strong>70</strong> パッチ</td>
+    <td>1024 px → 1024/16 = <strong>64</strong> パッチ</td></tr>
+  <tr><th>設定値の上限</th>
+    <td><code>vit_max_num_patch_per_side = 70</code></td>
+    <td><code>max_latent_size = 64</code></td></tr>
+  <tr><th>1024×1024 画像のトークン数</th>
+    <td>(980×980 に縮小して)70×70 = <strong>4900</strong></td>
+    <td>64×64 = <strong>4096</strong></td></tr>
+</table>
+<p>
+つまり <code>vit_max_num_patch_per_side</code> も <code>max_latent_size</code> も、
+「その解像度で許される 1 辺あたりのパッチ数」そのものです。
+どちらも <code>PositionEmbedding</code> の 2D sin-cos テーブルの 1 辺として使われます
+(<code>PositionEmbedding(64, hidden)</code> なら 64²=4096 行のテーブル)。
+</p>
+
+<div class="callout warn">
+<span class="callout-title">⚠️ 微妙だが重要な点: 画像は「1 つの RoPE 位置」しか占めない</span>
+シーケンス上の位置符号(RoPE 用の <code>packed_position_ids</code>)は、
+<strong>画像 1 枚につき 1 個</strong>しか進みません。4096 個の潜在トークン全部が<strong>同じ位置 ID</strong>を共有します。
+<div class="codeblock" style="margin-top:0.8rem">
+<div class="codehead"><span class="path">data/dataset_base.py</span> L454(vae_image 分岐の末尾)
+<a href="https://github.com/ByteDance-Seed/Bagel/blob/a2fa77dd8caeefc41e6607ae0ec17408d3f4ee9f/data/dataset_base.py#L454" target="_blank" rel="noopener">GitHub ↗</a></div>
+<pre><code class="language-python">sequence_status['packed_position_ids'].extend([curr_rope_id] * (num_img_tokens + 2))</code></pre>
+</div>
+画像内部の位置関係は RoPE ではなく、<strong>足し算される 2D sin-cos 埋め込み</strong>
+(<code>latent_pos_embed</code> / <code>vit_pos_embed</code>)が担当します。
+役割分担は「RoPE = 文脈の中で何番目の要素か」「2D sin-cos = その画像の中のどこか」。
+おかげで 4096 トークンの画像を挟んでもテキスト側の位置は 1 しか進まず、
+long-context の消費が抑えられます。
+</div>
+
+<h2 id="mot">2. MoT — 同じ attention、違う重み</h2>
+<p>
+BAGEL の心臓部が <code>Qwen2MoTDecoderLayer</code> です。
+定義を見ると、<strong>Transformer 層の構成要素がきれいに 2 セットずつ</strong>並んでいます。
+</p>
+
+<div class="codeblock">
+<div class="codehead"><span class="path">modeling/bagel/qwen2_navit.py</span> L687–706
+<a href="https://github.com/ByteDance-Seed/Bagel/blob/a2fa77dd8caeefc41e6607ae0ec17408d3f4ee9f/modeling/bagel/qwen2_navit.py#L687-L706" target="_blank" rel="noopener">GitHub ↗</a></div>
+<pre><code class="language-python">class Qwen2MoTDecoderLayer(nn.Module):
+    def __init__(
+        self, 
+        config, 
+        layer_idx: Optional[int] = None, 
+        attn_module: Optional[Qwen2Attention] = PackedAttentionMoT,
+    ):
+        super().__init__()
+        self.hidden_size = config.hidden_size
+        self.freeze_und = config.freeze_und
+
+        self.self_attn = attn_module(config, layer_idx)
+
+        self.mlp = Qwen2MLP(config)                                                    # 理解用 FFN
+        self.mlp_moe_gen = Qwen2MLP(config)                                            # 生成用 FFN ← 2 セット目
+        self.input_layernorm = Qwen2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.input_layernorm_moe_gen = Qwen2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.post_attention_layernorm = Qwen2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.post_attention_layernorm_moe_gen = Qwen2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)</code></pre>
+</div>
+
+<div class="codeblock">
+<div class="codehead"><span class="path">modeling/bagel/qwen2_navit.py</span> L381–398(attention 側も 2 セット)
+<a href="https://github.com/ByteDance-Seed/Bagel/blob/a2fa77dd8caeefc41e6607ae0ec17408d3f4ee9f/modeling/bagel/qwen2_navit.py#L381-L398" target="_blank" rel="noopener">GitHub ↗</a></div>
+<pre><code class="language-python">class PackedAttentionMoT(Qwen2Attention):
+    def __init__(self, config, layer_idx: Optional[int] = None):
+        super().__init__(config, layer_idx)
+        if self.config.qk_norm:
+            self.q_norm = Qwen2RMSNorm(self.head_dim, eps=config.rms_norm_eps)
+            self.k_norm = Qwen2RMSNorm(self.head_dim, eps=config.rms_norm_eps)
+            self.q_norm_moe_gen = Qwen2RMSNorm(self.head_dim, eps=config.rms_norm_eps)
+            self.k_norm_moe_gen = Qwen2RMSNorm(self.head_dim, eps=config.rms_norm_eps)
+        ...
+        self.q_proj_moe_gen = nn.Linear(self.hidden_size, self.num_heads * self.head_dim, bias=True)
+        self.k_proj_moe_gen = nn.Linear(self.hidden_size, self.num_key_value_heads * self.head_dim, bias=True)
+        self.v_proj_moe_gen = nn.Linear(self.hidden_size, self.num_key_value_heads * self.head_dim, bias=True)
+        self.o_proj_moe_gen = nn.Linear(self.num_heads * self.head_dim, self.hidden_size, bias=False)</code></pre>
+</div>
+
+<p>
+q/k/v/o の射影も、QK-Norm も、FFN も、LayerNorm も、すべて 2 セット。
+つまり <strong>Transformer の重みは丸ごと 2 倍</strong>あります。これが
+「<strong>7B activated / 14B total</strong>」の正体です ——
+7B のモデルを 2 つ抱えているが、<strong>1 つのトークンが通るのは片方だけ</strong>。
+</p>
+
+<h3>では、何が共有されているのか</h3>
+<p>
+共有されるのは<strong>attention の計算そのもの</strong>、すなわち
+「誰が誰を見るか」の場だけです。<code>forward_train</code> を見ると、
+q/k/v を<strong>トークンごとに別の重みで作ってから、1 つのテンソルに書き戻して</strong>いるのが分かります。
+</p>
+
+<div class="codeblock">
+<div class="codehead"><span class="path">modeling/bagel/qwen2_navit.py</span> L415–429
+<a href="https://github.com/ByteDance-Seed/Bagel/blob/a2fa77dd8caeefc41e6607ae0ec17408d3f4ee9f/modeling/bagel/qwen2_navit.py#L415-L429" target="_blank" rel="noopener">GitHub ↗</a></div>
+<pre><code class="language-python">        # 空のテンソルを 1 つ用意して……
+        packed_query_states = packed_sequence.new_zeros((packed_sequence.shape[0], self.num_heads * self.head_dim))
+        ...
+        packed_sequence_und = packed_sequence[packed_und_token_indexes]   # テキスト + ViT トークン
+        packed_sequence_gen = packed_sequence[packed_gen_token_indexes]   # VAE 潜在トークン
+
+        # ……理解トークンは q_proj、生成トークンは q_proj_moe_gen で埋める
+        packed_query_states[packed_und_token_indexes] = self.q_proj(packed_sequence_und)
+        packed_query_states[packed_gen_token_indexes] = self.q_proj_moe_gen(packed_sequence_gen)
+
+        packed_key_states[packed_und_token_indexes] = self.k_proj(packed_sequence_und)
+        packed_key_states[packed_gen_token_indexes] = self.k_proj_moe_gen(packed_sequence_gen)
+
+        packed_value_states[packed_und_token_indexes] = self.v_proj(packed_sequence_und)
+        packed_value_states[packed_gen_token_indexes] = self.v_proj_moe_gen(packed_sequence_gen)</code></pre>
+</div>
+
+<p>
+このあと <code>flex_attention</code> が<strong>混ざった q/k/v をまとめて 1 回</strong>計算します。
+テキストトークンの query が VAE トークンの key を見ることも、その逆も、
+何の障壁もなく起こります。出力側でまた <code>o_proj</code> / <code>o_proj_moe_gen</code> に振り分けられます。
+</p>
+
+<figure class="diagram" id="motflow" data-cycle-ms="12000" data-step-count="4">
+<svg viewBox="0 0 900 500" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="MoTの1層の中でトークンがエキスパートに振り分けられ、attentionだけ共有される図">
+  <defs>
+    <marker id="arrm" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#8a93ad"/>
+    </marker>
+  </defs>
+
+  <!-- step 1: input tokens -->
+  <g class="m1">
+    <text x="24" y="28" font-size="12.5" font-weight="bold" fill="#5b6478">① 1 本の列が層に入る</text>
+    <rect x="24" y="40" width="34" height="30" rx="5" fill="#e9ecf5" stroke="#8a93ad"/>
+    <rect x="62" y="40" width="34" height="30" rx="5" fill="#e9ecf5" stroke="#8a93ad"/>
+    <rect x="100" y="40" width="34" height="30" rx="5" fill="#e5eafc" stroke="#3556d4"/>
+    <rect x="138" y="40" width="34" height="30" rx="5" fill="#e5eafc" stroke="#3556d4"/>
+    <rect x="176" y="40" width="34" height="30" rx="5" fill="#fbe4e8" stroke="#d43d51"/>
+    <rect x="214" y="40" width="34" height="30" rx="5" fill="#fbe4e8" stroke="#d43d51"/>
+    <text x="41" y="60" font-size="11" text-anchor="middle">📝</text>
+    <text x="79" y="60" font-size="11" text-anchor="middle">📝</text>
+    <text x="117" y="59" font-size="9" text-anchor="middle" fill="#3556d4">ViT</text>
+    <text x="155" y="59" font-size="9" text-anchor="middle" fill="#3556d4">ViT</text>
+    <text x="193" y="59" font-size="9" text-anchor="middle" fill="#d43d51">VAE</text>
+    <text x="231" y="59" font-size="9" text-anchor="middle" fill="#d43d51">VAE</text>
+    <text x="270" y="60" font-size="10.5" fill="#5b6478">und = 📝 と ViT / gen = VAE</text>
+  </g>
+
+  <!-- step 2: routing to experts -->
+  <g class="m2">
+    <text x="24" y="100" font-size="12.5" font-weight="bold" fill="#5b6478">② トークン種別で重みを切り替えて q,k,v を作る</text>
+    <path d="M 100 112 L 150 146" fill="none" stroke="#7b46c9" stroke-width="1.8" marker-end="url(#arrm)"/>
+    <path d="M 150 112 L 172 146" fill="none" stroke="#7b46c9" stroke-width="1.8" marker-end="url(#arrm)"/>
+    <path d="M 232 112 L 470 146" fill="none" stroke="#d43d51" stroke-width="1.8" marker-end="url(#arrm)"/>
+    <rect x="60" y="150" width="230" height="66" rx="9" fill="#efe6fb" stroke="#7b46c9" stroke-width="2"/>
+    <text x="175" y="172" font-size="12" text-anchor="middle" fill="#7b46c9" font-weight="bold">Und Expert</text>
+    <text x="175" y="190" font-size="10" text-anchor="middle" class="mono" fill="#5b6478">q_proj / k_proj / v_proj</text>
+    <text x="175" y="206" font-size="10" text-anchor="middle" class="mono" fill="#5b6478">q_norm / k_norm</text>
+    <rect x="400" y="150" width="230" height="66" rx="9" fill="#fbe4e8" stroke="#d43d51" stroke-width="2"/>
+    <text x="515" y="172" font-size="12" text-anchor="middle" fill="#d43d51" font-weight="bold">Gen Expert</text>
+    <text x="515" y="190" font-size="10" text-anchor="middle" class="mono" fill="#5b6478">q_proj_moe_gen / k_… / v_…</text>
+    <text x="515" y="206" font-size="10" text-anchor="middle" class="mono" fill="#5b6478">q_norm_moe_gen / k_norm_moe_gen</text>
+    <text x="660" y="186" font-size="10.5" fill="#5b6478">重みは完全に別物</text>
+  </g>
+
+  <!-- step 3: shared attention -->
+  <g class="m3">
+    <text x="24" y="248" font-size="12.5" font-weight="bold" fill="#3556d4">③ q,k,v を 1 本に書き戻して、attention は 1 回だけ計算する</text>
+    <path d="M 175 260 L 300 292" fill="none" stroke="#8a93ad" stroke-width="2" marker-end="url(#arrm)"/>
+    <path d="M 515 260 L 390 292" fill="none" stroke="#8a93ad" stroke-width="2" marker-end="url(#arrm)"/>
+    <rect x="150" y="296" width="390" height="60" rx="10" fill="#e5eafc" stroke="#3556d4" stroke-width="2.5"/>
+    <text x="345" y="320" font-size="13" text-anchor="middle" fill="#3556d4" font-weight="bold">共有 self-attention(flex_attention 1 発)</text>
+    <text x="345" y="342" font-size="10.5" text-anchor="middle" fill="#5b6478">📝 の query が VAE の key を見る / VAE の query が 📝 の key を見る</text>
+    <text x="562" y="322" font-size="10.5" fill="#d43d51">← ここだけが接点</text>
+    <text x="562" y="340" font-size="10.5" fill="#5b6478">= コネクタが要らない理由</text>
+  </g>
+
+  <!-- step 4: back to experts -->
+  <g class="m4">
+    <text x="24" y="388" font-size="12.5" font-weight="bold" fill="#5b6478">④ 出力もまた種別ごとに o_proj / FFN / LayerNorm へ分かれる</text>
+    <path d="M 260 400 L 200 428" fill="none" stroke="#7b46c9" stroke-width="1.8" marker-end="url(#arrm)"/>
+    <path d="M 430 400 L 500 428" fill="none" stroke="#d43d51" stroke-width="1.8" marker-end="url(#arrm)"/>
+    <rect x="80" y="432" width="230" height="52" rx="9" fill="#efe6fb" stroke="#7b46c9" stroke-width="2"/>
+    <text x="195" y="452" font-size="11" text-anchor="middle" fill="#7b46c9" font-weight="bold">o_proj → mlp</text>
+    <text x="195" y="470" font-size="10" text-anchor="middle" class="mono" fill="#5b6478">post_attention_layernorm</text>
+    <rect x="400" y="432" width="230" height="52" rx="9" fill="#fbe4e8" stroke="#d43d51" stroke-width="2"/>
+    <text x="515" y="452" font-size="11" text-anchor="middle" fill="#d43d51" font-weight="bold">o_proj_moe_gen → mlp_moe_gen</text>
+    <text x="515" y="470" font-size="10" text-anchor="middle" class="mono" fill="#5b6478">post_attention_layernorm_moe_gen</text>
+    <text x="660" y="460" font-size="10.5" fill="#5b6478">これを N 層くり返す</text>
+  </g>
+</svg>
+<figcaption>
+MoT の 1 層。<strong>重みは二重、attention は一重</strong>。
+トークンがどちらのエキスパートを通るかはルータが学習で決めるのではなく、
+<strong>そのトークンがテキスト/ViT なのか VAE 潜在なのかで機械的に決まります</strong>
+(だから MoE ではなく MoT と呼ばれます)。
+</figcaption>
+</figure>
+
+<div class="callout point">
+<span class="callout-title">MoE との違い</span>
+一般的な MoE は「FFN だけを複数用意し、ルータが確率的に選ぶ」方式です。BAGEL の MoT は
+<strong>①FFN だけでなく attention の射影も LayerNorm も分ける</strong>、
+<strong>②選択はルータではなくトークンの種別で決定的に決まる</strong>という 2 点で異なります。
+論文は 1.5B 規模で Dense / MoE / MoT を比較し、
+理解と生成の両立という観点で MoT を採用したと報告しています。
+「生成タスクが理解タスクの重みを壊す(干渉)」問題を、
+容量を分けることで正面から回避する設計です。
+</div>
+
+<h2 id="attn">3. Generalized Causal Attention — 1 枚のマスクに 3 つの規則</h2>
+<p>
+統一モデルにとって最大の技術的難所は、
+<strong>「まだ生成していない画像」を列の中に置きながら、答えを覗かせない</strong>ことです。
+BAGEL はこれを <code>attn_modes</code> という 3 値のラベルで解決します。
+</p>
+
+<table>
+  <tr><th>モード</th><th>付く対象</th><th>ブロック内部</th><th>他から見えるか</th></tr>
+  <tr><td><code>'causal'</code></td><td>テキスト</td><td>下三角(通常の因果)</td><td>見える</td></tr>
+  <tr><td><code>'full'</code></td><td>ViT トークン / <strong>ノイズなしの</strong> VAE トークン</td><td>全結合(双方向)</td><td>見える</td></tr>
+  <tr><td><code>'noise'</code></td><td><strong>生成対象の</strong>(ノイズ入り)VAE トークン</td><td>全結合(双方向)</td><td><strong>見えない</strong></td></tr>
+</table>
+<p>
+そして<strong>どのブロックも、自分より前のブロックはすべて見られます</strong>
+(<code>'noise'</code> ブロックを除いて)。これが「一般化された因果性」の意味です。
+</p>
+
+<div class="codeblock">
+<div class="codehead"><span class="path">data/data_utils.py</span> L13–40 — FlexAttention 版の実装
+<a href="https://github.com/ByteDance-Seed/Bagel/blob/a2fa77dd8caeefc41e6607ae0ec17408d3f4ee9f/data/data_utils.py#L13-L40" target="_blank" rel="noopener">GitHub ↗</a></div>
+<pre><code class="language-python">def create_sparse_mask(document_lens, split_lens, attn_modes, device):
+    def causal_mask(b, h, q_idx, kv_idx):
+        return q_idx &gt;= kv_idx                       # ふつうの因果マスク
+
+    def full_and_noise_mask(b, h, q_idx, kv_idx):    # 同じ full/noise ブロック内は双方向
+        return (full_and_noise_seq_id[q_idx] == full_and_noise_seq_id[kv_idx]) &amp; (full_and_noise_seq_id[q_idx] &gt;= 0)
+
+    def remove_noise_mask(b, h, q_idx, kv_idx):      # noise ブロックは「外」から見えない
+        return (~((noise_seq_id[kv_idx] &gt;= 0) &amp; (noise_seq_id[q_idx] != noise_seq_id[kv_idx])))
+
+    def sample_mask(b, h, q_idx, kv_idx):            # パックされた別サンプルへは越境しない
+        return document_id[q_idx] == document_id[kv_idx]
+    ...
+    return and_masks(or_masks(causal_mask, full_and_noise_mask), remove_noise_mask, sample_mask)</code></pre>
+</div>
+
+<p>
+最後の 1 行がすべてを語っています。
+<strong>「(因果 <em>または</em> 同一ブロック内双方向)<em>かつ</em> ノイズ隠し <em>かつ</em> サンプル分離」</strong>。
+4 つの述語の論理合成としてマスクが定義されており、
+FlexAttention がこれを疎なブロックマスクにコンパイルします
+(論文は素朴な SDPA に対して約 2 倍の高速化と報告しています)。
+</p>
+
+<figure class="diagram" id="maskgrid" data-cycle-ms="12000" data-step-count="4">
+<svg viewBox="0 0 900 470" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Generalized Causal Attention のマスク行列。行グループごとに見える範囲が変わる">
+  <text x="150" y="30" font-size="13" font-weight="bold" fill="#5b6478">Generalized Causal Attention のマスク(■ = 見える)</text>
+  <text x="150" y="52" font-size="11" fill="#5b6478">列 = 見られる側(key/value)</text>
+  <text x="20" y="100" font-size="11" fill="#5b6478">行 = 見る側</text>
+  <text x="20" y="116" font-size="11" fill="#5b6478">(query)</text>
+
+  <!-- column headers -->
+  <text x="181" y="80" font-size="10.5" text-anchor="middle" fill="#8a93ad">📝 text</text>
+  <text x="247" y="80" font-size="10.5" text-anchor="middle" fill="#3556d4">ViT</text>
+  <text x="313" y="80" font-size="10.5" text-anchor="middle" fill="#1e9e6a">VAE clean</text>
+  <text x="379" y="80" font-size="10.5" text-anchor="middle" fill="#d43d51">VAE noised</text>
+  <text x="181" y="94" font-size="9.5" text-anchor="middle" fill="#8a93ad">causal</text>
+  <text x="247" y="94" font-size="9.5" text-anchor="middle" fill="#3556d4">full</text>
+  <text x="313" y="94" font-size="9.5" text-anchor="middle" fill="#1e9e6a">full</text>
+  <text x="379" y="94" font-size="9.5" text-anchor="middle" fill="#d43d51">noise</text>
+
+  <g class="r1">
+    <rect x="150" y="110" width="20" height="20" rx="3" fill="#8a93ad" fill-opacity="0.75" stroke="#8a93ad" stroke-width="0.6"/>
+    <rect x="172" y="110" width="20" height="20" rx="3" fill="#f2f4fa" stroke="#dde2ee" stroke-width="0.6"/>
+    <rect x="194" y="110" width="20" height="20" rx="3" fill="#f2f4fa" stroke="#dde2ee" stroke-width="0.6"/>
+    <rect x="216" y="110" width="20" height="20" rx="3" fill="#f2f4fa" stroke="#dde2ee" stroke-width="0.6"/>
+    <rect x="238" y="110" width="20" height="20" rx="3" fill="#f2f4fa" stroke="#dde2ee" stroke-width="0.6"/>
+    <rect x="260" y="110" width="20" height="20" rx="3" fill="#f2f4fa" stroke="#dde2ee" stroke-width="0.6"/>
+    <rect x="282" y="110" width="20" height="20" rx="3" fill="#f2f4fa" stroke="#dde2ee" stroke-width="0.6"/>
+    <rect x="304" y="110" width="20" height="20" rx="3" fill="#f2f4fa" stroke="#dde2ee" stroke-width="0.6"/>
+    <rect x="326" y="110" width="20" height="20" rx="3" fill="#f2f4fa" stroke="#dde2ee" stroke-width="0.6"/>
+    <rect x="348" y="110" width="20" height="20" rx="3" fill="#f2f4fa" stroke="#dde2ee" stroke-width="0.6"/>
+    <rect x="370" y="110" width="20" height="20" rx="3" fill="#f2f4fa" stroke="#dde2ee" stroke-width="0.6"/>
+    <rect x="392" y="110" width="20" height="20" rx="3" fill="#f2f4fa" stroke="#dde2ee" stroke-width="0.6"/>
+  </g>
+  <g class="r1">
+    <rect x="150" y="132" width="20" height="20" rx="3" fill="#8a93ad" fill-opacity="0.75" stroke="#8a93ad" stroke-width="0.6"/>
+    <rect x="172" y="132" width="20" height="20" rx="3" fill="#8a93ad" fill-opacity="0.75" stroke="#8a93ad" stroke-width="0.6"/>
+    <rect x="194" y="132" width="20" height="20" rx="3" fill="#f2f4fa" stroke="#dde2ee" stroke-width="0.6"/>
+    <rect x="216" y="132" width="20" height="20" rx="3" fill="#f2f4fa" stroke="#dde2ee" stroke-width="0.6"/>
+    <rect x="238" y="132" width="20" height="20" rx="3" fill="#f2f4fa" stroke="#dde2ee" stroke-width="0.6"/>
+    <rect x="260" y="132" width="20" height="20" rx="3" fill="#f2f4fa" stroke="#dde2ee" stroke-width="0.6"/>
+    <rect x="282" y="132" width="20" height="20" rx="3" fill="#f2f4fa" stroke="#dde2ee" stroke-width="0.6"/>
+    <rect x="304" y="132" width="20" height="20" rx="3" fill="#f2f4fa" stroke="#dde2ee" stroke-width="0.6"/>
+    <rect x="326" y="132" width="20" height="20" rx="3" fill="#f2f4fa" stroke="#dde2ee" stroke-width="0.6"/>
+    <rect x="348" y="132" width="20" height="20" rx="3" fill="#f2f4fa" stroke="#dde2ee" stroke-width="0.6"/>
+    <rect x="370" y="132" width="20" height="20" rx="3" fill="#f2f4fa" stroke="#dde2ee" stroke-width="0.6"/>
+    <rect x="392" y="132" width="20" height="20" rx="3" fill="#f2f4fa" stroke="#dde2ee" stroke-width="0.6"/>
+  </g>
+  <g class="r1">
+    <rect x="150" y="154" width="20" height="20" rx="3" fill="#8a93ad" fill-opacity="0.75" stroke="#8a93ad" stroke-width="0.6"/>
+    <rect x="172" y="154" width="20" height="20" rx="3" fill="#8a93ad" fill-opacity="0.75" stroke="#8a93ad" stroke-width="0.6"/>
+    <rect x="194" y="154" width="20" height="20" rx="3" fill="#8a93ad" fill-opacity="0.75" stroke="#8a93ad" stroke-width="0.6"/>
+    <rect x="216" y="154" width="20" height="20" rx="3" fill="#f2f4fa" stroke="#dde2ee" stroke-width="0.6"/>
+    <rect x="238" y="154" width="20" height="20" rx="3" fill="#f2f4fa" stroke="#dde2ee" stroke-width="0.6"/>
+    <rect x="260" y="154" width="20" height="20" rx="3" fill="#f2f4fa" stroke="#dde2ee" stroke-width="0.6"/>
+    <rect x="282" y="154" width="20" height="20" rx="3" fill="#f2f4fa" stroke="#dde2ee" stroke-width="0.6"/>
+    <rect x="304" y="154" width="20" height="20" rx="3" fill="#f2f4fa" stroke="#dde2ee" stroke-width="0.6"/>
+    <rect x="326" y="154" width="20" height="20" rx="3" fill="#f2f4fa" stroke="#dde2ee" stroke-width="0.6"/>
+    <rect x="348" y="154" width="20" height="20" rx="3" fill="#f2f4fa" stroke="#dde2ee" stroke-width="0.6"/>
+    <rect x="370" y="154" width="20" height="20" rx="3" fill="#f2f4fa" stroke="#dde2ee" stroke-width="0.6"/>
+    <rect x="392" y="154" width="20" height="20" rx="3" fill="#f2f4fa" stroke="#dde2ee" stroke-width="0.6"/>
+  </g>
+  <g class="r2">
+    <rect x="150" y="176" width="20" height="20" rx="3" fill="#8a93ad" fill-opacity="0.75" stroke="#8a93ad" stroke-width="0.6"/>
+    <rect x="172" y="176" width="20" height="20" rx="3" fill="#8a93ad" fill-opacity="0.75" stroke="#8a93ad" stroke-width="0.6"/>
+    <rect x="194" y="176" width="20" height="20" rx="3" fill="#8a93ad" fill-opacity="0.75" stroke="#8a93ad" stroke-width="0.6"/>
+    <rect x="216" y="176" width="20" height="20" rx="3" fill="#3556d4" fill-opacity="0.75" stroke="#3556d4" stroke-width="0.6"/>
+    <rect x="238" y="176" width="20" height="20" rx="3" fill="#3556d4" fill-opacity="0.75" stroke="#3556d4" stroke-width="0.6"/>
+    <rect x="260" y="176" width="20" height="20" rx="3" fill="#3556d4" fill-opacity="0.75" stroke="#3556d4" stroke-width="0.6"/>
+    <rect x="282" y="176" width="20" height="20" rx="3" fill="#f2f4fa" stroke="#dde2ee" stroke-width="0.6"/>
+    <rect x="304" y="176" width="20" height="20" rx="3" fill="#f2f4fa" stroke="#dde2ee" stroke-width="0.6"/>
+    <rect x="326" y="176" width="20" height="20" rx="3" fill="#f2f4fa" stroke="#dde2ee" stroke-width="0.6"/>
+    <rect x="348" y="176" width="20" height="20" rx="3" fill="#f2f4fa" stroke="#dde2ee" stroke-width="0.6"/>
+    <rect x="370" y="176" width="20" height="20" rx="3" fill="#f2f4fa" stroke="#dde2ee" stroke-width="0.6"/>
+    <rect x="392" y="176" width="20" height="20" rx="3" fill="#f2f4fa" stroke="#dde2ee" stroke-width="0.6"/>
+  </g>
+  <g class="r2">
+    <rect x="150" y="198" width="20" height="20" rx="3" fill="#8a93ad" fill-opacity="0.75" stroke="#8a93ad" stroke-width="0.6"/>
+    <rect x="172" y="198" width="20" height="20" rx="3" fill="#8a93ad" fill-opacity="0.75" stroke="#8a93ad" stroke-width="0.6"/>
+    <rect x="194" y="198" width="20" height="20" rx="3" fill="#8a93ad" fill-opacity="0.75" stroke="#8a93ad" stroke-width="0.6"/>
+    <rect x="216" y="198" width="20" height="20" rx="3" fill="#3556d4" fill-opacity="0.75" stroke="#3556d4" stroke-width="0.6"/>
+    <rect x="238" y="198" width="20" height="20" rx="3" fill="#3556d4" fill-opacity="0.75" stroke="#3556d4" stroke-width="0.6"/>
+    <rect x="260" y="198" width="20" height="20" rx="3" fill="#3556d4" fill-opacity="0.75" stroke="#3556d4" stroke-width="0.6"/>
+    <rect x="282" y="198" width="20" height="20" rx="3" fill="#f2f4fa" stroke="#dde2ee" stroke-width="0.6"/>
+    <rect x="304" y="198" width="20" height="20" rx="3" fill="#f2f4fa" stroke="#dde2ee" stroke-width="0.6"/>
+    <rect x="326" y="198" width="20" height="20" rx="3" fill="#f2f4fa" stroke="#dde2ee" stroke-width="0.6"/>
+    <rect x="348" y="198" width="20" height="20" rx="3" fill="#f2f4fa" stroke="#dde2ee" stroke-width="0.6"/>
+    <rect x="370" y="198" width="20" height="20" rx="3" fill="#f2f4fa" stroke="#dde2ee" stroke-width="0.6"/>
+    <rect x="392" y="198" width="20" height="20" rx="3" fill="#f2f4fa" stroke="#dde2ee" stroke-width="0.6"/>
+  </g>
+  <g class="r2">
+    <rect x="150" y="220" width="20" height="20" rx="3" fill="#8a93ad" fill-opacity="0.75" stroke="#8a93ad" stroke-width="0.6"/>
+    <rect x="172" y="220" width="20" height="20" rx="3" fill="#8a93ad" fill-opacity="0.75" stroke="#8a93ad" stroke-width="0.6"/>
+    <rect x="194" y="220" width="20" height="20" rx="3" fill="#8a93ad" fill-opacity="0.75" stroke="#8a93ad" stroke-width="0.6"/>
+    <rect x="216" y="220" width="20" height="20" rx="3" fill="#3556d4" fill-opacity="0.75" stroke="#3556d4" stroke-width="0.6"/>
+    <rect x="238" y="220" width="20" height="20" rx="3" fill="#3556d4" fill-opacity="0.75" stroke="#3556d4" stroke-width="0.6"/>
+    <rect x="260" y="220" width="20" height="20" rx="3" fill="#3556d4" fill-opacity="0.75" stroke="#3556d4" stroke-width="0.6"/>
+    <rect x="282" y="220" width="20" height="20" rx="3" fill="#f2f4fa" stroke="#dde2ee" stroke-width="0.6"/>
+    <rect x="304" y="220" width="20" height="20" rx="3" fill="#f2f4fa" stroke="#dde2ee" stroke-width="0.6"/>
+    <rect x="326" y="220" width="20" height="20" rx="3" fill="#f2f4fa" stroke="#dde2ee" stroke-width="0.6"/>
+    <rect x="348" y="220" width="20" height="20" rx="3" fill="#f2f4fa" stroke="#dde2ee" stroke-width="0.6"/>
+    <rect x="370" y="220" width="20" height="20" rx="3" fill="#f2f4fa" stroke="#dde2ee" stroke-width="0.6"/>
+    <rect x="392" y="220" width="20" height="20" rx="3" fill="#f2f4fa" stroke="#dde2ee" stroke-width="0.6"/>
+  </g>
+  <g class="r3">
+    <rect x="150" y="242" width="20" height="20" rx="3" fill="#8a93ad" fill-opacity="0.75" stroke="#8a93ad" stroke-width="0.6"/>
+    <rect x="172" y="242" width="20" height="20" rx="3" fill="#8a93ad" fill-opacity="0.75" stroke="#8a93ad" stroke-width="0.6"/>
+    <rect x="194" y="242" width="20" height="20" rx="3" fill="#8a93ad" fill-opacity="0.75" stroke="#8a93ad" stroke-width="0.6"/>
+    <rect x="216" y="242" width="20" height="20" rx="3" fill="#3556d4" fill-opacity="0.75" stroke="#3556d4" stroke-width="0.6"/>
+    <rect x="238" y="242" width="20" height="20" rx="3" fill="#3556d4" fill-opacity="0.75" stroke="#3556d4" stroke-width="0.6"/>
+    <rect x="260" y="242" width="20" height="20" rx="3" fill="#3556d4" fill-opacity="0.75" stroke="#3556d4" stroke-width="0.6"/>
+    <rect x="282" y="242" width="20" height="20" rx="3" fill="#1e9e6a" fill-opacity="0.75" stroke="#1e9e6a" stroke-width="0.6"/>
+    <rect x="304" y="242" width="20" height="20" rx="3" fill="#1e9e6a" fill-opacity="0.75" stroke="#1e9e6a" stroke-width="0.6"/>
+    <rect x="326" y="242" width="20" height="20" rx="3" fill="#1e9e6a" fill-opacity="0.75" stroke="#1e9e6a" stroke-width="0.6"/>
+    <rect x="348" y="242" width="20" height="20" rx="3" fill="#f2f4fa" stroke="#dde2ee" stroke-width="0.6"/>
+    <rect x="370" y="242" width="20" height="20" rx="3" fill="#f2f4fa" stroke="#dde2ee" stroke-width="0.6"/>
+    <rect x="392" y="242" width="20" height="20" rx="3" fill="#f2f4fa" stroke="#dde2ee" stroke-width="0.6"/>
+  </g>
+  <g class="r3">
+    <rect x="150" y="264" width="20" height="20" rx="3" fill="#8a93ad" fill-opacity="0.75" stroke="#8a93ad" stroke-width="0.6"/>
+    <rect x="172" y="264" width="20" height="20" rx="3" fill="#8a93ad" fill-opacity="0.75" stroke="#8a93ad" stroke-width="0.6"/>
+    <rect x="194" y="264" width="20" height="20" rx="3" fill="#8a93ad" fill-opacity="0.75" stroke="#8a93ad" stroke-width="0.6"/>
+    <rect x="216" y="264" width="20" height="20" rx="3" fill="#3556d4" fill-opacity="0.75" stroke="#3556d4" stroke-width="0.6"/>
+    <rect x="238" y="264" width="20" height="20" rx="3" fill="#3556d4" fill-opacity="0.75" stroke="#3556d4" stroke-width="0.6"/>
+    <rect x="260" y="264" width="20" height="20" rx="3" fill="#3556d4" fill-opacity="0.75" stroke="#3556d4" stroke-width="0.6"/>
+    <rect x="282" y="264" width="20" height="20" rx="3" fill="#1e9e6a" fill-opacity="0.75" stroke="#1e9e6a" stroke-width="0.6"/>
+    <rect x="304" y="264" width="20" height="20" rx="3" fill="#1e9e6a" fill-opacity="0.75" stroke="#1e9e6a" stroke-width="0.6"/>
+    <rect x="326" y="264" width="20" height="20" rx="3" fill="#1e9e6a" fill-opacity="0.75" stroke="#1e9e6a" stroke-width="0.6"/>
+    <rect x="348" y="264" width="20" height="20" rx="3" fill="#f2f4fa" stroke="#dde2ee" stroke-width="0.6"/>
+    <rect x="370" y="264" width="20" height="20" rx="3" fill="#f2f4fa" stroke="#dde2ee" stroke-width="0.6"/>
+    <rect x="392" y="264" width="20" height="20" rx="3" fill="#f2f4fa" stroke="#dde2ee" stroke-width="0.6"/>
+  </g>
+  <g class="r3">
+    <rect x="150" y="286" width="20" height="20" rx="3" fill="#8a93ad" fill-opacity="0.75" stroke="#8a93ad" stroke-width="0.6"/>
+    <rect x="172" y="286" width="20" height="20" rx="3" fill="#8a93ad" fill-opacity="0.75" stroke="#8a93ad" stroke-width="0.6"/>
+    <rect x="194" y="286" width="20" height="20" rx="3" fill="#8a93ad" fill-opacity="0.75" stroke="#8a93ad" stroke-width="0.6"/>
+    <rect x="216" y="286" width="20" height="20" rx="3" fill="#3556d4" fill-opacity="0.75" stroke="#3556d4" stroke-width="0.6"/>
+    <rect x="238" y="286" width="20" height="20" rx="3" fill="#3556d4" fill-opacity="0.75" stroke="#3556d4" stroke-width="0.6"/>
+    <rect x="260" y="286" width="20" height="20" rx="3" fill="#3556d4" fill-opacity="0.75" stroke="#3556d4" stroke-width="0.6"/>
+    <rect x="282" y="286" width="20" height="20" rx="3" fill="#1e9e6a" fill-opacity="0.75" stroke="#1e9e6a" stroke-width="0.6"/>
+    <rect x="304" y="286" width="20" height="20" rx="3" fill="#1e9e6a" fill-opacity="0.75" stroke="#1e9e6a" stroke-width="0.6"/>
+    <rect x="326" y="286" width="20" height="20" rx="3" fill="#1e9e6a" fill-opacity="0.75" stroke="#1e9e6a" stroke-width="0.6"/>
+    <rect x="348" y="286" width="20" height="20" rx="3" fill="#f2f4fa" stroke="#dde2ee" stroke-width="0.6"/>
+    <rect x="370" y="286" width="20" height="20" rx="3" fill="#f2f4fa" stroke="#dde2ee" stroke-width="0.6"/>
+    <rect x="392" y="286" width="20" height="20" rx="3" fill="#f2f4fa" stroke="#dde2ee" stroke-width="0.6"/>
+  </g>
+  <g class="r4">
+    <rect x="150" y="308" width="20" height="20" rx="3" fill="#8a93ad" fill-opacity="0.75" stroke="#8a93ad" stroke-width="0.6"/>
+    <rect x="172" y="308" width="20" height="20" rx="3" fill="#8a93ad" fill-opacity="0.75" stroke="#8a93ad" stroke-width="0.6"/>
+    <rect x="194" y="308" width="20" height="20" rx="3" fill="#8a93ad" fill-opacity="0.75" stroke="#8a93ad" stroke-width="0.6"/>
+    <rect x="216" y="308" width="20" height="20" rx="3" fill="#3556d4" fill-opacity="0.75" stroke="#3556d4" stroke-width="0.6"/>
+    <rect x="238" y="308" width="20" height="20" rx="3" fill="#3556d4" fill-opacity="0.75" stroke="#3556d4" stroke-width="0.6"/>
+    <rect x="260" y="308" width="20" height="20" rx="3" fill="#3556d4" fill-opacity="0.75" stroke="#3556d4" stroke-width="0.6"/>
+    <rect x="282" y="308" width="20" height="20" rx="3" fill="#1e9e6a" fill-opacity="0.75" stroke="#1e9e6a" stroke-width="0.6"/>
+    <rect x="304" y="308" width="20" height="20" rx="3" fill="#1e9e6a" fill-opacity="0.75" stroke="#1e9e6a" stroke-width="0.6"/>
+    <rect x="326" y="308" width="20" height="20" rx="3" fill="#1e9e6a" fill-opacity="0.75" stroke="#1e9e6a" stroke-width="0.6"/>
+    <rect x="348" y="308" width="20" height="20" rx="3" fill="#d43d51" fill-opacity="0.75" stroke="#d43d51" stroke-width="0.6"/>
+    <rect x="370" y="308" width="20" height="20" rx="3" fill="#d43d51" fill-opacity="0.75" stroke="#d43d51" stroke-width="0.6"/>
+    <rect x="392" y="308" width="20" height="20" rx="3" fill="#d43d51" fill-opacity="0.75" stroke="#d43d51" stroke-width="0.6"/>
+  </g>
+  <g class="r4">
+    <rect x="150" y="330" width="20" height="20" rx="3" fill="#8a93ad" fill-opacity="0.75" stroke="#8a93ad" stroke-width="0.6"/>
+    <rect x="172" y="330" width="20" height="20" rx="3" fill="#8a93ad" fill-opacity="0.75" stroke="#8a93ad" stroke-width="0.6"/>
+    <rect x="194" y="330" width="20" height="20" rx="3" fill="#8a93ad" fill-opacity="0.75" stroke="#8a93ad" stroke-width="0.6"/>
+    <rect x="216" y="330" width="20" height="20" rx="3" fill="#3556d4" fill-opacity="0.75" stroke="#3556d4" stroke-width="0.6"/>
+    <rect x="238" y="330" width="20" height="20" rx="3" fill="#3556d4" fill-opacity="0.75" stroke="#3556d4" stroke-width="0.6"/>
+    <rect x="260" y="330" width="20" height="20" rx="3" fill="#3556d4" fill-opacity="0.75" stroke="#3556d4" stroke-width="0.6"/>
+    <rect x="282" y="330" width="20" height="20" rx="3" fill="#1e9e6a" fill-opacity="0.75" stroke="#1e9e6a" stroke-width="0.6"/>
+    <rect x="304" y="330" width="20" height="20" rx="3" fill="#1e9e6a" fill-opacity="0.75" stroke="#1e9e6a" stroke-width="0.6"/>
+    <rect x="326" y="330" width="20" height="20" rx="3" fill="#1e9e6a" fill-opacity="0.75" stroke="#1e9e6a" stroke-width="0.6"/>
+    <rect x="348" y="330" width="20" height="20" rx="3" fill="#d43d51" fill-opacity="0.75" stroke="#d43d51" stroke-width="0.6"/>
+    <rect x="370" y="330" width="20" height="20" rx="3" fill="#d43d51" fill-opacity="0.75" stroke="#d43d51" stroke-width="0.6"/>
+    <rect x="392" y="330" width="20" height="20" rx="3" fill="#d43d51" fill-opacity="0.75" stroke="#d43d51" stroke-width="0.6"/>
+  </g>
+  <g class="r4">
+    <rect x="150" y="352" width="20" height="20" rx="3" fill="#8a93ad" fill-opacity="0.75" stroke="#8a93ad" stroke-width="0.6"/>
+    <rect x="172" y="352" width="20" height="20" rx="3" fill="#8a93ad" fill-opacity="0.75" stroke="#8a93ad" stroke-width="0.6"/>
+    <rect x="194" y="352" width="20" height="20" rx="3" fill="#8a93ad" fill-opacity="0.75" stroke="#8a93ad" stroke-width="0.6"/>
+    <rect x="216" y="352" width="20" height="20" rx="3" fill="#3556d4" fill-opacity="0.75" stroke="#3556d4" stroke-width="0.6"/>
+    <rect x="238" y="352" width="20" height="20" rx="3" fill="#3556d4" fill-opacity="0.75" stroke="#3556d4" stroke-width="0.6"/>
+    <rect x="260" y="352" width="20" height="20" rx="3" fill="#3556d4" fill-opacity="0.75" stroke="#3556d4" stroke-width="0.6"/>
+    <rect x="282" y="352" width="20" height="20" rx="3" fill="#1e9e6a" fill-opacity="0.75" stroke="#1e9e6a" stroke-width="0.6"/>
+    <rect x="304" y="352" width="20" height="20" rx="3" fill="#1e9e6a" fill-opacity="0.75" stroke="#1e9e6a" stroke-width="0.6"/>
+    <rect x="326" y="352" width="20" height="20" rx="3" fill="#1e9e6a" fill-opacity="0.75" stroke="#1e9e6a" stroke-width="0.6"/>
+    <rect x="348" y="352" width="20" height="20" rx="3" fill="#d43d51" fill-opacity="0.75" stroke="#d43d51" stroke-width="0.6"/>
+    <rect x="370" y="352" width="20" height="20" rx="3" fill="#d43d51" fill-opacity="0.75" stroke="#d43d51" stroke-width="0.6"/>
+    <rect x="392" y="352" width="20" height="20" rx="3" fill="#d43d51" fill-opacity="0.75" stroke="#d43d51" stroke-width="0.6"/>
+  </g>
+
+  <!-- row labels -->
+  <g class="n1"><text x="142" y="146" font-size="10.5" text-anchor="end" fill="#8a93ad">📝 テキスト</text></g>
+  <g class="n2"><text x="142" y="212" font-size="10.5" text-anchor="end" fill="#3556d4">ViT トークン</text></g>
+  <g class="n3"><text x="142" y="278" font-size="10.5" text-anchor="end" fill="#1e9e6a">clean VAE</text></g>
+  <g class="n4"><text x="142" y="344" font-size="10.5" text-anchor="end" fill="#d43d51">noised VAE</text></g>
+
+  <!-- annotations -->
+  <g class="n1">
+    <text x="440" y="146" font-size="11" fill="#5b6478">自分より前のテキストだけ(下三角)。画像はまだ来ていない。</text>
+  </g>
+  <g class="n2">
+    <text x="440" y="200" font-size="11" fill="#5b6478">前のテキスト全部 + 自分のブロック内は双方向。</text>
+    <text x="440" y="218" font-size="11" fill="#5b6478">画像は「順番に読む」ものではないので causal にする理由がない。</text>
+  </g>
+  <g class="n3">
+    <text x="440" y="266" font-size="11" fill="#5b6478">前のテキストと ViT を全部見る。条件として置かれた</text>
+    <text x="440" y="284" font-size="11" fill="#5b6478">きれいな画像なので、隠す必要はない。</text>
+  </g>
+  <g class="n4">
+    <text x="440" y="328" font-size="11" fill="#d43d51" font-weight="bold">生成対象。前の文脈は全部見えるが……</text>
+    <text x="440" y="348" font-size="11" fill="#5b6478">逆に「この列を見られる」のは自分自身だけ(縦に見て、</text>
+    <text x="440" y="366" font-size="11" fill="#5b6478">上の 3 グループの右端が空白になっているのがそれ)。</text>
+  </g>
+
+  <text x="150" y="404" font-size="11.5" fill="#d43d51" font-weight="bold">これが 'noise' モードの働き: ノイズ入り潜在は「文脈を汚さない」。</text>
+  <text x="150" y="424" font-size="11" fill="#5b6478">だから 1 本の列の中に「読むための画像」と「これから描く画像」を同居させても、</text>
+  <text x="150" y="442" font-size="11" fill="#5b6478">テキスト生成や理解の側がノイズを見てしまうことがない。</text>
+  <text x="150" y="462" font-size="11" fill="#5b6478">つまり <tspan class="mono">同じ 1 回の forward で CE 損失と MSE 損失を同時に取れる</tspan>。</text>
+</svg>
+<figcaption>
+行(query)グループごとに「見える範囲」が切り替わる様子。
+最下段の noised VAE は文脈を全部読めますが、<strong>誰からも読まれません</strong>。
+</figcaption>
+</figure>
+
+<p>
+FlexAttention を使わない場合の実装(<code>prepare_attention_mask_per_sample</code>)を読むと、
+同じ規則がもっと直接的に書かれています。
+</p>
+
+<div class="codeblock">
+<div class="codehead"><span class="path">data/data_utils.py</span> L72–103
+<a href="https://github.com/ByteDance-Seed/Bagel/blob/a2fa77dd8caeefc41e6607ae0ec17408d3f4ee9f/data/data_utils.py#L72-L103" target="_blank" rel="noopener">GitHub ↗</a></div>
+<pre><code class="language-python">def prepare_attention_mask_per_sample(split_lens, attn_modes, device="cpu"):
+    sample_len = sum(split_lens)
+    attention_mask = torch.zeros((sample_len, sample_len), dtype=torch.bool, device=device)
+
+    csum = 0
+    for s, attn_mode in zip(split_lens, attn_modes):
+        assert attn_mode in ['causal', 'full', 'noise']
+        if attn_mode == "causal":
+            attention_mask[csum:csum + s, csum:csum + s] = torch.ones((s, s), device=device).tril()
+        else:                                   # full も noise もブロック内は双方向
+            attention_mask[csum:csum + s, csum:csum + s] = torch.ones((s, s))
+        attention_mask[csum:csum + s, :csum] = 1       # ← 前のブロックは全部見える
+        csum += s
+
+    csum = 0
+    for s, attn_mode in zip(split_lens, attn_modes):
+        if attn_mode == "noise":
+            attention_mask[:, csum : csum + s] = torch.zeros((sample_len, s))   # 列を丸ごと消して
+            attention_mask[csum : csum + s, csum : csum + s] = torch.ones((s, s))  # 自分だけ復活
+        csum += s
+    ...</code></pre>
+</div>
+
+<div class="callout point">
+<span class="callout-title">2 段構えになっているのがポイント</span>
+第 1 ループで「ブロック内 + 前方すべて」を組み、
+第 2 ループで <strong>noise ブロックの<em>列</em>を丸ごと 0 に潰してから、対角ブロックだけ 1 に戻す</strong>。
+行(誰が見るか)ではなく<strong>列(誰から見られるか)</strong>を操作するのが肝で、
+これにより「自分は文脈を全部読める / 誰も自分を読めない」という非対称な可視性が実現します。
+</div>
+
+<h2 id="params">数値まとめ</h2>
+<p>
+公式チェックポイント <code>BAGEL-7B-MoT</code> を <code>app.py</code> の設定で読んだときの構成です。
+</p>
+<table>
+  <tr><th>要素</th><th>実体</th><th>状態</th></tr>
+  <tr><td>言語モデル</td><td>Qwen2.5-7B 系(<code>Qwen2MoTDecoderLayer</code> に差し替え、QK-Norm を有効化)</td><td>学習</td></tr>
+  <tr><td>ViT</td><td>SigLIP so400m / patch 14 / 最大 980px、NaViT 化。<strong>最終層を 1 枚落として使う</strong>(<code>vit_config.num_hidden_layers -= 1</code>)</td><td>学習</td></tr>
+  <tr><td>VAE</td><td>FLUX の AutoEncoder(8× 圧縮 / 16ch / <code>scale 0.3611</code>, <code>shift 0.1159</code>)</td><td><strong>凍結 🧊</strong></td></tr>
+  <tr><td>接続層</td><td><code>connector</code>(ViT→LLM 2 層 MLP)/ <code>vae2llm</code>(64→hidden)/ <code>llm2vae</code>(hidden→64, ゼロ初期化)</td><td>学習</td></tr>
+  <tr><td>位置符号</td><td>RoPE(要素単位)+ 2D sin-cos 固定テーブル(画像内)+ <code>TimestepEmbedder</code>(時刻)</td><td>sin-cos は固定</td></tr>
+  <tr><td>特殊トークン</td><td><code>&lt;|im_start|&gt;</code> / <code>&lt;|im_end|&gt;</code> / <code>&lt;|vision_start|&gt;</code> / <code>&lt;|vision_end|&gt;</code> の 4 つを追加</td><td>—</td></tr>
+</table>
+
+<div class="callout warn">
+<span class="callout-title">⚠️ 画像トークンを囲む 2 つの特殊トークンは「Und 側」で処理される</span>
+画像ブロックは <code>&lt;|vision_start|&gt;</code> … 画像トークン … <code>&lt;|vision_end|&gt;</code> の形で列に入りますが、
+この 2 つは<strong>ふつうのテキストトークン</strong>です(<code>packed_text_ids</code> に入る)。
+生成モードの推論でも、この 2 つは <code>q_proj</code>(Und 側)で処理され、
+中身の潜在トークンだけが <code>q_proj_moe_gen</code>(Gen 側)を通ります
+(<code>PackedAttentionMoT.forward_inference</code> の <code>mode == 'gen'</code> 分岐が、
+<code>packed_text_indexes</code> と <code>packed_vae_token_indexes</code> を別々に扱っているのがこれです)。
+画像の「入れ物」は言語側、「中身」は生成側という役割分担になっています。
+</div>
+
+<h3>3 つ目の埋め込み: 時刻</h3>
+<p>
+VAE トークンの埋め込みは、実は<strong>3 つの足し算</strong>でできています。
+</p>
+<div class="codeblock">
+<div class="codehead"><span class="path">modeling/bagel/bagel.py</span> L194–197
+<a href="https://github.com/ByteDance-Seed/Bagel/blob/a2fa77dd8caeefc41e6607ae0ec17408d3f4ee9f/modeling/bagel/bagel.py#L194-L197" target="_blank" rel="noopener">GitHub ↗</a></div>
+<pre><code class="language-python">packed_timestep_embeds = self.time_embedder(packed_timesteps)      # ノイズ時刻 t
+latent_token_pos_emb = self.latent_pos_embed(packed_latent_position_ids)  # 画像内 2D 位置
+packed_latent = self.vae2llm(packed_latent) + packed_timestep_embeds + latent_token_pos_emb
+packed_sequence[packed_vae_token_indexes] = packed_latent</code></pre>
+</div>
+<p>
+拡散 Transformer では時刻 \(t\) を AdaLN で全層に注入するのが定石ですが、
+BAGEL は<strong>入力埋め込みに 1 回足すだけ</strong>です。
+LLM 側のアーキテクチャに一切手を加えず、
+「時刻もまた入力の一部」として扱う —— 統一モデルらしい割り切りと言えます。
+</p>
+
+<nav class="pager">
+  <a href="./index.html"><span class="dir">← 前へ</span><span class="title">BAGEL 概要</span></a>
+  <a class="next" href="training.html"><span class="dir">次へ →</span><span class="title">2. 学習プロセス</span></a>
+</nav>
+
+</main>
+
+<footer class="site-footer">
+  <p>引用コード: <a href="https://github.com/ByteDance-Seed/Bagel/tree/a2fa77dd8caeefc41e6607ae0ec17408d3f4ee9f" target="_blank" rel="noopener">ByteDance-Seed/Bagel</a>(Apache-2.0)/
+  論文: <a href="https://arxiv.org/abs/2505.14683" target="_blank" rel="noopener">Emerging Properties in Unified Multimodal Pretraining</a></p>
+</footer>
+
+<script>
+MathJax = { tex: { inlineMath: [['\\(', '\\)']], displayMath: [['$$', '$$']] } };
+</script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js" async></script>
+<script src="assets/diagram-controls.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-core.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-python.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-yaml.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-bash.min.js"></script>
+</body>
+</html>
