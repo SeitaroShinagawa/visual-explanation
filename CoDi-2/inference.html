@@ -377,13 +377,14 @@ LLaMA の SentencePiece トークナイザで ID を引くと次のとおりで�
   <tr><th>確率的か</th><td>Yes(<code>do_sample=True</code>, top-p, temperature)</td><td>No(決定的な線形変換)</td></tr>
   <tr><th>生成のタイミング</th><td>自己回帰ループの各ステップ</td><td>ループ終了<strong>後</strong>にまとめて抽出</td></tr>
   <tr><th>合図</th><td>—</td><td>直前に <code>&lt;p&gt;</code> が書かれていること</td></tr>
-  <tr><th>学習時の損失</th><td>交差エントロピー</td><td>負のコサイン類似度(+任意の拡散損失)</td></tr>
+  <tr><th>学習時の損失</th><td>\(\mathcal{L}_t\)(交差エントロピー)</td><td>\(\alpha\,\mathrm{MSE}\)(コードはコサイン)+ \(\mathcal{L}_{DM}\)</td></tr>
   <tr><th>後段</th><td>そのままユーザーへ</td><td>拡散モデルの条件になり、デノイズを経て実データへ</td></tr>
 </table>
 
 <div class="callout warn">
 <span class="callout-title">「自己回帰的に連続特徴を生成する」の実際</span>
-論文・README は “autoregressively generate … in the continuous feature space” と述べており、
+論文は Abstract で “autoregressively generate … in the continuous feature space”、
+結論で “autoregressively produce the latent features that is fed to diffusers” と述べており、
 <strong>学習時</strong>は確かにその通り(1 つ前の隠れ状態から次の特徴を予測する)です。
 一方<strong>公開されている推論コード</strong>では、生成した特徴を入力列に戻して次のステップへ送る
 —— という<strong>フィードバックは行われていません</strong>。
@@ -487,6 +488,21 @@ classifier-free guidance の差分
 </figcaption>
 </figure>
 
+<div class="callout math">
+<span class="callout-title">論文もそう書いている(§B.1)</span>
+“To effectively condition the image diffusion model, we employ
+<strong>negative prompts as cross-attention conditions</strong> and utilize
+<strong>MLLM-generated features for embedding guidance</strong>.
+… These negative prompts function as unconditioned input guidance,
+serving to enhance the quality of both the image and generated features.”
+<br><br>
+コードから読み取った「テキスト側はネガティブプロンプトで固定し、意味の制御は <code>c_adm</code> が担う」という構造は、
+論文にそのまま書かれていました。
+実際に使われる文字列はコードと論文で少し違い、論文が挙げるのは
+‘worst quality, normal quality, low quality, low res, blurry, watermark, logo, banner, …’ です。
+音声側にも別のネガティブプロンプト(‘distorted, muffled, static noise, …’)が用意されています。
+</div>
+
 <div class="callout point">
 <span class="callout-title">NExT-GPT との対比</span>
 NExT-GPT は <code>prompt_embeds</code>(77×1024 の CLIP テキスト埋め込み)を渡すので、
@@ -497,12 +513,34 @@ CoDi-2 は <code>c_adm</code>(1×1024 の画像埋め込み)を渡すので、
 subject-driven な生成・編集に強い、という理屈になります。
 </div>
 
+<h2 id="fidelity">元データを保ちたいときの追加入力</h2>
+<p>
+画像編集のように「元の絵をできるだけ残したい」タスクでは、条件ベクトル 1 本では情報が足りません。
+論文 §5.1 はこう補足しています。
+</p>
+<div class="callout math">
+<span class="callout-title">論文 §5.1</span>
+“For images or audio that require higher fidelity to the original input, we additionally feed
+<strong>the original image or audio to the diffusion model alongside the generated features
+by concatenation of the diffusion noise</strong>.”
+</div>
+<p>
+つまり <code>c_adm</code>(意味)に加えて、<strong>元データの潜在をノイズにチャンネル方向で連結</strong>して
+UNet に流し込む、という二段構えです。
+CoDi-1 側のコードには <code>x_0_att_type='concat'</code> としてこの仕組みが残っており、
+<code>x_noisy[i] = torch.cat([x_0[i], x_noisy[i]], 2)</code> という行がそれにあたります
+(<a href="architecture.html#concat">アーキテクチャ編</a>)。
+「何を描くか」は連続特徴が、「元の画をどれだけ残すか」は連結入力が担当する、という役割分担です。
+</p>
+
 <h2 id="other-modalities">画像以外のモダリティ</h2>
 <p>
-音声・動画については、CoDi-1 のデコーダを呼ぶ <code>decode()</code> が用意されています
-(<a href="architecture.html#others">アーキテクチャ編 ⑥</a>)。
-潜在 <code>z</code> を受け取って波形やフレーム列に戻すところまでは実装されていますが、
-<strong>「1024 次元の特徴 → 潜在 <code>z</code>」を作る拡散サンプリングの配線は公開コードに含まれていません</strong>。
+論文 §5.1 が挙げる生成器は <strong>AudioLDM2</strong>(音声)と <strong>zeroscope v2 576w</strong>(動画)です。
+一方、公開コードに残っているのは CoDi-1 のデコーダを呼ぶ <code>decode()</code>
+(<a href="architecture.html#others">アーキテクチャ編 ⑥</a>)で、
+潜在 <code>z</code> を波形やフレーム列に戻すところまでしか実装されていません。
+<strong>「1024 次元の特徴 → 潜在 <code>z</code>」を作る拡散サンプリングの配線は公開コードに含まれていない</strong>ため、
+音声・動画の生成経路をそのまま再現することはできません。
 </p>
 
 <div class="callout warn">

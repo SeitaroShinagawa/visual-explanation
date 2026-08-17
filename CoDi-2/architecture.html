@@ -118,7 +118,7 @@ CoDi-2 のアーキテクチャは、突き詰めると
   <!-- LLM band -->
   <g class="p5">
     <rect x="198" y="132" width="560" height="58" rx="10" fill="#efe6fb" stroke="#7b46c9" stroke-width="2.5"/>
-    <text x="478" y="155" font-size="13.5" text-anchor="middle" font-weight="bold" fill="#7b46c9">LLaMA(Vicuna 重み)+ LoRA on q_proj / k_proj / v_proj / o_proj 🔥</text>
+    <text x="478" y="155" font-size="13.5" text-anchor="middle" font-weight="bold" fill="#7b46c9">Llama-2-7b-chat-hf + LoRA(r=128)on q_proj / k_proj / v_proj / o_proj 🔥</text>
     <text x="478" y="176" font-size="11" text-anchor="middle" class="mono" fill="#5b6478">hidden_states[-1]: (B, 1+S, 4096) &nbsp;/&nbsp; logits: (B, 1+S, 32000)</text>
   </g>
   <path d="M 749 106 L 749 122 L 640 122 L 640 130" fill="none" stroke="#8a93ad" stroke-width="2" marker-end="url(#arrs)"/>
@@ -299,6 +299,15 @@ PEFT の LoRA を注意機構の 4 つの射影に挿します。CoDi-2 は
 <strong>語彙を 1 つも増やしません</strong> —— ここも NExT-GPT との大きな違いです。
 </p>
 
+<div class="callout warn">
+<span class="callout-title">重みは Vicuna ではなく Llama-2-7b-chat-hf</span>
+コードの引数名は <code>vicuna_ckpt_path</code> ですが、論文 §5.1 は
+“Our implementation is based on Llama2, specifically <strong>Llama-2-7b-chat-hf</strong>” と明記しています。
+引数名は PandaGPT / NExT-GPT 系の実装から受け継いだ名残と読むのが自然で、
+実際に読み込まれるのは Llama-2-7B-chat です。
+LoRA の rank も論文が <strong>128</strong> と指定しています(コードでは <code>args['lora_r']</code> で外から与える形)。
+</div>
+
 <div class="codeblock">
 <div class="codehead"><span class="path">CoDi-2/core/models/mmllama/openllama.py</span> L149–165
 <a href="https://github.com/microsoft/i-Code/blob/9b16730b7e0254f02a833281335c91ee382552e6/CoDi-2/core/models/mmllama/openllama.py#L149-L165" target="_blank" rel="noopener">GitHub ↗</a></div>
@@ -326,12 +335,40 @@ self.llama_tokenizer = LlamaTokenizer.from_pretrained(vicuna_ckpt_path, use_fast
 入力列に差し込まれる連続ベクトルだけで表現されます。
 </p>
 
+<div class="callout point">
+<span class="callout-title">学習対象は 3 種類だけ —— 論文も同じことを言っている</span>
+“The fine-tuning process focuses only on <strong>the LoRa weights</strong> and
+<strong>the projection layers that map modality encoders into the LLM input space</strong>,
+as well as <strong>the decoder layer that projects LLM-generated features into the diffusion input space</strong>.”(論文 §B.2)
+<br><br>
+これは <code>codi_llama_proj</code> / LoRA / <code>codi_llama_decode</code> の 3 つに正確に対応します。
+ImageBind も拡散モデルも一切更新されません。
+</div>
+
 <h2 id="weave">④ 入力列の組み立て — プレースホルダを実特徴で上書きする</h2>
 <p>
 LLM に渡す <code>inputs_embeds</code> は、
 <strong>トークン ID の列をいったん普通に埋め込んでから、特定の位置だけ差し替える</strong>という方法で作られます。
 差し替え対象の目印が <code>FEATURE_ID</code> という特殊なトークン ID です。
 </p>
+
+<div class="callout point">
+<span class="callout-title">論文が示すプロンプト形式(§3.1)</span>
+論文は、特徴列の前後を<strong>モダリティ名のタグで挟む</strong>と説明しています。
+たとえば
+<br><br>
+<code>“A cat sitting on [image0] is making the sound of [audio0]”</code>
+<br>という modality-interleaved な入力は
+<br><br>
+<code>“A cat sitting on &lt;image&gt; [image feature sequence] &lt;/image&gt;
+is making the sound of &lt;audio&gt; [audio feature sequence] &lt;/audio&gt;”</code>
+<br><br>
+に変換されてから MLLM に入ります。
+公開コードの <code>PROMPT_START = '&lt;Perception&gt;'</code> /
+<code>'&lt;/Perception&gt; '</code>(<a href="training.html#data">学習編</a>)と
+<code>FEATURE_ID</code> のプレースホルダは、この「タグ + 特徴列」構造を実装したものです。
+<strong>タグはただの文字列で、特徴列の実体は下図のように埋め込みレベルで差し込まれます。</strong>
+</div>
 
 <figure class="diagram" id="weave-diagram" data-cycle-ms="12000" data-step-count="4">
 <svg viewBox="0 0 900 420" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="FEATURE_ID プレースホルダを実特徴で置き換えるアニメーション">
@@ -488,11 +525,21 @@ CoDi-2 が「連続特徴空間で生成する」と言えるのは、この受�
 意味的な制御はすべて <code>c_adm</code> 側が担います。
 </p>
 
-<h2 id="others">⑥ 画像以外のデコーダ — CoDi-1 の資産</h2>
+<h2 id="others">⑥ 画像以外のデコーダ</h2>
 <p>
-音声・動画・テキスト潜在のデコードは、前作 CoDi(-1)のモデルがそのまま使われます。
-<code>codi.py</code> には各モダリティの <code>*_encode</code> / <code>*_decode</code> が並んでおり、
-CoDi-2 側の <code>decode()</code> がそれを呼び出します。
+論文 §5.1 は、生成器として次の 3 つを挙げています。
+</p>
+<table>
+  <tr><th>モダリティ</th><th>論文が指定する生成器</th><th>条件の受け取り方</th></tr>
+  <tr><td>🖼️ 画像</td><td>Stable Diffusion 2.1(<code>stabilityai/stable-diffusion-2-1-unclip</code>)</td><td><code>c_adm</code>(画像埋め込み条件)</td></tr>
+  <tr><td>🔊 音声</td><td>AudioLDM2</td><td>条件埋め込み</td></tr>
+  <tr><td>🎬 動画</td><td>zeroscope v2 576w</td><td>条件埋め込み</td></tr>
+</table>
+<p>
+つまり CoDi-2 は、前作 CoDi(-1)の統合拡散モデルを丸ごと引き継いだのではなく、
+<strong>モダリティごとに既製の拡散モデルを並べる</strong>構成に変わっています。
+一方で公開コードには CoDi-1 由来の <code>decode()</code> が残っており、
+潜在 <code>z</code> を各モダリティの VAE で戻す経路が書かれています。
 </p>
 
 <div class="codeblock">
@@ -528,8 +575,28 @@ CoDi-2 側の <code>decode()</code> がそれを呼び出します。
 <code>self.codi</code> はどこにも代入されていません。
 同様に <code>inference()</code>(L572)が呼ぶ <code>self.get_llm_outputs</code> も定義されていません。
 そのまま動くのは<strong>画像生成の経路(<code>generate</code> → <code>generate_image</code>)</strong>だけで、
-音声・動画の経路は利用者が配線を補う必要があります。
+音声(AudioLDM2)・動画(zeroscope v2)の経路は公開コードには含まれていません。
 </div>
+
+<h3 id="concat">高忠実度が要るときの追加テクニック</h3>
+<p>
+論文 §5.1 には、生成条件をもう一段強める工夫が書かれています。
+</p>
+<div class="callout math">
+<span class="callout-title">論文 §5.1</span>
+“For images or audio that require higher fidelity to the original input, we additionally feed
+<strong>the original image or audio to the diffusion model alongside the generated features
+by concatenation of the diffusion noise</strong>. This approach is particularly effective in preserving
+the most perceptual features of the input including instruction editing like adding new content or changing style.”
+</div>
+<p>
+つまり「元画像を保ったまま編集する」タスクでは、
+LLM が生成した特徴だけでなく<strong>元データの潜在をノイズにチャンネル方向で連結して</strong> UNet に入れる、というわけです。
+この仕組みは CoDi-1 側のコードに <code>x_0_att_type='concat'</code> として実装されており、
+<code>codi.py</code> の <code>p_losses</code> に
+<code>x_noisy[i] = torch.cat([x_0[i], x_noisy[i]], 2)</code> という形で現れます
+(<a href="https://github.com/microsoft/i-Code/blob/9b16730b7e0254f02a833281335c91ee382552e6/CoDi-2/core/models/codi.py#L206-L221" target="_blank" rel="noopener">codi.py L206–221</a>)。
+</p>
 
 <h2 id="summary">形のまとめ</h2>
 <table>

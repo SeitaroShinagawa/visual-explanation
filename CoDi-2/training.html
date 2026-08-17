@@ -72,17 +72,18 @@
 </div>
 
 <div class="callout point">
-<span class="callout-title">著者による学習方針(プロジェクトページより)</span>
-“In the training phase, our approach employs <strong>pixel loss obtained from the diffusion models
-alongside token loss</strong>, adhering to the standard causal generation loss.”
-(<a href="https://codi-2.github.io/" target="_blank" rel="noopener">codi-2.github.io</a>)
-<br><br>
-つまり著者の想定は<strong>「トークン損失 + 拡散モデル由来のピクセル損失」</strong>の 2 本立てです。
-一方コードには、その中間項として<strong>特徴の回帰損失(コサイン)</strong>が常時存在し、
-ピクセル損失のほうが <code>perception_type</code> フラグで切り替わる作りになっています。
-本章はコードに即して 3 本立て(<a href="#loss-text">①テキスト</a> /
-<a href="#loss-feat">②特徴回帰</a> / <a href="#loss-diff">③拡散</a>)として読み解き、
-著者の記述との対応を都度示します。
+<span class="callout-title">論文の損失とコードの損失は 1 対 1 で対応する</span>
+論文 §3.2 が定める最終的な学習損失は次の 3 項です。
+$$\mathcal{L} \;=\; \alpha\,\mathrm{MSE}\big(c_{\text{MLLM}},\, C_x(x)\big)
+\;+\; \mathcal{L}_{DM} \;+\; \mathcal{L}_t$$
+これは <code>forward</code> が計算する 3 つの損失とそのまま対応します。
+<table>
+  <tr><th>論文</th><th>コード</th><th>本章の節</th></tr>
+  <tr><td>\(\mathcal{L}_t\)(text token prediction loss)</td><td><code>loss = outputs.loss</code></td><td><a href="#loss-text">①</a></td></tr>
+  <tr><td>\(\alpha\,\mathrm{MSE}(c_{\text{MLLM}}, C_x(x))\)</td><td><code>feature_loss</code>(係数 <code>0.1</code> = \(\alpha\))</td><td><a href="#loss-feat">②</a></td></tr>
+  <tr><td>\(\mathcal{L}_{DM}\)(diffusion generation loss)</td><td><code>diffusion_loss</code></td><td><a href="#loss-diff">③</a></td></tr>
+</table>
+以下ではこの対応を 1 項ずつ確かめていきます。
 </div>
 
 <h2 id="data">学習データの形 — 会話を 1 本の系列に潰す</h2>
@@ -232,6 +233,17 @@ for i in range(batch_size):
         target_ids[i][target_replace] = -100    # ★ 同じ位置をテキスト CE から外す</code></pre>
 </div>
 
+<div class="callout math">
+<span class="callout-title">論文が言う \(C_x(x)\) がこれ</span>
+論文 §3.2 は、LLM に予測させる目標を
+“we explicitly induce that \(c = C_x(x)\)” —— つまり
+<strong>「生成すべきターゲット \(x\) を、条件エンコーダ \(C_x\) に通したもの」</strong>と定めています。
+コードの <code>targets_tmp = encoder_embeds_raw[i][-1:]</code> はまさにこれで、
+<strong>ターゲットを ImageBind に通した特徴</strong>が回帰の教師になります。
+拡散モデルから見れば、自分のエンコーダが作るはずだった値を LLM が代わりに書いてくれる形になり、
+論文の言葉では <strong>“DM is expected to function as an autoencoder”</strong> という状況です。
+</div>
+
 <div class="callout point">
 <span class="callout-title">教師は「そのサンプルの最後の要素」</span>
 <code>targets_tmp = encoder_embeds_raw[i][-1:]</code> —— 教師特徴として使われるのは、
@@ -248,13 +260,24 @@ in-context 学習用のデータでは「例示 → 例示 → お手本の答�
 </p>
 
 <div class="callout math">
-<span class="callout-title">全体の損失</span>
-$$\mathcal{L} \;=\; \underbrace{\mathcal{L}_{\text{text}}}_{\text{outputs.loss}}
-\;+\; \underbrace{0.1 \cdot \mathcal{L}_{\text{feat}}}_{\text{feature\_loss}}
-\;\;\big[\; +\; \mathcal{L}_{\text{diff}} \;\big]$$
-角括弧の \(\mathcal{L}_{\text{diff}}\) は
-<code>perception_type == 'clip-diffusser-back-proop'</code> のときだけ
-<code>feature_loss</code> に加算される項です(コード上はフラグ制御ですが、著者はこれをトークン損失と並ぶ学習の 2 本柱として説明しています)。
+<span class="callout-title">全体の損失(論文 §3.2 とコードの対応)</span>
+$$\mathcal{L} \;=\;
+\underbrace{\mathcal{L}_t}_{\texttt{outputs.loss}}
+\;+\; \underbrace{\alpha\,\mathrm{MSE}\big(c_{\text{MLLM}},\, C_x(x)\big)}_{\texttt{feature\_loss}\;(\alpha = 0.1)}
+\;+\; \underbrace{\mathcal{L}_{DM}}_{\texttt{diffusion\_loss}}$$
+コードでは第 2 項と第 3 項がどちらも <code>feature_loss</code> という 1 つの変数に足し込まれ、
+第 3 項は <code>perception_type == 'clip-diffusser-back-proop'</code> のときだけ加算されます。
+</div>
+
+<div class="callout warn">
+<span class="callout-title">論文は MSE、コードの主経路はコサイン</span>
+第 2 項について、論文は明確に <strong>MSE</strong> と書いていますが、
+公開コードの <code>'clip'</code> 経路が実際に計算するのは<strong>負のコサイン類似度</strong>です。
+literal な MSE を計算しているのは <code>'vae'</code> 経路のほう
+(<a href="#vae-variant">後述</a>の <code>torch.square(...).mean()</code>)。
+ImageBind 特徴を扱う <code>'clip'</code> 経路では、
+スケールを揃える必要がないぶんコサインのほうが素直だという判断だと考えられますが、
+<strong>論文の式とコードが厳密には一致しない箇所</strong>なので、そのまま記しておきます。
 </div>
 
 <figure class="diagram" id="lossflow" data-cycle-ms="12000" data-step-count="3">
@@ -340,7 +363,7 @@ $$\mathcal{L}_{\text{text}} = -\frac{1}{|\mathcal{T}|}\sum_{t \in \mathcal{T}} \
 \(X\) は入力列に差し込まれたマルチモーダル特徴。
 </div>
 
-<h3 id="loss-feat">② 特徴回帰損失 \(\mathcal{L}_{\text{feat}}\) — 「向き」だけを合わせる</h3>
+<h3 id="loss-feat">② 特徴回帰損失 \(\alpha\,\mathrm{MSE}(c_{\text{MLLM}}, C_x(x))\) — 「向き」だけを合わせる</h3>
 <p>
 CoDi-2 の心臓部です。<strong>L2 距離ではなくコサイン類似度</strong>を使っている点、
 そして <strong>予測側だけを L2 正規化している</strong>点に注目してください。
@@ -391,7 +414,8 @@ $$\mathcal{L}_{\text{feat}} \;=\; -\,\frac{1}{|\mathcal{F}|}\sum_{(i,t)\,\in\,\m
 次トークン予測でおなじみの shift とまったく同じ形です。
 つまり CoDi-2 は<strong>「次に来るのはこの特徴だ」を予測する自己回帰モデル</strong>として訓練されており、
 テキストと特徴で学習の枠組みが完全に揃っています。
-公式 README の “autoregressively generate … in the continuous feature space” は、
+論文 Abstract の “autoregressively generate … in the continuous feature space”、
+および結論の “autoregressively produce the latent features that is fed to diffusers” は、
 この 1 行に対応します。
 </div>
 
@@ -405,19 +429,26 @@ NExT-GPT が L2 距離を使うのは、あちらの教師が
 「CLIP テキストエンコーダの出力そのもの」という、スケールまで含めて意味のある値だからです。
 </div>
 
-<h3 id="loss-diff">③ 拡散損失 \(\mathcal{L}_{\text{diff}}\) — 生成器に通して確かめる</h3>
+<h3 id="loss-diff">③ 拡散損失 \(\mathcal{L}_{DM}\) — 生成器に通して確かめる</h3>
 <p>
 埋め込みの向きが合っていても、実際に良い絵が出るとは限りません。
 そこで <code>perception_type</code> に <code>'clip-diffusser-back-proop'</code> を指定すると、
 <strong>LLM が生成した特徴を条件に凍結拡散モデルを 1 ステップ回し、そのノイズ予測誤差を足す</strong>
-経路が有効になります。
+経路が有効になります。関数名の <code>back-proop</code>(back-prop)が示すとおり、
+狙いは<strong>拡散モデルを貫いて LLM まで勾配を流すこと</strong>です。
 </p>
-<p>
-これが著者の言う <strong>“pixel loss obtained from the diffusion models”</strong> に対応する項です。
-コード上はフラグで切り替わる形ですが、
-著者はこれを<strong>「トークン損失と並ぶ、学習の 2 本柱の一方」</strong>として説明しているので、
-本番の学習設定では有効になっていたと読むのが自然でしょう。
-</p>
+
+<div class="callout math">
+<span class="callout-title">論文 §3.2 の式(1)</span>
+$$\mathcal{L}_{DM} = \mathbb{E}_{z,\epsilon,t}\big\lVert \epsilon - \epsilon_\theta\big(z_t,\, t,\, C_y(y)\big)\big\rVert_2^2$$
+\(y\) は条件モダリティ、\(C_y\) はその条件エンコーダ、\(\epsilon_\theta\) は UNet、
+\(z_t\) は時刻 \(t\) のノイズ潜在です。
+CoDi-2 はこの \(C_y(y)\) の位置に<strong>LLM が生成した特徴 \(c_{\text{MLLM}}\)</strong> を差し込みます。
+論文 §1 いわく
+“the gradient obtained from the diffusion models' generation loss also
+<strong>directly back-propagates to the LLM</strong> which can enhance the
+perceptual faithfulness to the inputs including images or audio”。
+</div>
 
 <div class="codeblock">
 <div class="codehead"><span class="path">CoDi-2/core/models/mmllama/openllama.py</span> L353–398(抜粋)
@@ -453,8 +484,8 @@ NExT-GPT が L2 距離を使うのは、あちらの教師が
 </p>
 
 <div class="callout math">
-<span class="callout-title">数式</span>
-$$\mathcal{L}_{\text{diff}} = \mathbb{E}_{z_0,\,\epsilon,\,t}
+<span class="callout-title">コードが実際に計算している形</span>
+$$\mathcal{L}_{DM} = \mathbb{E}_{z_0,\,\epsilon,\,t}
 \Big[\, \big\lVert\, \epsilon_{\text{tgt}} - \epsilon_\theta\big(z_t,\, t,\, [\,c_{\text{txt}},\, \mathrm{aug}(P_{\text{out}}(\mathbf{h}))\,]\big) \big\rVert^2 \,\Big]$$
 UNet \(\epsilon_\theta\)・VAE・テキストエンコーダはすべて凍結なので、
 勾配は条件 \(P_{\text{out}}(\mathbf{h})\) を通って <code>codi_llama_decode</code> と LoRA に届きます。
@@ -488,6 +519,74 @@ YAML の <code>parameterization: "v"</code> に従い、実際の予測対象は
 <code>generate()</code> も ImageBind 系の前提で書かれているため、
 <strong><code>'clip'</code> 系が主経路</strong>と読むのが自然です。
 </p>
+
+<h2 id="pipeline">学習パイプライン — モダリティごとに順番を回す</h2>
+<p>
+公開コードの <code>forward</code> は、冒頭で
+<code>if 'image' in inputs / elif 'text' / elif 'audio'</code> と分岐しており、
+<strong>1 バッチには 1 モダリティしか入らない</strong>作りになっています。
+一見すると手抜きに見えますが、これは論文の学習方針そのものです。
+</p>
+<div class="callout math">
+<span class="callout-title">論文 §B.2</span>
+“The training pipeline involves simultaneous text, image, and audio generation via diffusion.
+To avoid the cumbersome and inefficient aspects of this multitasking approach,
+especially concerning model I/O, we <strong>alternate training phases between text, audio, and image generation</strong>.
+We apply LoRa with a rank of 128 for fine-tuning the model.”
+</div>
+<p>
+3 つの拡散モデル(SD 2.1 unCLIP / AudioLDM2 / zeroscope v2)を同時に GPU に載せるのは重すぎるため、
+<strong>フェーズを切り替えて 1 モダリティずつ学習する</strong>という方針です。
+コードの <code>elif</code> の連なりは、その 1 フェーズ分を切り出したものと読めます。
+</p>
+
+<h2 id="data-sets">学習データ — 「in-context 化」して作る</h2>
+<p>
+論文 §4 は、この学習を成り立たせるためのデータ構築にかなりの紙幅を割いています。
+既存データセットを集めるだけでなく、<strong>それらを in-context 形式に変換する</strong>のがポイントです。
+</p>
+<table>
+  <tr><th>種類</th><th>使うデータ</th><th>役割</th></tr>
+  <tr>
+    <td>マルチモーダル<br>in-context 理解</td>
+    <td>MIMIC-IT(280 万の指示-応答対)</td>
+    <td>出力はテキストのみだが、入力の in-context 理解と指示追従を鍛える</td>
+  </tr>
+  <tr>
+    <td>ペアデータ</td>
+    <td>LAION-400M(画像)/ AudioSet(音声、約 208 万クリップ)/ WebVid(動画、1070 万本)</td>
+    <td>「X → キャプション」と「キャプション → X」の 2 方向のタスクを構成</td>
+  </tr>
+  <tr>
+    <td>指示編集</td>
+    <td>InstructPix2Pix(画像)/ AudioSet を AUDIT 流に加工(音声の追加・除去・置換)</td>
+    <td>「この画像をこう編集して」に応える能力</td>
+  </tr>
+  <tr>
+    <td>構築した<br>in-context 生成</td>
+    <td>InstructPix2Pix の同一プロンプト画像対 / Kosmos-G(Open Images V7、900 万枚)</td>
+    <td>「[image0] と [image1] の間の変換を、[image2] にも適用せよ」という<strong>アナロジー形式</strong>に変換</td>
+  </tr>
+  <tr>
+    <td>テキストのみ<br>データの流用</td>
+    <td>alpaca</td>
+    <td>文中の語句をテキストエンコーダ特徴に差し替え、擬似的なマルチモーダル in-context データにする</td>
+  </tr>
+</table>
+
+<div class="callout point">
+<span class="callout-title">「テキストだけでマルチモーダルを学ぶ」トリック(§4.1)</span>
+最後の行がとくに面白い工夫です。ImageBind はすべてのモダリティを同じ空間に揃えるので、
+<strong>テキストの一部を「そのテキストのエンコーダ特徴」に置き換えても、
+LLM から見れば画像特徴が挿さっているのと同じ形</strong>になります。
+<br><br>
+“A cat typically has a compact, flexible body, covered in soft fur …” を
+“<code>[text0]</code> typically has <code>[text1]</code>, covered in <code>[text2]</code> …”
+に変換する、という具合です(<code>[text0]</code> は “a cat” のテキスト特徴)。
+これで、画像を 1 枚も使わずに interleaved なデータを大量に作れます。
+コードの <code>forward</code> に <code>elif 'text' in inputs:</code> という分岐があり、
+そこで <code>ModalityType.TEXT</code> を ImageBind に通しているのは、この経路のためです。
+</div>
 
 <h2 id="monitor">学習の監視 — トークン正解率</h2>
 <p>
@@ -558,12 +657,13 @@ any-to-any 拡散の作りが見て取れます。
 
 <h2 id="summary">まとめ</h2>
 <table>
-  <tr><th></th><th>\(\mathcal{L}_{\text{text}}\)</th><th>\(\mathcal{L}_{\text{feat}}\)</th><th>\(\mathcal{L}_{\text{diff}}\)(= pixel loss)</th></tr>
+  <tr><th></th><th>\(\mathcal{L}_t\)</th><th>\(\alpha\,\mathrm{MSE}(c_{\text{MLLM}}, C_x(x))\)</th><th>\(\mathcal{L}_{DM}\)</th></tr>
   <tr><th>対象位置</th><td><code>target_ids != -100</code></td><td><code>regression_targets != -100</code></td><td>特徴位置の先頭 1 本</td></tr>
-  <tr><th>形</th><td>交差エントロピー</td><td>負のコサイン類似度 × 0.1</td><td>拡散のノイズ予測誤差</td></tr>
-  <tr><th>教師</th><td>応答トークン</td><td>ImageBind の実特徴</td><td>正解画像の VAE 潜在</td></tr>
-  <tr><th>学習されるもの</th><td colspan="3" style="text-align:center">LoRA(q,k,v,o)+ <code>codi_llama_proj</code> + <code>codi_llama_decode</code> のみ 🔥</td></tr>
-  <tr><th>凍結されるもの</th><td colspan="3" style="text-align:center">ImageBind / LLaMA 本体 / SD-unCLIP(UNet・VAE・テキストエンコーダ)🧊</td></tr>
+  <tr><th>論文の形</th><td>因果的言語モデル損失</td><td>MSE(重み \(\alpha\))</td><td>式(1)の拡散損失</td></tr>
+  <tr><th>コードの形</th><td>交差エントロピー</td><td><strong>負のコサイン類似度 × 0.1</strong>(<code>'vae'</code> 経路だけ MSE)</td><td>拡散のノイズ予測誤差</td></tr>
+  <tr><th>教師</th><td>応答トークン</td><td>ターゲットの ImageBind 特徴 \(C_x(x)\)</td><td>正解画像の VAE 潜在</td></tr>
+  <tr><th>学習されるもの</th><td colspan="3" style="text-align:center">LoRA(r=128, q/k/v/o)+ <code>codi_llama_proj</code> + <code>codi_llama_decode</code> のみ 🔥</td></tr>
+  <tr><th>凍結されるもの</th><td colspan="3" style="text-align:center">ImageBind / Llama-2 本体 / 拡散モデル(UNet・VAE・テキストエンコーダ)🧊</td></tr>
 </table>
 
 <div class="callout point">

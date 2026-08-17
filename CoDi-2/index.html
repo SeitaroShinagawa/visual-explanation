@@ -83,9 +83,10 @@ CoDi-2 は画像を作るとき、「画像を表す特別な語彙トークン�
 
 <h3>3 つの登場人物</h3>
 <ul>
-  <li><strong>入力側</strong>: <a href="https://github.com/facebookresearch/ImageBind" target="_blank" rel="noopener">ImageBind</a>(huge)が画像・音声・テキストを共通の 1024 次元空間へ。<em>ただし後述のとおり画像側は改造されており、1 枚 = 1 ベクトルではなくパッチ列を返します</em></li>
-  <li><strong>中核</strong>: LLaMA 系 LLM(Vicuna チェックポイント)+ LoRA。理解も、テキスト生成も、特徴生成もすべてここが担当</li>
-  <li><strong>出力側</strong>: <strong>Stable Diffusion 2.1 unCLIP-H の「ImageBind 版」</strong>。テキスト条件ではなく<strong>画像埋め込み条件(<code>c_adm</code>)</strong>で動く拡散モデルなので、LLM が吐いた 1024 次元ベクトルをそのまま受け取れます</li>
+  <li><strong>入力側</strong>: <a href="https://github.com/facebookresearch/ImageBind" target="_blank" rel="noopener">ImageBind</a> が画像・音声・テキストを共通の 1024 次元空間へ。<em>ただし後述のとおり画像側は改造されており、1 枚 = 1 ベクトルではなくパッチ列を返します</em></li>
+  <li><strong>中核</strong>: <strong>Llama-2-7b-chat-hf</strong> + LoRA(rank 128)。理解も、テキスト生成も、特徴生成もすべてここが担当</li>
+  <li><strong>出力側</strong>: <strong>Stable Diffusion 2.1 unCLIP</strong>(画像)、<strong>AudioLDM2</strong>(音声)、<strong>zeroscope v2</strong>(動画)。
+  とくに画像側はテキスト条件ではなく<strong>画像埋め込み条件(<code>c_adm</code>)</strong>で動くので、LLM が吐いた 1024 次元ベクトルをそのまま受け取れます</li>
 </ul>
 <p>
 これらを繋ぐのは <code>codi_llama_proj</code> と <code>codi_llama_decode</code> という
@@ -94,19 +95,32 @@ CoDi-2 は画像を作るとき、「画像を表す特別な語彙トークン�
 違いは「LLM と拡散モデルの間で何をやりとりするか」にあります。
 </p>
 
-<div class="callout point">
-<span class="callout-title">著者による設計の要約(プロジェクトページ “Model Architecture” より)</span>
-“CoDi-2 comprises a multimodal large language model that encompasses <strong>encoder and decoder for both
-audio and vision inputs</strong>, as well as a large language model. This architecture facilitates the decoding
-of image or audio inputs using diffusion models. In the training phase, our approach employs
-<strong>pixel loss obtained from the diffusion models alongside token loss</strong>, adhering to the standard
-causal generation loss.”
-(<a href="https://codi-2.github.io/" target="_blank" rel="noopener">codi-2.github.io</a>)
+<div class="callout math">
+<span class="callout-title">論文が定める学習目的(§3.2)</span>
+論文はこの「LLM に条件特徴を書かせる」枠組みを、次の 1 本の式にまとめています。
+$$\mathcal{L} \;=\; \alpha\,\mathrm{MSE}\big(c_{\text{MLLM}},\, C_x(x)\big) \;+\; \mathcal{L}_{DM} \;+\; \mathcal{L}_t$$
+\(c_{\text{MLLM}}\) は LLM が生成した条件特徴、\(C_x(x)\) は<strong>生成すべきターゲット \(x\) を条件エンコーダに通したもの</strong>、
+\(\mathcal{L}_{DM}\) は拡散モデルの標準的な生成損失、\(\mathcal{L}_t\) はテキストトークン予測損失です。
 <br><br>
-最後の一文が重要です。学習は<strong>「トークン損失(標準の因果的言語モデル損失)+ 拡散モデル由来のピクセル損失」</strong>
-という 2 本立てだと明言されています。公開コードではこのピクセル損失が
-<code>perception_type</code> フラグで切り替わる形になっており、
-その対応関係は<a href="training.html#loss-diff">学習編③</a>で確認します。
+この 3 項が、公開コードの
+<a href="training.html#loss-feat">特徴回帰損失</a> /
+<a href="training.html#loss-diff">拡散損失</a> /
+<a href="training.html#loss-text">テキスト CE 損失</a>
+にそれぞれ対応します。重み \(\alpha\) はコードでは <code>0.1</code> です。
+数式とコードの突き合わせは<a href="training.html#losses">学習編</a>で行います。
+</div>
+
+<div class="callout point">
+<span class="callout-title">論文が明かす、この設計のいちばんの妙(§3.2)</span>
+なぜ「ターゲット画像そのもの」ではなく「ターゲットを<strong>エンコーダに通した特徴</strong>」を教師にするのか。
+論文はこう書いています ——
+“we explicitly induce that \(c = C_x(x)\), i.e., MLLM is trained to generate \(C_x(x)\)
+and <strong>DM is expected to function as an autoencoder</strong> in this case.”
+<br><br>
+つまり拡散モデルを<strong>「エンコーダ側だけ LLM に肩代わりさせたオートエンコーダ」</strong>とみなす、という発想です。
+本来 \(C_x(x)\) を作るのはエンコーダの仕事ですが、その出力を LLM に予測させれば、
+デコーダ(拡散モデル)は何も変えずに再構成器として使い回せます。
+学習ターゲットが明確な連続ベクトルになるため、「より強く直接的な教師信号」が得られる、というのが著者の主張です。
 </div>
 
 <h2 id="overview">全体アーキテクチャ</h2>
@@ -162,7 +176,7 @@ causal generation loss.”
   <!-- ===== LLM ===== -->
   <g class="s4">
     <rect x="452" y="52" width="152" height="215" rx="12" fill="#fff" stroke="#1c2333" stroke-width="2.5"/>
-    <text x="528" y="86" font-size="15" font-weight="bold" text-anchor="middle">LLaMA / Vicuna</text>
+    <text x="528" y="86" font-size="15" font-weight="bold" text-anchor="middle">Llama-2-7b-chat</text>
     <text x="528" y="106" font-size="11" text-anchor="middle" fill="#5b6478">4096-d(凍結 🧊)</text>
     <text x="528" y="128" font-size="11" text-anchor="middle" fill="#7b46c9">+ LoRA(q,k,v,o)🔥</text>
     <rect x="470" y="146" width="116" height="46" rx="6" fill="#efe6fb" stroke="#7b46c9"/>
@@ -190,8 +204,8 @@ causal generation loss.”
     <text x="736" y="378" font-size="10" text-anchor="middle" fill="#5b6478">画像生成(凍結 🧊)</text>
 
     <rect x="646" y="404" width="180" height="60" rx="9" fill="#fff" stroke="#e07b1f" stroke-width="2"/>
-    <text x="736" y="426" font-size="12" font-weight="bold" text-anchor="middle" fill="#e07b1f">CoDi(-1) デコーダ群</text>
-    <text x="736" y="444" font-size="10" text-anchor="middle" fill="#5b6478">AudioLDM VAE / AutoKL</text>
+    <text x="736" y="426" font-size="12" font-weight="bold" text-anchor="middle" fill="#e07b1f">AudioLDM2 / zeroscope v2</text>
+    <text x="736" y="444" font-size="10" text-anchor="middle" fill="#5b6478">同じ 1024-d 特徴を条件に取る</text>
     <text x="736" y="458" font-size="10" text-anchor="middle" fill="#5b6478">音声・動画(凍結 🧊)</text>
   </g>
 
@@ -448,12 +462,19 @@ CoDi-2 は LLM に<strong>「画像そのものの埋め込みを書かせる」
 損失は次の 3 本です。
 </p>
 <ol>
-  <li><strong>テキスト CE 損失</strong>: LLaMA 標準の次トークン予測。ただし<strong>特徴を出すべき位置は <code>-100</code> でマスクされ、CE の対象外</strong></li>
-  <li><strong>特徴回帰損失</strong>: その位置の隠れ状態を <code>codi_llama_decode</code> に通し、
-  ImageBind が返した本物の特徴と<strong>コサイン類似度を最大化</strong>(係数 0.1)</li>
-  <li><strong>拡散損失(著者の言う pixel loss)</strong>: 生成した特徴で実際に SD-unCLIP を走らせ、そのノイズ予測誤差も足す(コード上は <code>perception_type</code> フラグで切り替わる)</li>
+  <li><strong>テキスト CE 損失</strong> \(=\mathcal{L}_t\): 標準の次トークン予測。ただし<strong>特徴を出すべき位置は <code>-100</code> でマスクされ、CE の対象外</strong></li>
+  <li><strong>特徴回帰損失</strong> \(=\alpha\,\mathrm{MSE}\): その位置の隠れ状態を <code>codi_llama_decode</code> に通し、
+  ターゲットの ImageBind 特徴に近づける(係数 <code>0.1</code> = \(\alpha\)。
+  ただし論文は MSE、コードの主経路は<strong>コサイン類似度</strong>という差があります)</li>
+  <li><strong>拡散損失</strong> \(=\mathcal{L}_{DM}\): 生成した特徴で実際に拡散モデルを走らせ、そのノイズ予測誤差も足す
+  (コード上は <code>perception_type</code> フラグで切り替わる)</li>
 </ol>
-<p>数式とコードの対応は<a href="training.html">学習編</a>で追いかけます。</p>
+<p>
+また学習は<strong>テキスト・画像・音声の生成フェーズを交互に切り替えて</strong>進められます(論文 §B.2)。
+コードの <code>forward</code> が <code>if 'image' in inputs / elif 'text' / elif 'audio'</code> と
+1 バッチ 1 モダリティで書かれているのは、この方針の反映です。
+数式とコードの対応は<a href="training.html">学習編</a>で追いかけます。
+</p>
 
 <h3>生成: <code>&lt;p&gt;</code> という 3 トークンが分岐器</h3>
 <p>
