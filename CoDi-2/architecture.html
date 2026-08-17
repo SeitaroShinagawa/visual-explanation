@@ -1,0 +1,639 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CoDi-2 図解 1 — アーキテクチャ詳解</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🎼</text></svg>">
+<link rel="stylesheet" href="assets/style.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/themes/prism-tomorrow.min.css">
+<style>
+/* ===== tensor-shape pipeline (14s, 7 steps) ===== */
+/* `backwards` is required: without it a delayed step keeps its base opacity (1)
+   until its delay elapses, so the whole first cycle shows every step highlighted. */
+@keyframes sh-step {
+  0%, 4% { opacity: 0.3; }
+  8%, 26% { opacity: 1; }
+  30%, 100% { opacity: 0.3; }
+}
+#shapes .p1 { animation: sh-step 14s ease-in-out infinite backwards; animation-delay: 0s; }
+#shapes .p2 { animation: sh-step 14s ease-in-out infinite backwards; animation-delay: 2s; }
+#shapes .p3 { animation: sh-step 14s ease-in-out infinite backwards; animation-delay: 4s; }
+#shapes .p4 { animation: sh-step 14s ease-in-out infinite backwards; animation-delay: 6s; }
+#shapes .p5 { animation: sh-step 14s ease-in-out infinite backwards; animation-delay: 8s; }
+#shapes .p6 { animation: sh-step 14s ease-in-out infinite backwards; animation-delay: 10s; }
+#shapes .p7 { animation: sh-step 14s ease-in-out infinite backwards; animation-delay: 12s; }
+
+/* ===== input weaving diagram (12s, 4 steps) ===== */
+#weave-diagram .w1 { animation: wv 12s ease-in-out infinite; animation-delay: 0s; opacity: 0; }
+#weave-diagram .w2 { animation: wv 12s ease-in-out infinite; animation-delay: 3s; opacity: 0; }
+#weave-diagram .w3 { animation: wv 12s ease-in-out infinite; animation-delay: 6s; opacity: 0; }
+#weave-diagram .w4 { animation: wv 12s ease-in-out infinite; animation-delay: 9s; opacity: 0; }
+@keyframes wv {
+  0%, 2% { opacity: 0; }
+  6%, 90% { opacity: 1; }
+  97%, 100% { opacity: 0; }
+}
+/* placeholder slots fade out exactly when the real embeddings arrive */
+#weave-diagram .slot { animation: wv-slot 12s ease-in-out infinite; }
+@keyframes wv-slot {
+  0%, 24% { opacity: 1; }
+  30%, 90% { opacity: 0.12; }
+  97%, 100% { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #shapes .p1, #shapes .p2, #shapes .p3, #shapes .p4,
+  #shapes .p5, #shapes .p6, #shapes .p7 { opacity: 1; }
+  #weave-diagram .w1, #weave-diagram .w2, #weave-diagram .w3, #weave-diagram .w4 { opacity: 1; }
+  #weave-diagram .slot { opacity: 0.25; }
+}
+</style>
+</head>
+<body>
+
+<nav class="topnav">
+  <a class="home-link" href="../index.html">Visual Explanation</a><span class="sep">/</span>
+  <a href="./index.html">CoDi-2 概要</a>
+  <a href="architecture.html" class="current">1. アーキテクチャ</a>
+  <a href="training.html">2. 学習プロセス</a>
+  <a href="inference.html">3. 生成プロセス</a>
+</nav>
+
+<header class="page-header">
+  <h1>1. アーキテクチャ詳解</h1>
+  <p>CoDi-2 の本体は <code>openllama.py</code> の <code>OpenLLAMAPEFTModel</code> クラス 1 つ。
+  改造 ImageBind・対称な 2 つの MLP・LoRA・ImageBind 条件の unCLIP を、テンソル形状を追って読み解きます。</p>
+</header>
+
+<main class="article">
+
+<h2 id="overview">形の全体像</h2>
+<p>
+まず、1024 と 4096 という 2 つの数字がどこで行き来しているかを掴んでください。
+CoDi-2 のアーキテクチャは、突き詰めると
+<strong>「ImageBind の 1024 次元」と「LLM の 4096 次元」の間を往復するだけ</strong>です。
+</p>
+
+<figure class="diagram" id="shapes" data-cycle-ms="14000" data-step-count="7">
+<svg viewBox="0 0 920 470" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="CoDi-2 のテンソル形状の流れ">
+  <defs>
+    <marker id="arrs" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#8a93ad"/>
+    </marker>
+  </defs>
+
+  <!-- row 1: input side -->
+  <text x="24" y="28" font-size="13" font-weight="bold" fill="#3556d4">入力側: 生データ → LLM の入力列</text>
+
+  <g class="p1">
+    <rect x="24" y="42" width="140" height="62" rx="9" fill="#e5eafc" stroke="#3556d4" stroke-width="2"/>
+    <text x="94" y="64" font-size="12" text-anchor="middle" font-weight="bold" fill="#3556d4">🖼️ 画像 1 枚</text>
+    <text x="94" y="82" font-size="10.5" text-anchor="middle" class="mono" fill="#5b6478">(3, 224, 224)</text>
+    <text x="94" y="97" font-size="10" text-anchor="middle" fill="#5b6478">load_and_transform</text>
+  </g>
+  <path d="M 166 73 L 194 73" fill="none" stroke="#8a93ad" stroke-width="2" marker-end="url(#arrs)"/>
+
+  <g class="p2">
+    <rect x="198" y="42" width="168" height="62" rx="9" fill="#fff" stroke="#3556d4" stroke-width="2"/>
+    <text x="282" y="62" font-size="12" text-anchor="middle" font-weight="bold" fill="#3556d4">ImageBind(改造)</text>
+    <text x="282" y="80" font-size="10.5" text-anchor="middle" class="mono" fill="#5b6478">→ (L, 1024)</text>
+    <text x="282" y="96" font-size="10" text-anchor="middle" fill="#d43d51">プーリングを外してある</text>
+  </g>
+  <path d="M 368 73 L 396 73" fill="none" stroke="#8a93ad" stroke-width="2" marker-end="url(#arrs)"/>
+
+  <g class="p3">
+    <rect x="400" y="42" width="168" height="62" rx="9" fill="#e5eafc" stroke="#3556d4" stroke-width="2"/>
+    <text x="484" y="62" font-size="12" text-anchor="middle" font-weight="bold" fill="#3556d4">codi_llama_proj 🔥</text>
+    <text x="484" y="80" font-size="10.5" text-anchor="middle" class="mono" fill="#5b6478">(L, 1024) → (L, 4096)</text>
+    <text x="484" y="96" font-size="10" text-anchor="middle" fill="#5b6478">Linear-GELU-LN-Linear</text>
+  </g>
+  <path d="M 570 73 L 598 73" fill="none" stroke="#8a93ad" stroke-width="2" marker-end="url(#arrs)"/>
+
+  <g class="p4">
+    <rect x="602" y="42" width="294" height="62" rx="9" fill="#fff" stroke="#1c2333" stroke-width="2.5"/>
+    <text x="749" y="62" font-size="12" text-anchor="middle" font-weight="bold">FEATURE_ID の位置へ差し込む</text>
+    <text x="749" y="80" font-size="10.5" text-anchor="middle" class="mono" fill="#5b6478">inputs_embeds: (B, 1+S, 4096)</text>
+    <text x="749" y="96" font-size="10" text-anchor="middle" fill="#5b6478">テキストトークンの埋め込みと同じ列に混ぜる</text>
+  </g>
+
+  <!-- LLM band -->
+  <g class="p5">
+    <rect x="198" y="132" width="560" height="58" rx="10" fill="#efe6fb" stroke="#7b46c9" stroke-width="2.5"/>
+    <text x="478" y="155" font-size="13.5" text-anchor="middle" font-weight="bold" fill="#7b46c9">Llama-2-7b-chat-hf + LoRA(r=128)on q_proj / k_proj / v_proj / o_proj 🔥</text>
+    <text x="478" y="176" font-size="11" text-anchor="middle" class="mono" fill="#5b6478">hidden_states[-1]: (B, 1+S, 4096) &nbsp;/&nbsp; logits: (B, 1+S, 32000)</text>
+  </g>
+  <path d="M 749 106 L 749 122 L 640 122 L 640 130" fill="none" stroke="#8a93ad" stroke-width="2" marker-end="url(#arrs)"/>
+
+  <!-- row 2: two exits -->
+  <text x="24" y="228" font-size="13" font-weight="bold" fill="#d43d51">出力側: ここで 2 つに分岐する</text>
+
+  <g class="p6">
+    <rect x="24" y="242" width="270" height="86" rx="10" fill="#e9ecf5" stroke="#8a93ad" stroke-width="2"/>
+    <text x="159" y="266" font-size="12.5" text-anchor="middle" font-weight="bold">① テキスト: lm_head を通す</text>
+    <text x="159" y="286" font-size="10.5" text-anchor="middle" class="mono" fill="#5b6478">(4096) → (32000) → argmax / sample</text>
+    <text x="159" y="306" font-size="10.5" text-anchor="middle" fill="#5b6478">= ふつうの言語モデル。離散化される</text>
+    <text x="159" y="321" font-size="10" text-anchor="middle" fill="#5b6478">CoDi-2 の応答テキストはすべてこの経路</text>
+  </g>
+
+  <g class="p7">
+    <rect x="322" y="242" width="574" height="86" rx="10" fill="#fbe4e8" stroke="#d43d51" stroke-width="2"/>
+    <text x="609" y="266" font-size="12.5" text-anchor="middle" font-weight="bold" fill="#d43d51">② 非テキスト: lm_head を通さず、隠れ状態を直接使う</text>
+    <text x="609" y="286" font-size="10.5" text-anchor="middle" class="mono" fill="#5b6478">h = hidden_states[-1][&lt;p&gt; の直後] : (4096) → codi_llama_decode 🔥 → (1024)</text>
+    <text x="609" y="306" font-size="10.5" text-anchor="middle" fill="#5b6478">語彙に丸められないので、情報は連続のまま拡散モデルへ渡る</text>
+    <text x="609" y="321" font-size="10" text-anchor="middle" fill="#5b6478">→ ImageBind と同じ 1024 次元空間に着地する = 拡散モデルがそのまま食べられる</text>
+  </g>
+
+  <path d="M 478 192 L 478 212 L 159 212 L 159 240" fill="none" stroke="#8a93ad" stroke-width="2" marker-end="url(#arrs)"/>
+  <path d="M 478 192 L 478 212 L 609 212 L 609 240" fill="none" stroke="#d43d51" stroke-width="2" marker-end="url(#arrs)"/>
+
+  <!-- diffusion tail -->
+  <g class="p7">
+    <rect x="322" y="356" width="270" height="76" rx="10" fill="#e0f5ec" stroke="#1e9e6a" stroke-width="2"/>
+    <text x="457" y="378" font-size="12" text-anchor="middle" font-weight="bold" fill="#1e9e6a">noise_augmentor</text>
+    <text x="457" y="397" font-size="10.5" text-anchor="middle" class="mono" fill="#5b6478">cat[(B,1024), (B,1024)] = (B, 2048)</text>
+    <text x="457" y="416" font-size="10" text-anchor="middle" fill="#5b6478">特徴 + ノイズレベル埋め込み</text>
+
+    <rect x="626" y="356" width="270" height="76" rx="10" fill="#fff" stroke="#3556d4" stroke-width="2"/>
+    <text x="761" y="378" font-size="12" text-anchor="middle" font-weight="bold" fill="#3556d4">UNet(adm_in_channels: 2048)</text>
+    <text x="761" y="397" font-size="10.5" text-anchor="middle" class="mono" fill="#5b6478">潜在 (B, 4, 96, 96) を 50 step デノイズ</text>
+    <text x="761" y="416" font-size="10" text-anchor="middle" fill="#5b6478">→ VAE decode → 768×768 の画像</text>
+    <path d="M 594 394 L 622 394" fill="none" stroke="#8a93ad" stroke-width="2" marker-end="url(#arrs)"/>
+  </g>
+  <path d="M 609 330 L 609 344 L 457 344 L 457 354" fill="none" stroke="#8a93ad" stroke-width="2" marker-end="url(#arrs)"/>
+
+  <text x="24" y="380" font-size="11.5" fill="#5b6478">1024 と 2048 が</text>
+  <text x="24" y="398" font-size="11.5" fill="#5b6478">きれいに繋がるのは</text>
+  <text x="24" y="416" font-size="11.5" fill="#5b6478">偶然ではなく設計。</text>
+</svg>
+<figcaption>
+テンソル形状で見た CoDi-2。入力側は 1024→4096、出力側は 4096→1024 と、
+2 つの MLP が鏡像の関係になっている。LLM の隠れ状態が
+「ImageBind 空間の点」に戻ってくることが、拡散モデルと直結できる理由。
+</figcaption>
+</figure>
+
+<h2 id="imagebind">① 改造 ImageBind — 画像だけ「パッチ列」で返る</h2>
+<p>
+CoDi-2 は ImageBind をリポジトリ内にベンダリングしていますが、
+本家からひとつ重要な変更が加えられています。
+<strong>画像(VISION)ヘッドの <code>SelectElement(index=0)</code> がコメントアウトされている</strong>のです。
+</p>
+
+<div class="codeblock">
+<div class="codehead"><span class="path">CoDi-2/core/models/mmllama/ImageBind/imagebind/models/imagebind_model.py</span> L378–397
+<a href="https://github.com/microsoft/i-Code/blob/9b16730b7e0254f02a833281335c91ee382552e6/CoDi-2/core/models/mmllama/ImageBind/imagebind/models/imagebind_model.py#L378-L397" target="_blank" rel="noopener">GitHub ↗</a></div>
+<pre><code class="language-python">modality_heads[ModalityType.VISION] = nn.Sequential(
+    nn.LayerNorm(normalized_shape=vision_embed_dim, eps=1e-6),
+    nn.Identity(),
+    # SelectElement(index=0),          # ← 本家ではここで CLS トークンだけを取り出していた
+    nn.Linear(vision_embed_dim, out_embed_dim, bias=False),
+)
+
+modality_heads[ModalityType.TEXT] = SelectEOSAndProject(...)   # テキストは EOS 位置 1 本のまま
+
+modality_heads[ModalityType.AUDIO] = nn.Sequential(
+    nn.LayerNorm(normalized_shape=audio_embed_dim, eps=1e-6),
+    nn.Identity(),
+    SelectElement(index=0),            # ← 音声はコメントアウトされていない = 1 本のまま
+    nn.Linear(audio_embed_dim, out_embed_dim, bias=False),
+)</code></pre>
+</div>
+
+<p>
+<code>SelectElement</code> は <code>x[:, index, ...]</code> を返すだけの層なので、
+これを外すと画像ヘッドの出力は <code>(B, 1024)</code> ではなく
+<code>(B, L, 1024)</code>(<code>L</code> = CLS + パッチ数)になります。
+つまり画像だけが<strong>「1 枚 = 複数トークン」</strong>として LLM に入る、というのが CoDi-2 の入力設計です。
+</p>
+
+<div class="callout point">
+<span class="callout-title">なぜ画像だけ細かく入れるのか</span>
+CoDi-2 が狙うのは「この画像の<strong>この部分</strong>を、あの音のように編集して」といった
+細かい指示追従です。1 枚を 1 ベクトルに潰してしまうと空間情報が失われるため、
+入力側では意図的にパッチ列を保っています。一方<strong>出力側は 1 本のベクトルで十分</strong>
+—— 拡散モデル(unCLIP)が要求する条件がまさに 1 本だからです。
+この非対称性が CoDi-2 の設計の妙です。
+</div>
+
+<p>
+この改造に呼応して、<code>forward</code> のエンコード部にも独特の正規化が現れます。
+</p>
+
+<div class="codeblock">
+<div class="codehead"><span class="path">CoDi-2/core/models/mmllama/openllama.py</span> L289–320(抜粋)
+<a href="https://github.com/microsoft/i-Code/blob/9b16730b7e0254f02a833281335c91ee382552e6/CoDi-2/core/models/mmllama/openllama.py#L289-L320" target="_blank" rel="noopener">GitHub ↗</a></div>
+<pre><code class="language-python">if 'image' in inputs:
+    self.perception_len = self.perception_len_image      # 画像は 1 枚 = perception_len トークン
+    encoder_embeds_all = []
+    for image_list in inputs['image']:
+        if 'clip' in self.perception_type:
+            with torch.no_grad():                        # ← ImageBind は常に凍結
+                encoder_embeds_unnormed = self.imagebind({ModalityType.VISION:
+                    data.load_and_transform_vision_data(image_list, self.device)})['vision']
+                # CLS 位置のノルムで系列全体を割る = CLS を単位ベクトル化するスケーリング
+                encoder_embeds = encoder_embeds_unnormed / torch.norm(
+                    encoder_embeds_unnormed[:, :1], dim=-1, keepdim=True)
+        encoder_embeds_all.append(encoder_embeds)
+elif 'text' in inputs:
+    self.perception_len = 1                              # テキストと音声は 1 サンプル = 1 トークン
+    ...
+elif 'audio' in inputs:
+    self.perception_len = 1
+    ...</code></pre>
+</div>
+<p>
+画像だけ <code>perception_len</code> が可変で、テキストと音声は <code>1</code> に固定されている点に注目してください。
+これは前述のヘッド改造と正確に対応しています。
+</p>
+
+<h2 id="projectors">② 2 つの MLP — 対称に置かれた「翻訳器」</h2>
+<p>
+CoDi-2 で新規に学習される重みは、LoRA を除けばこの 2 つの <code>nn.Sequential</code> がすべてです。
+</p>
+
+<div class="codeblock">
+<div class="codehead"><span class="path">CoDi-2/core/models/mmllama/openllama.py</span> L171–189
+<a href="https://github.com/microsoft/i-Code/blob/9b16730b7e0254f02a833281335c91ee382552e6/CoDi-2/core/models/mmllama/openllama.py#L171-L189" target="_blank" rel="noopener">GitHub ↗</a></div>
+<pre><code class="language-python">if 'clip' in self.perception_type:
+    dim_in = 1024                                  # ImageBind の出力次元
+    self.dim_in = dim_in
+    dropout = 0.1
+    dim_out = self.llama_model.config.hidden_size  # LLaMA-7B なら 4096
+
+    self.codi_llama_proj = nn.Sequential(          # 入力用: 1024 → 4096
+        nn.Linear(dim_in, dim_out),
+        nn.GELU(),
+        nn.LayerNorm(dim_out),
+        nn.Linear(dim_out, dim_out),
+    )
+
+    self.codi_llama_decode = nn.Sequential(        # 出力用: 4096 → 1024
+        nn.Linear(dim_out, dim_in),
+        nn.GELU(),
+        nn.LayerNorm(dim_in),
+        nn.Linear(dim_in, dim_in),
+    )</code></pre>
+</div>
+
+<div class="callout math">
+<span class="callout-title">式で書くと</span>
+$$P_{\text{in}}(\mathbf{v}) = W_2\,\mathrm{LN}\!\big(\sigma(W_1 \mathbf{v})\big),\qquad
+P_{\text{out}}(\mathbf{h}) = W_4\,\mathrm{LN}\!\big(\sigma(W_3 \mathbf{h})\big)$$
+\(\sigma\) は GELU。\(P_{\text{in}}: \mathbb{R}^{1024}\to\mathbb{R}^{4096}\)、
+\(P_{\text{out}}: \mathbb{R}^{4096}\to\mathbb{R}^{1024}\) と、次元がちょうど逆になっています。
+重みは共有されておらず、それぞれ独立に学習されます。
+</div>
+
+<div class="callout warn">
+<span class="callout-title">NExT-GPT の出力プロジェクタとの違い</span>
+NExT-GPT の出力プロジェクタは <code>(2n−1, 4096)</code> の隠れ状態列を受け取り、
+Transformer で <code>(77, 1024)</code> という<strong>系列</strong>を作る必要がありました
+(CLIP テキストエンコーダの出力を模倣するため)。
+CoDi-2 の <code>codi_llama_decode</code> は<strong>位置ごとに独立な MLP</strong>で、系列も作りません。
+渡す相手が「テキスト埋め込み列」ではなく「画像埋め込み 1 本」だからこそ、ここまで単純化できています。
+</div>
+
+<h2 id="llm">③ LLM と LoRA</h2>
+<p>
+LLM は HuggingFace の <code>LlamaForCausalLM</code> をそのまま読み込み、
+PEFT の LoRA を注意機構の 4 つの射影に挿します。CoDi-2 は
+<strong>語彙を 1 つも増やしません</strong> —— ここも NExT-GPT との大きな違いです。
+</p>
+
+<div class="callout warn">
+<span class="callout-title">重みは Vicuna ではなく Llama-2-7b-chat-hf</span>
+コードの引数名は <code>vicuna_ckpt_path</code> ですが、論文 §5.1 は
+“Our implementation is based on Llama2, specifically <strong>Llama-2-7b-chat-hf</strong>” と明記しています。
+引数名は PandaGPT / NExT-GPT 系の実装から受け継いだ名残と読むのが自然で、
+実際に読み込まれるのは Llama-2-7B-chat です。
+LoRA の rank も論文が <strong>128</strong> と指定しています(コードでは <code>args['lora_r']</code> で外から与える形)。
+</div>
+
+<div class="codeblock">
+<div class="codehead"><span class="path">CoDi-2/core/models/mmllama/openllama.py</span> L149–165
+<a href="https://github.com/microsoft/i-Code/blob/9b16730b7e0254f02a833281335c91ee382552e6/CoDi-2/core/models/mmllama/openllama.py#L149-L165" target="_blank" rel="noopener">GitHub ↗</a></div>
+<pre><code class="language-python"># add the lora module
+peft_config = LoraConfig(
+    task_type=TaskType.CAUSAL_LM,
+    inference_mode=False,
+    r=self.args['lora_r'],
+    lora_alpha=self.args['lora_alpha'],
+    lora_dropout=self.args['lora_dropout'],
+    target_modules=['q_proj', 'k_proj', 'v_proj', 'o_proj']   # 注意機構だけに LoRA
+)
+
+self.llama_model = LlamaForCausalLM.from_pretrained(
+    vicuna_ckpt_path, cache_dir=args['data_dir'],
+    torch_dtype=torch.float16, use_flash_attention_2=True)
+self.llama_model = get_peft_model(self.llama_model, peft_config)
+self.llama_model.print_trainable_parameters()
+
+self.llama_tokenizer = LlamaTokenizer.from_pretrained(vicuna_ckpt_path, use_fast=False, ...)</code></pre>
+</div>
+<p>
+語彙を増やさないので、<code>embed_tokens</code> も <code>lm_head</code> も一切触りません。
+「モダリティを出せ」という合図は、既存語彙で書ける <code>&lt;p&gt;</code> という文字列と、
+入力列に差し込まれる連続ベクトルだけで表現されます。
+</p>
+
+<div class="callout point">
+<span class="callout-title">学習対象は 3 種類だけ —— 論文も同じことを言っている</span>
+“The fine-tuning process focuses only on <strong>the LoRa weights</strong> and
+<strong>the projection layers that map modality encoders into the LLM input space</strong>,
+as well as <strong>the decoder layer that projects LLM-generated features into the diffusion input space</strong>.”(論文 §B.2)
+<br><br>
+これは <code>codi_llama_proj</code> / LoRA / <code>codi_llama_decode</code> の 3 つに正確に対応します。
+ImageBind も拡散モデルも一切更新されません。
+</div>
+
+<h2 id="weave">④ 入力列の組み立て — プレースホルダを実特徴で上書きする</h2>
+<p>
+LLM に渡す <code>inputs_embeds</code> は、
+<strong>トークン ID の列をいったん普通に埋め込んでから、特定の位置だけ差し替える</strong>という方法で作られます。
+差し替え対象の目印が <code>FEATURE_ID</code> という特殊なトークン ID です。
+</p>
+
+<div class="callout point">
+<span class="callout-title">論文が示すプロンプト形式(§3.1)</span>
+論文は、特徴列の前後を<strong>モダリティ名のタグで挟む</strong>と説明しています。
+たとえば
+<br><br>
+<code>“A cat sitting on [image0] is making the sound of [audio0]”</code>
+<br>という modality-interleaved な入力は
+<br><br>
+<code>“A cat sitting on &lt;image&gt; [image feature sequence] &lt;/image&gt;
+is making the sound of &lt;audio&gt; [audio feature sequence] &lt;/audio&gt;”</code>
+<br><br>
+に変換されてから MLLM に入ります。
+公開コードの <code>PROMPT_START = '&lt;Perception&gt;'</code> /
+<code>'&lt;/Perception&gt; '</code>(<a href="training.html#data">学習編</a>)と
+<code>FEATURE_ID</code> のプレースホルダは、この「タグ + 特徴列」構造を実装したものです。
+<strong>タグはただの文字列で、特徴列の実体は下図のように埋め込みレベルで差し込まれます。</strong>
+</div>
+
+<figure class="diagram" id="weave-diagram" data-cycle-ms="12000" data-step-count="4">
+<svg viewBox="0 0 900 420" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="FEATURE_ID プレースホルダを実特徴で置き換えるアニメーション">
+  <defs>
+    <marker id="arrw" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#3556d4"/>
+    </marker>
+  </defs>
+
+  <!-- step 1: token ids -->
+  <g class="w1">
+    <text x="24" y="30" font-size="12.5" font-weight="bold" fill="#1c2333">① 会話文をトークン化する。画像の場所には FEATURE_ID を perception_len 個並べておく</text>
+    <g font-size="10.5" class="mono">
+      <rect x="24"  y="44" width="96" height="30" rx="6" fill="#e9ecf5" stroke="#8a93ad"/><text x="72"  y="64" text-anchor="middle">&lt;/Perception&gt;</text>
+      <rect x="126" y="44" width="70" height="30" rx="6" fill="#e9ecf5" stroke="#8a93ad"/><text x="161" y="64" text-anchor="middle">make</text>
+      <rect x="202" y="44" width="60" height="30" rx="6" fill="#e9ecf5" stroke="#8a93ad"/><text x="232" y="64" text-anchor="middle">this</text>
+      <g class="slot">
+        <rect x="268" y="44" width="72" height="30" rx="6" fill="#fbe4e8" stroke="#d43d51" stroke-dasharray="4 3"/><text x="304" y="64" text-anchor="middle" fill="#d43d51">FEAT_ID</text>
+        <rect x="346" y="44" width="72" height="30" rx="6" fill="#fbe4e8" stroke="#d43d51" stroke-dasharray="4 3"/><text x="382" y="64" text-anchor="middle" fill="#d43d51">FEAT_ID</text>
+        <rect x="424" y="44" width="72" height="30" rx="6" fill="#fbe4e8" stroke="#d43d51" stroke-dasharray="4 3"/><text x="460" y="64" text-anchor="middle" fill="#d43d51">FEAT_ID</text>
+      </g>
+      <rect x="502" y="44" width="86" height="30" rx="6" fill="#e9ecf5" stroke="#8a93ad"/><text x="545" y="64" text-anchor="middle">sound</text>
+      <rect x="594" y="44" width="46" height="30" rx="6" fill="#e9ecf5" stroke="#8a93ad"/><text x="617" y="64" text-anchor="middle">…</text>
+    </g>
+  </g>
+
+  <!-- step 2: embed_tokens -->
+  <g class="w2">
+    <path d="M 330 78 L 330 100" fill="none" stroke="#3556d4" stroke-width="2.5" marker-end="url(#arrw)"/>
+    <text x="24" y="122" font-size="12.5" font-weight="bold" fill="#1c2333">② まず全部を embed_tokens に通す(FEATURE_ID の位置には意味のないベクトルが入る)</text>
+    <rect x="24" y="134" width="616" height="34" rx="8" fill="#e9ecf5" stroke="#8a93ad"/>
+    <text x="332" y="156" font-size="11" text-anchor="middle" class="mono" fill="#5b6478">llm_embeds = embed_tokens(input_ids) : (B, S, 4096)</text>
+  </g>
+
+  <!-- step 3: imagebind branch -->
+  <g class="w3">
+    <text x="670" y="30" font-size="12.5" font-weight="bold" fill="#3556d4">③ 別ルートで</text>
+    <text x="670" y="48" font-size="12.5" font-weight="bold" fill="#3556d4">   画像を符号化</text>
+    <rect x="670" y="60" width="200" height="34" rx="8" fill="#fff" stroke="#3556d4" stroke-width="2"/>
+    <text x="770" y="82" font-size="10.5" text-anchor="middle" class="mono" fill="#5b6478">ImageBind → (L, 1024)</text>
+    <path d="M 770 96 L 770 116" fill="none" stroke="#3556d4" stroke-width="2.5" marker-end="url(#arrw)"/>
+    <rect x="670" y="120" width="200" height="34" rx="8" fill="#e5eafc" stroke="#3556d4" stroke-width="2"/>
+    <text x="770" y="142" font-size="10.5" text-anchor="middle" class="mono" fill="#5b6478">proj → (L, 4096)</text>
+    <path d="M 670 137 C 600 137, 560 120, 500 106" fill="none" stroke="#3556d4" stroke-width="2.5" marker-end="url(#arrw)"/>
+  </g>
+
+  <!-- step 4: overwrite -->
+  <g class="w4">
+    <path d="M 330 172 L 330 194" fill="none" stroke="#3556d4" stroke-width="2.5" marker-end="url(#arrw)"/>
+    <text x="24" y="216" font-size="12.5" font-weight="bold" fill="#d43d51">④ perception_indices(= input_ids==FEATURE_ID)の位置だけを、射影済み特徴で上書き</text>
+    <g font-size="10.5" class="mono">
+      <rect x="24"  y="230" width="96" height="30" rx="6" fill="#e9ecf5" stroke="#8a93ad"/><text x="72"  y="250" text-anchor="middle">emb</text>
+      <rect x="126" y="230" width="70" height="30" rx="6" fill="#e9ecf5" stroke="#8a93ad"/><text x="161" y="250" text-anchor="middle">emb</text>
+      <rect x="202" y="230" width="60" height="30" rx="6" fill="#e9ecf5" stroke="#8a93ad"/><text x="232" y="250" text-anchor="middle">emb</text>
+      <rect x="268" y="230" width="72" height="30" rx="6" fill="#e5eafc" stroke="#3556d4" stroke-width="2"/><text x="304" y="250" text-anchor="middle" fill="#3556d4">patch₀</text>
+      <rect x="346" y="230" width="72" height="30" rx="6" fill="#e5eafc" stroke="#3556d4" stroke-width="2"/><text x="382" y="250" text-anchor="middle" fill="#3556d4">patch₁</text>
+      <rect x="424" y="230" width="72" height="30" rx="6" fill="#e5eafc" stroke="#3556d4" stroke-width="2"/><text x="460" y="250" text-anchor="middle" fill="#3556d4">patch₂</text>
+      <rect x="502" y="230" width="86" height="30" rx="6" fill="#e9ecf5" stroke="#8a93ad"/><text x="545" y="250" text-anchor="middle">emb</text>
+      <rect x="594" y="230" width="46" height="30" rx="6" fill="#e9ecf5" stroke="#8a93ad"/><text x="617" y="250" text-anchor="middle">…</text>
+    </g>
+    <rect x="24" y="284" width="616" height="34" rx="8" fill="#efe6fb" stroke="#7b46c9" stroke-width="2"/>
+    <text x="332" y="306" font-size="11" text-anchor="middle" class="mono" fill="#7b46c9">bos_embeds を先頭に連結 → inputs_embeds : (B, 1+S, 4096) を LLM へ</text>
+    <text x="24" y="348" font-size="11.5" fill="#5b6478">テキストと画像が「同じ 1 本の列」に並ぶので、LLM から見ればどちらもただの入力トークン。</text>
+    <text x="24" y="368" font-size="11.5" fill="#5b6478">画像・音声・テキストが交互に現れる interleaved な指示も、この方式なら自然に表現できる。</text>
+    <text x="24" y="396" font-size="11" fill="#d43d51">※ FEATURE_ID の定義は未公開の core/datasets/instruct_datasets/utils.py にある。</text>
+  </g>
+</svg>
+<figcaption>
+入力列の組み立て。<code>input_ids</code> にあらかじめ <code>FEATURE_ID</code> を必要個数だけ埋めておき、
+埋め込み後にブールマスクで一括上書きする、という素直な実装。
+</figcaption>
+</figure>
+
+<div class="codeblock">
+<div class="codehead"><span class="path">CoDi-2/core/models/mmllama/openllama.py</span> L199–221(抜粋)
+<a href="https://github.com/microsoft/i-Code/blob/9b16730b7e0254f02a833281335c91ee382552e6/CoDi-2/core/models/mmllama/openllama.py#L199-L221" target="_blank" rel="noopener">GitHub ↗</a></div>
+<pre><code class="language-python">encoder_embeds_all = []
+for encoder_embeds in encoder_embeds_raw:
+    if encoder_embeds is not None:
+        embeds = self.codi_llama_proj(encoder_embeds)   # 1024 → 4096
+        if embeds.ndim == 3:
+            embeds = embeds.flatten(0, 1)               # (N, L, 4096) → (N*L, 4096) と平坦化
+        encoder_embeds_all.append(embeds)
+    else:
+        encoder_embeds_all.append(None)
+
+perception_indices = input_ids == FEATURE_ID            # ★ 差し込み位置のブールマスク
+llm_embeds = self.llama_model.model.model.embed_tokens(input_ids)
+input_embeds = torch.empty(llm_embeds.shape).to(llm_embeds)
+input_embeds[~perception_indices] = llm_embeds[~perception_indices]   # テキスト側はそのまま
+
+tmp_encoder_embeds_all = [item for item in encoder_embeds_all if item != None]
+if len(tmp_encoder_embeds_all) > 0:
+    concated_embeds = torch.cat(tmp_encoder_embeds_all, 0)
+    if input_embeds[perception_indices].shape == concated_embeds[:input_embeds[perception_indices].shape[0]].shape:
+        input_embeds[perception_indices] = concated_embeds[:input_embeds[perception_indices].shape[0]]  # ★ 上書き</code></pre>
+</div>
+
+<div class="callout warn">
+<span class="callout-title">形が合わなければ「黙って捨てる」実装</span>
+最後の <code>if</code> は、プレースホルダの個数と特徴の個数が食い違ったときに
+<strong>例外を投げずに <code>print</code> して素通りする</strong>作りになっています(<code>else</code> 節)。
+その場合 <code>input_embeds</code> の該当位置は <code>torch.empty</code> の未初期化値のままです。
+研究コードらしい割り切りで、データ側で個数を正確に揃えることが前提になっています。
+</div>
+
+<h2 id="unclip">⑤ 画像生成器 — SD 2.1 unCLIP を ImageBind 条件に差し替えたもの</h2>
+<p>
+CoDi-2 の生成品質を支えているのは、この YAML 1 枚です。
+ベースは Stable Diffusion 2.1 の <strong>unCLIP(画像バリエーション)版</strong>ですが、
+条件を作る <code>embedder_config</code> が CLIP ではなく <strong>ImageBind</strong> に差し替えられています。
+</p>
+
+<div class="codeblock">
+<div class="codehead"><span class="path">CoDi-2/configs/stable-diffusion/v2-1-stable-unclip-h-bind-inference.yaml</span> L1–54(抜粋)
+<a href="https://github.com/microsoft/i-Code/blob/9b16730b7e0254f02a833281335c91ee382552e6/CoDi-2/configs/stable-diffusion/v2-1-stable-unclip-h-bind-inference.yaml#L1-L54" target="_blank" rel="noopener">GitHub ↗</a></div>
+<pre><code class="language-yaml">model:
+  target: ldm.models.diffusion.ddpm.ImageEmbeddingConditionedLatentDiffusion
+  params:
+    embedding_dropout: 0.25
+    parameterization: "v"            # v-prediction
+    conditioning_key: crossattn-adm  # ★ cross-attention と adm の 2 経路を併用
+    image_size: 96                   # 768px ÷ 8 = 96
+    channels: 4
+
+    embedder_config:
+      target: image_bind.models.imagebind_model.ImageBindEmbedder   # ★ CLIP ではなく ImageBind
+
+    noise_aug_config:
+      target: ldm.modules.encoders.modules.CLIPEmbeddingNoiseAugmentation
+      params:
+        timestep_dim: 1024           # ノイズレベル埋め込みも 1024 次元
+
+    unet_config:
+      params:
+        num_classes: "sequential"
+        adm_in_channels: 2048        # ★ 1024(特徴)+ 1024(ノイズレベル)= 2048
+        context_dim: 1024            # cross-attention 側は OpenCLIP テキスト</code></pre>
+</div>
+
+<div class="callout point">
+<span class="callout-title">2048 = 1024 + 1024 という足し算がすべてを説明する</span>
+<code>adm_in_channels: 2048</code> は、<code>c_adm</code>(ImageBind 特徴 1024 次元)と
+<code>noise_level_emb</code>(ノイズレベル埋め込み 1024 次元)を連結した長さです。
+生成編で見るように、実装では
+<code>c_adm_noise = torch.cat((c_adm, noise_level_emb), 1)</code> と素直に連結されます。
+<strong>LLM が 1024 次元を 1 本書けば、この UNet はそのまま動く</strong> ——
+CoDi-2 が「連続特徴空間で生成する」と言えるのは、この受け皿が用意されているからです。
+</div>
+
+<p>
+なお <code>conditioning_key: crossattn-adm</code> のとおり、cross-attention 経路も生きています。
+ただし生成編で見るように、実装ではこちらに<strong>ネガティブプロンプトを固定で流す</strong>だけで、
+意味的な制御はすべて <code>c_adm</code> 側が担います。
+</p>
+
+<h2 id="others">⑥ 画像以外のデコーダ</h2>
+<p>
+論文 §5.1 は、生成器として次の 3 つを挙げています。
+</p>
+<table>
+  <tr><th>モダリティ</th><th>論文が指定する生成器</th><th>条件の受け取り方</th></tr>
+  <tr><td>🖼️ 画像</td><td>Stable Diffusion 2.1(<code>stabilityai/stable-diffusion-2-1-unclip</code>)</td><td><code>c_adm</code>(画像埋め込み条件)</td></tr>
+  <tr><td>🔊 音声</td><td>AudioLDM2</td><td>条件埋め込み</td></tr>
+  <tr><td>🎬 動画</td><td>zeroscope v2 576w</td><td>条件埋め込み</td></tr>
+</table>
+<p>
+つまり CoDi-2 は、前作 CoDi(-1)の統合拡散モデルを丸ごと引き継いだのではなく、
+<strong>モダリティごとに既製の拡散モデルを並べる</strong>構成に変わっています。
+一方で公開コードには CoDi-1 由来の <code>decode()</code> が残っており、
+潜在 <code>z</code> を各モダリティの VAE で戻す経路が書かれています。
+</p>
+
+<div class="codeblock">
+<div class="codehead"><span class="path">CoDi-2/core/models/mmllama/openllama.py</span> L529–570(抜粋)
+<a href="https://github.com/microsoft/i-Code/blob/9b16730b7e0254f02a833281335c91ee382552e6/CoDi-2/core/models/mmllama/openllama.py#L529-L570" target="_blank" rel="noopener">GitHub ↗</a></div>
+<pre><code class="language-python">def decode(self, z, xtype):
+    net = self.codi                                  # ← CoDi-1 モデル
+    z = z.to(self.device)
+    if xtype == 'image':
+        x = net.autokl_decode(z)                     # Stable Diffusion の VAE
+        x = torch.clamp((x+1.0)/2.0, min=0.0, max=1.0)
+        x = [tvtrans.ToPILImage()(xi) for xi in x]
+        return x
+    elif xtype == 'video':
+        num_frames = z.shape[2]
+        z = rearrange(z, 'b c f h w -> (b f) c h w') # フレームを畳んで画像 VAE に通す
+        x = net.autokl_decode(z)
+        ...
+    elif xtype == 'text':
+        x = net.optimus_decode(z, temperature=1.0)   # Optimus VAE で潜在 → 文
+        ...
+    elif xtype == 'audio':
+        x = net.audioldm_decode(z)                   # AudioLDM VAE
+        x = net.mel_spectrogram_to_waveform(x)       # メルスペクトログラム → 波形
+        return x</code></pre>
+</div>
+
+<div class="callout warn">
+<span class="callout-title">⚠️ 公開コードでは <code>self.codi</code> が組み立てられていない</span>
+<code>decode()</code> や <code>extract_multimodal_feature()</code> は <code>self.codi</code> を参照しますが、
+公開されている <code>OpenLLAMAPEFTModel.__init__</code>(L108–189)で実際に生成されるのは
+<code>self.imagebind</code> と <code>self.image_diffuser</code> の 2 つだけで、
+<code>self.codi</code> はどこにも代入されていません。
+同様に <code>inference()</code>(L572)が呼ぶ <code>self.get_llm_outputs</code> も定義されていません。
+そのまま動くのは<strong>画像生成の経路(<code>generate</code> → <code>generate_image</code>)</strong>だけで、
+音声(AudioLDM2)・動画(zeroscope v2)の経路は公開コードには含まれていません。
+</div>
+
+<h3 id="concat">高忠実度が要るときの追加テクニック</h3>
+<p>
+論文 §5.1 には、生成条件をもう一段強める工夫が書かれています。
+</p>
+<div class="callout math">
+<span class="callout-title">論文 §5.1</span>
+“For images or audio that require higher fidelity to the original input, we additionally feed
+<strong>the original image or audio to the diffusion model alongside the generated features
+by concatenation of the diffusion noise</strong>. This approach is particularly effective in preserving
+the most perceptual features of the input including instruction editing like adding new content or changing style.”
+</div>
+<p>
+つまり「元画像を保ったまま編集する」タスクでは、
+LLM が生成した特徴だけでなく<strong>元データの潜在をノイズにチャンネル方向で連結して</strong> UNet に入れる、というわけです。
+この仕組みは CoDi-1 側のコードに <code>x_0_att_type='concat'</code> として実装されており、
+<code>codi.py</code> の <code>p_losses</code> に
+<code>x_noisy[i] = torch.cat([x_0[i], x_noisy[i]], 2)</code> という形で現れます
+(<a href="https://github.com/microsoft/i-Code/blob/9b16730b7e0254f02a833281335c91ee382552e6/CoDi-2/core/models/codi.py#L206-L221" target="_blank" rel="noopener">codi.py L206–221</a>)。
+</p>
+
+<h2 id="summary">形のまとめ</h2>
+<table>
+  <tr><th>段階</th><th>テンソル</th><th>形</th><th>担当モジュール</th><th>凍結/学習</th></tr>
+  <tr><td>入力符号化(画像)</td><td>ImageBind 出力</td><td><code>(L, 1024)</code></td><td><code>self.imagebind</code></td><td>🧊 <code>torch.no_grad()</code></td></tr>
+  <tr><td>入力符号化(音声/テキスト)</td><td>ImageBind 出力</td><td><code>(1, 1024)</code></td><td><code>self.imagebind</code></td><td>🧊</td></tr>
+  <tr><td>入力射影</td><td>projected</td><td><code>(L, 4096)</code></td><td><code>codi_llama_proj</code></td><td>🔥</td></tr>
+  <tr><td>LLM 入力</td><td><code>inputs_embeds</code></td><td><code>(B, 1+S, 4096)</code></td><td><code>embed_tokens</code> + 上書き</td><td>🧊(埋め込み表は不変)</td></tr>
+  <tr><td>LLM 本体</td><td><code>hidden_states[-1]</code></td><td><code>(B, 1+S, 4096)</code></td><td>LLaMA + LoRA</td><td>🧊 + 🔥(LoRA)</td></tr>
+  <tr><td>テキスト出口</td><td><code>logits</code></td><td><code>(B, 1+S, 32000)</code></td><td><code>lm_head</code></td><td>🧊</td></tr>
+  <tr><td>特徴出口</td><td><code>output_features</code></td><td><code>(N, 1024)</code></td><td><code>codi_llama_decode</code></td><td>🔥</td></tr>
+  <tr><td>拡散条件</td><td><code>c_adm_noise</code></td><td><code>(B, 2048)</code></td><td><code>noise_augmentor</code></td><td>🧊</td></tr>
+  <tr><td>画像潜在</td><td><code>samples</code></td><td><code>(B, 4, 96, 96)</code></td><td>UNet(DDIM 50 step)</td><td>🧊</td></tr>
+</table>
+
+<nav class="pager">
+  <a href="./index.html"><span class="dir">← 前へ</span><span class="title">CoDi-2 概要</span></a>
+  <a class="next" href="training.html"><span class="dir">次へ →</span><span class="title">2. 学習プロセス</span></a>
+</nav>
+
+</main>
+
+<footer class="site-footer">
+  <p>引用コード: <a href="https://github.com/microsoft/i-Code/tree/9b16730b7e0254f02a833281335c91ee382552e6/CoDi-2" target="_blank" rel="noopener">microsoft/i-Code — CoDi-2</a>(MIT License)/
+  論文: <a href="https://arxiv.org/abs/2311.18775" target="_blank" rel="noopener">CoDi-2: In-Context, Interleaved, and Interactive Any-to-Any Generation</a>(CVPR 2024)/
+  <a href="https://codi-2.github.io/" target="_blank" rel="noopener">プロジェクトページ</a></p>
+</footer>
+
+<script>
+MathJax = { tex: { inlineMath: [['\\(', '\\)']], displayMath: [['$$', '$$']] } };
+</script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js" async></script>
+<script src="assets/diagram-controls.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-core.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-python.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-yaml.min.js"></script>
+</body>
+</html>

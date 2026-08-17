@@ -1,0 +1,713 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CoDi-2 図解 2 — 学習プロセス</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🎼</text></svg>">
+<link rel="stylesheet" href="assets/style.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/themes/prism-tomorrow.min.css">
+<style>
+/* ===== label masking diagram (12s, 3 steps) ===== */
+#masking-diagram .m1 { animation: mk 12s ease-in-out infinite; animation-delay: 0s; opacity: 0; }
+#masking-diagram .m2 { animation: mk 12s ease-in-out infinite; animation-delay: 4s; opacity: 0; }
+#masking-diagram .m3 { animation: mk 12s ease-in-out infinite; animation-delay: 8s; opacity: 0; }
+@keyframes mk {
+  0%, 2% { opacity: 0; }
+  6%, 92% { opacity: 1; }
+  98%, 100% { opacity: 0; }
+}
+
+/* ===== two-loss flow (12s, 3 steps) ===== */
+#lossflow .ce-path { animation: lf-ce 12s ease-in-out infinite; }
+@keyframes lf-ce {
+  0%, 4% { opacity: 0.22; }
+  9%, 30% { opacity: 1; }
+  35%, 100% { opacity: 0.22; }
+}
+#lossflow .feat-path { animation: lf-feat 12s ease-in-out infinite; }
+@keyframes lf-feat {
+  0%, 35% { opacity: 0.22; }
+  40%, 63% { opacity: 1; }
+  68%, 100% { opacity: 0.22; }
+}
+#lossflow .diff-path { animation: lf-diff 12s ease-in-out infinite; }
+@keyframes lf-diff {
+  0%, 68% { opacity: 0.22; }
+  73%, 95% { opacity: 1; }
+  100% { opacity: 0.22; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #masking-diagram .m1, #masking-diagram .m2, #masking-diagram .m3 { opacity: 1; }
+  #lossflow .ce-path, #lossflow .feat-path, #lossflow .diff-path { opacity: 1; }
+}
+</style>
+</head>
+<body>
+
+<nav class="topnav">
+  <a class="home-link" href="../index.html">Visual Explanation</a><span class="sep">/</span>
+  <a href="./index.html">CoDi-2 概要</a>
+  <a href="architecture.html">1. アーキテクチャ</a>
+  <a href="training.html" class="current">2. 学習プロセス</a>
+  <a href="inference.html">3. 生成プロセス</a>
+</nav>
+
+<header class="page-header">
+  <h1>2. 学習プロセス</h1>
+  <p>「トークンを当てる」学習と「ベクトルの向きを合わせる」学習が、
+  1 つの <code>forward</code> の中で同時に走ります。
+  マスクの作り方から 3 種類の損失まで、数式⇔コードで追いかけます。</p>
+</header>
+
+<main class="article">
+
+<div class="callout warn">
+<span class="callout-title">この章を読む前に</span>
+公開リポジトリには<strong>学習ループ(train スクリプト)もデータセットも含まれていません</strong>。
+本章が読むのは <code>OpenLLAMAPEFTModel.forward</code> ——
+「1 バッチを受け取って損失を返す関数」です。
+その入口の形と損失の定義から、CoDi-2 が何を学ぼうとしているかは十分に読み取れます。
+</div>
+
+<div class="callout point">
+<span class="callout-title">論文の損失とコードの損失は 1 対 1 で対応する</span>
+論文 §3.2 が定める最終的な学習損失は次の 3 項です。
+$$\mathcal{L} \;=\; \alpha\,\mathrm{MSE}\big(c_{\text{MLLM}},\, C_x(x)\big)
+\;+\; \mathcal{L}_{DM} \;+\; \mathcal{L}_t$$
+これは <code>forward</code> が計算する 3 つの損失とそのまま対応します。
+<table>
+  <tr><th>論文</th><th>コード</th><th>本章の節</th></tr>
+  <tr><td>\(\mathcal{L}_t\)(text token prediction loss)</td><td><code>loss = outputs.loss</code></td><td><a href="#loss-text">①</a></td></tr>
+  <tr><td>\(\alpha\,\mathrm{MSE}(c_{\text{MLLM}}, C_x(x))\)</td><td><code>feature_loss</code>(係数 <code>0.1</code> = \(\alpha\))</td><td><a href="#loss-feat">②</a></td></tr>
+  <tr><td>\(\mathcal{L}_{DM}\)(diffusion generation loss)</td><td><code>diffusion_loss</code></td><td><a href="#loss-diff">③</a></td></tr>
+</table>
+以下ではこの対応を 1 項ずつ確かめていきます。
+</div>
+
+<h2 id="data">学習データの形 — 会話を 1 本の系列に潰す</h2>
+<p>
+学習サンプルは <code>{'from': 'human'|'gpt', 'value': ...}</code> のターン列です。
+<code>build_one_instance</code> がこれをトークン列に変換し、
+<strong>人間のターンは <code>-100</code> で塗りつぶして損失対象から外す</strong>という、
+指示チューニングの定番の処理を行います。
+</p>
+
+<div class="codeblock">
+<div class="codehead"><span class="path">CoDi-2/core/models/mmllama/openllama.py</span> L58–86
+<a href="https://github.com/microsoft/i-Code/blob/9b16730b7e0254f02a833281335c91ee382552e6/CoDi-2/core/models/mmllama/openllama.py#L58-L86" target="_blank" rel="noopener">GitHub ↗</a></div>
+<pre><code class="language-python">def build_one_instance(tokenizer, conversation):
+    text_list = []
+    turn_num = len(conversation)
+    input_ids, target_ids = [], []
+    for i in range(turn_num):
+        turn = conversation[i]
+        role = turn['from']
+        if i == 0: # the first human turn
+            assert role == 'human'
+            text = '&lt;/Perception&gt; ' + turn['value']        # ★ 冒頭に知覚パートの終端マーカー
+            one_input_id = tokenizer(text, add_special_tokens=False).input_ids
+            input_ids += one_input_id
+            target_ids += [-100]*len(one_input_id) # do not perform loss regression on human prompt
+        else:
+            if role == 'human':
+                text = turn['value']
+                one_input_id = tokenizer(text, add_special_tokens=False).input_ids
+                input_ids += one_input_id
+                target_ids += [-100]*len(one_input_id)      # 人間の発話は学習しない
+            elif role == 'gpt':
+                text = turn['value']
+                one_input_id = tokenizer(text, add_special_tokens=False).input_ids
+                input_ids += one_input_id
+                target_ids += one_input_id                  # モデルの発話だけを学習する
+            else:
+                raise Exception('Wrong Role!!!')
+        text_list.append(text)
+        assert len(input_ids) == len(target_ids)
+    return text_list, input_ids, target_ids</code></pre>
+</div>
+
+<p>
+ファイル冒頭には <code>PROMPT_START = '&lt;Perception&gt;'</code>(L103)も定義されており、
+<strong>「<code>&lt;Perception&gt;</code> …画像/音声の特徴… <code>&lt;/Perception&gt;</code> 指示文」</strong>という
+プロンプト構造が想定されていることが読み取れます。
+</p>
+
+<h2 id="masking">ラベルの二重構造 — 同じ位置を CE から外し、回帰へ回す</h2>
+<p>
+CoDi-2 の学習で最も味わい深いのが <code>prompt_wrap</code> の後半です。
+ここでは<strong>1 つの位置に対して 2 種類のラベルが作られ、片方だけが有効になります</strong>。
+</p>
+<ol>
+  <li>モデルの応答に含まれる <code>FEATURE_ID</code> の位置を探す(<code>target_replace</code>)</li>
+  <li>その位置に、ImageBind が返した<strong>本物の特徴</strong>を <code>regression_targets</code> として書き込む</li>
+  <li>同じ位置の <code>target_ids</code> を <code>-100</code> にして、<strong>テキスト CE の対象から外す</strong></li>
+</ol>
+<p>
+つまり「この位置ではトークンを当てるのではなく、ベクトルを当てろ」という指示が、
+ラベルの作り分けだけで表現されています。
+</p>
+
+<figure class="diagram" id="masking-diagram" data-cycle-ms="12000" data-step-count="3">
+<svg viewBox="0 0 900 400" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="FEATURE_ID の位置で CE ラベルを外し回帰ラベルを立てるアニメーション">
+  <defs>
+    <marker id="arrm" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#8a93ad"/>
+    </marker>
+  </defs>
+
+  <g class="m1">
+    <text x="24" y="28" font-size="12.5" font-weight="bold" fill="#1c2333">① モデルの応答(gpt ターン)のトークン列。テキストの途中に FEATURE_ID が挟まる</text>
+    <g font-size="10.5" class="mono">
+      <rect x="24"  y="42" width="56" height="30" rx="6" fill="#e9ecf5" stroke="#8a93ad"/><text x="52"  y="62" text-anchor="middle">Sure</text>
+      <rect x="86"  y="42" width="40" height="30" rx="6" fill="#e9ecf5" stroke="#8a93ad"/><text x="106" y="62" text-anchor="middle">:</text>
+      <rect x="132" y="42" width="52" height="30" rx="6" fill="#e9ecf5" stroke="#8a93ad"/><text x="158" y="62" text-anchor="middle">&lt;p&gt;</text>
+      <rect x="190" y="42" width="72" height="30" rx="6" fill="#fbe4e8" stroke="#d43d51" stroke-width="2"/><text x="226" y="62" text-anchor="middle" fill="#d43d51">FEAT_ID</text>
+      <rect x="268" y="42" width="72" height="30" rx="6" fill="#fbe4e8" stroke="#d43d51" stroke-width="2"/><text x="304" y="62" text-anchor="middle" fill="#d43d51">FEAT_ID</text>
+      <rect x="346" y="42" width="52" height="30" rx="6" fill="#e9ecf5" stroke="#8a93ad"/><text x="372" y="62" text-anchor="middle">##</text>
+    </g>
+  </g>
+
+  <g class="m2">
+    <path d="M 226 76 L 226 100" fill="none" stroke="#8a93ad" stroke-width="2" marker-end="url(#arrm)"/>
+    <text x="24" y="122" font-size="12.5" font-weight="bold" fill="#7b46c9">② target_ids: FEATURE_ID の位置を −100 に潰す(= テキスト CE から除外)</text>
+    <g font-size="10.5" class="mono">
+      <rect x="24"  y="136" width="56" height="30" rx="6" fill="#efe6fb" stroke="#7b46c9"/><text x="52"  y="156" text-anchor="middle" fill="#7b46c9">Sure</text>
+      <rect x="86"  y="136" width="40" height="30" rx="6" fill="#efe6fb" stroke="#7b46c9"/><text x="106" y="156" text-anchor="middle" fill="#7b46c9">:</text>
+      <rect x="132" y="136" width="52" height="30" rx="6" fill="#efe6fb" stroke="#7b46c9"/><text x="158" y="156" text-anchor="middle" fill="#7b46c9">&lt;p&gt;</text>
+      <rect x="190" y="136" width="72" height="30" rx="6" fill="#f2f4fa" stroke="#c2c9db" stroke-dasharray="4 3"/><text x="226" y="156" text-anchor="middle" fill="#9aa2bd">−100</text>
+      <rect x="268" y="136" width="72" height="30" rx="6" fill="#f2f4fa" stroke="#c2c9db" stroke-dasharray="4 3"/><text x="304" y="156" text-anchor="middle" fill="#9aa2bd">−100</text>
+      <rect x="346" y="136" width="52" height="30" rx="6" fill="#efe6fb" stroke="#7b46c9"/><text x="372" y="156" text-anchor="middle" fill="#7b46c9">##</text>
+    </g>
+    <text x="420" y="156" font-size="11.5" fill="#7b46c9">← ここが L_text(交差エントロピー)の対象。「いつ &lt;p&gt; を書くか」もここで学ぶ</text>
+  </g>
+
+  <g class="m3">
+    <path d="M 226 170 L 226 200" fill="none" stroke="#8a93ad" stroke-width="2" marker-end="url(#arrm)"/>
+    <text x="24" y="222" font-size="12.5" font-weight="bold" fill="#d43d51">③ regression_targets: 同じ位置にだけ ImageBind の実特徴(1024-d)を書き込む</text>
+    <g font-size="10.5" class="mono">
+      <rect x="24"  y="236" width="56" height="34" rx="6" fill="#f2f4fa" stroke="#c2c9db" stroke-dasharray="4 3"/><text x="52"  y="258" text-anchor="middle" fill="#9aa2bd">−100</text>
+      <rect x="86"  y="236" width="40" height="34" rx="6" fill="#f2f4fa" stroke="#c2c9db" stroke-dasharray="4 3"/><text x="106" y="258" text-anchor="middle" fill="#9aa2bd">−100</text>
+      <rect x="132" y="236" width="52" height="34" rx="6" fill="#f2f4fa" stroke="#c2c9db" stroke-dasharray="4 3"/><text x="158" y="258" text-anchor="middle" fill="#9aa2bd">−100</text>
+      <rect x="190" y="236" width="72" height="34" rx="6" fill="#fbe4e8" stroke="#d43d51" stroke-width="2"/><text x="226" y="258" text-anchor="middle" fill="#d43d51">v₀ (1024)</text>
+      <rect x="268" y="236" width="72" height="34" rx="6" fill="#fbe4e8" stroke="#d43d51" stroke-width="2"/><text x="304" y="258" text-anchor="middle" fill="#d43d51">v₁ (1024)</text>
+      <rect x="346" y="236" width="52" height="34" rx="6" fill="#f2f4fa" stroke="#c2c9db" stroke-dasharray="4 3"/><text x="372" y="258" text-anchor="middle" fill="#9aa2bd">−100</text>
+    </g>
+    <text x="420" y="258" font-size="11.5" fill="#d43d51">← ここが L_feat(コサイン類似度)の対象</text>
+
+    <rect x="24" y="298" width="850" height="76" rx="10" fill="#fff" stroke="#dde2ee"/>
+    <text x="44" y="322" font-size="12" fill="#1c2333" font-weight="bold">2 つのラベルは「排他」になっている</text>
+    <text x="44" y="344" font-size="11.5" fill="#5b6478">同じ位置が両方で有効になることはない。テキストを書く位置は CE だけ、特徴を書く位置は回帰だけが効く。</text>
+    <text x="44" y="364" font-size="11.5" fill="#5b6478">この住み分けによって、1 本の自己回帰生成の中に「離散の出力」と「連続の出力」を共存させている。</text>
+  </g>
+</svg>
+<figcaption>
+ラベルの作り分け。<code>target_ids</code>(CE 用)と <code>regression_targets</code>(回帰用)が
+互いに補完的なマスクになっており、位置ごとにどちらか一方だけが損失に寄与する。
+</figcaption>
+</figure>
+
+<div class="codeblock">
+<div class="codehead"><span class="path">CoDi-2/core/models/mmllama/openllama.py</span> L227–261(抜粋)
+<a href="https://github.com/microsoft/i-Code/blob/9b16730b7e0254f02a833281335c91ee382552e6/CoDi-2/core/models/mmllama/openllama.py#L227-L261" target="_blank" rel="noopener">GitHub ↗</a></div>
+<pre><code class="language-python">if 'clip' in self.perception_type:
+    regression_targets = (
+        torch.ones([input_embeds.shape[0], input_embeds.shape[1], self.dim_in])
+        .to(self.device).to(input_embeds.dtype).fill_(-100)     # まず全部 -100 で埋める
+    )
+
+for i in range(batch_size):
+    if encoder_embeds_all[i] is not None:
+        target_replace = torch.where(target_ids[i] == FEATURE_ID)[0]   # ★ 応答側の特徴位置
+        if len(target_replace) > 0:
+            targets_tmp = encoder_embeds_raw[i][-1:].squeeze().to(encoder_embeds_all[0])
+            if self.perception_len > 1:
+                targets_tmp = targets_tmp[:-self.perception_len+1]
+            if 'clip' in self.perception_type:
+                try:
+                    regression_targets[i][target_replace] = targets_tmp   # 実特徴を教師に
+                except Exception as e:
+                    print(e)
+                    regression_targets[i][target_replace] = -100
+        target_ids[i][target_replace] = -100    # ★ 同じ位置をテキスト CE から外す</code></pre>
+</div>
+
+<div class="callout math">
+<span class="callout-title">論文が言う \(C_x(x)\) がこれ</span>
+論文 §3.2 は、LLM に予測させる目標を
+“we explicitly induce that \(c = C_x(x)\)” —— つまり
+<strong>「生成すべきターゲット \(x\) を、条件エンコーダ \(C_x\) に通したもの」</strong>と定めています。
+コードの <code>targets_tmp = encoder_embeds_raw[i][-1:]</code> はまさにこれで、
+<strong>ターゲットを ImageBind に通した特徴</strong>が回帰の教師になります。
+拡散モデルから見れば、自分のエンコーダが作るはずだった値を LLM が代わりに書いてくれる形になり、
+論文の言葉では <strong>“DM is expected to function as an autoencoder”</strong> という状況です。
+</div>
+
+<div class="callout point">
+<span class="callout-title">教師は「そのサンプルの最後の要素」</span>
+<code>targets_tmp = encoder_embeds_raw[i][-1:]</code> —— 教師特徴として使われるのは、
+そのサンプルに与えられた画像リストの<strong>最後の 1 枚</strong>を ImageBind に通したものです。
+in-context 学習用のデータでは「例示 → 例示 → お手本の答え」という並びになるため、
+<strong>最後に置かれた画像が「生成すべき正解画像」</strong>という約束になっている、と読めます。
+</div>
+
+<h2 id="losses">損失の全体像</h2>
+<p>
+<code>forward</code> は <code>(loss, gen_acc, feature_loss)</code> を返します。
+損失の合成(重み付け)は呼び出し側の学習ループ(非公開)に委ねられていますが、
+<code>feature_loss</code> の中身にはすでに係数 <code>0.1</code> が掛かっています。
+</p>
+
+<div class="callout math">
+<span class="callout-title">全体の損失(論文 §3.2 とコードの対応)</span>
+$$\mathcal{L} \;=\;
+\underbrace{\mathcal{L}_t}_{\texttt{outputs.loss}}
+\;+\; \underbrace{\alpha\,\mathrm{MSE}\big(c_{\text{MLLM}},\, C_x(x)\big)}_{\texttt{feature\_loss}\;(\alpha = 0.1)}
+\;+\; \underbrace{\mathcal{L}_{DM}}_{\texttt{diffusion\_loss}}$$
+コードでは第 2 項と第 3 項がどちらも <code>feature_loss</code> という 1 つの変数に足し込まれ、
+第 3 項は <code>perception_type == 'clip-diffusser-back-proop'</code> のときだけ加算されます。
+</div>
+
+<div class="callout warn">
+<span class="callout-title">論文は MSE、コードの主経路はコサイン</span>
+第 2 項について、論文は明確に <strong>MSE</strong> と書いていますが、
+公開コードの <code>'clip'</code> 経路が実際に計算するのは<strong>負のコサイン類似度</strong>です。
+literal な MSE を計算しているのは <code>'vae'</code> 経路のほうですが、
+そちらは<a href="#vae-variant">後述</a>のとおり<strong>公開コードのままでは実行できません</strong>。
+ImageBind 特徴を扱う <code>'clip'</code> 経路では、
+スケールを揃える必要がないぶんコサインのほうが素直だという判断だと考えられますが、
+<strong>論文の式とコードが厳密には一致しない箇所</strong>なので、そのまま記しておきます。
+</div>
+
+<figure class="diagram" id="lossflow" data-cycle-ms="12000" data-step-count="3">
+<svg viewBox="0 0 900 470" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="3種類の損失の計算経路アニメーション">
+  <defs>
+    <marker id="arrl" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#8a93ad"/>
+    </marker>
+  </defs>
+
+  <!-- LLM -->
+  <rect x="300" y="30" width="300" height="56" rx="10" fill="#efe6fb" stroke="#7b46c9" stroke-width="2.5"/>
+  <text x="450" y="54" font-size="13" text-anchor="middle" font-weight="bold" fill="#7b46c9">LLaMA + LoRA 🔥</text>
+  <text x="450" y="74" font-size="10.5" text-anchor="middle" class="mono" fill="#5b6478">outputs.logits / outputs.hidden_states[-1]</text>
+
+  <!-- CE path -->
+  <g class="ce-path">
+    <path d="M 340 88 C 250 110, 200 120, 170 140" fill="none" stroke="#7b46c9" stroke-width="2.5" marker-end="url(#arrl)"/>
+    <rect x="30" y="146" width="270" height="76" rx="10" fill="#efe6fb" stroke="#7b46c9" stroke-width="2"/>
+    <text x="165" y="170" font-size="12" text-anchor="middle" font-weight="bold" fill="#7b46c9">① L_text(交差エントロピー)</text>
+    <text x="165" y="190" font-size="10.5" text-anchor="middle" class="mono" fill="#5b6478">loss = outputs.loss</text>
+    <text x="165" y="210" font-size="10.5" text-anchor="middle" fill="#5b6478">対象: −100 でない位置のトークン</text>
+    <text x="30" y="240" font-size="11" fill="#7b46c9">「いつ &lt;p&gt; を書くか」もここで学習される</text>
+  </g>
+
+  <!-- feature path -->
+  <g class="feat-path">
+    <path d="M 450 88 L 450 130" fill="none" stroke="#d43d51" stroke-width="2.5" marker-end="url(#arrl)"/>
+    <rect x="330" y="136" width="240" height="44" rx="9" fill="#e0f5ec" stroke="#1e9e6a" stroke-width="2"/>
+    <text x="450" y="153" font-size="11.5" text-anchor="middle" font-weight="bold" fill="#1e9e6a">codi_llama_decode 🔥</text>
+    <text x="450" y="171" font-size="10" text-anchor="middle" class="mono" fill="#5b6478">h[:, :-1] : (B,S,4096) → (B,S,1024)</text>
+
+    <path d="M 450 182 L 450 216" fill="none" stroke="#d43d51" stroke-width="2.5" marker-end="url(#arrl)"/>
+    <rect x="316" y="222" width="268" height="80" rx="10" fill="#fbe4e8" stroke="#d43d51" stroke-width="2"/>
+    <text x="450" y="246" font-size="12" text-anchor="middle" font-weight="bold" fill="#d43d51">② L_feat(コサイン類似度)</text>
+    <text x="450" y="266" font-size="10.5" text-anchor="middle" class="mono" fill="#5b6478">feature_loss = −cos(ŷ, y) の平均 × 0.1</text>
+    <text x="450" y="288" font-size="10.5" text-anchor="middle" fill="#5b6478">教師: ImageBind の実特徴(L2 正規化済)</text>
+
+    <rect x="620" y="222" width="250" height="80" rx="10" fill="#fff" stroke="#3556d4" stroke-width="1.5"/>
+    <text x="745" y="244" font-size="11.5" text-anchor="middle" font-weight="bold" fill="#3556d4">1 つ前の位置から予測する</text>
+    <text x="745" y="264" font-size="10.5" text-anchor="middle" class="mono" fill="#5b6478">logits ← h[:, :-1]</text>
+    <text x="745" y="282" font-size="10.5" text-anchor="middle" class="mono" fill="#5b6478">labels ← targets[:, 1:]</text>
+    <text x="745" y="297" font-size="10" text-anchor="middle" fill="#5b6478">= 「次トークン予測」と同じずらし方</text>
+    <path d="M 616 262 L 588 262" fill="none" stroke="#3556d4" stroke-width="2" marker-end="url(#arrl)"/>
+  </g>
+
+  <!-- diffusion path -->
+  <g class="diff-path">
+    <path d="M 450 302 L 450 332" fill="none" stroke="#e07b1f" stroke-width="2.5" marker-end="url(#arrl)"/>
+    <rect x="250" y="336" width="400" height="66" rx="10" fill="#fdeeda" stroke="#e07b1f" stroke-width="2"/>
+    <text x="450" y="356" font-size="12" text-anchor="middle" font-weight="bold" fill="#e07b1f">③ L_diff(著者の言う pixel loss): 生成した特徴で本当に SD-unCLIP を回す</text>
+    <text x="450" y="374" font-size="10.5" text-anchor="middle" class="mono" fill="#5b6478">c_adm = regression_logits[:, :1]</text>
+    <text x="450" y="391" font-size="10.5" text-anchor="middle" class="mono" fill="#5b6478">→ image_diffuser(latents, c)[0]</text>
+
+    <rect x="676" y="343" width="196" height="52" rx="10" fill="#fff" stroke="#e07b1f" stroke-width="1.5"/>
+    <text x="774" y="365" font-size="11" text-anchor="middle" fill="#e07b1f">UNet も VAE も凍結 🧊</text>
+    <text x="774" y="383" font-size="10.5" text-anchor="middle" fill="#5b6478">勾配は条件側だけを流れる</text>
+    <path d="M 654 369 L 672 369" fill="none" stroke="#e07b1f" stroke-width="2" marker-end="url(#arrl)"/>
+
+    <text x="250" y="418" font-size="11.5" fill="#e07b1f">埋め込みが「似ている」だけでは絵が出るとは限らない。実際に描かせて確かめる、という保険。</text>
+    <text x="250" y="438" font-size="11.5" fill="#5b6478">perception_type が 'clip-diffusser-back-proop' のときだけ有効になる。</text>
+  </g>
+
+  <text x="30" y="438" font-size="11" fill="#5b6478">3 つの損失は</text>
+  <text x="30" y="456" font-size="11" fill="#5b6478">同じ forward 内で計算される。</text>
+</svg>
+<figcaption>
+3 種類の損失の計算経路。①はテキスト、②は特徴、③は生成品質を担当する。
+②と③はどちらも <code>codi_llama_decode</code> の出力から分岐しており、
+勾配は LoRA と 2 つの MLP にだけ流れる。
+</figcaption>
+</figure>
+
+<h3 id="loss-text">① テキスト損失 \(\mathcal{L}_{\text{text}}\)</h3>
+<p>
+HuggingFace の <code>LlamaForCausalLM</code> に <code>labels</code> を渡すだけで得られる、標準の言語モデル損失です。
+</p>
+<div class="callout math">
+<span class="callout-title">数式</span>
+$$\mathcal{L}_{\text{text}} = -\frac{1}{|\mathcal{T}|}\sum_{t \in \mathcal{T}} \log p_\theta\!\left(y_t \mid y_{&lt;t},\, X\right)$$
+\(\mathcal{T}\) は <code>target_ids</code> が \(-100\) でない位置の集合、
+つまり<strong>モデルの応答テキストのうち特徴位置を除いた部分</strong>です。
+\(X\) は入力列に差し込まれたマルチモーダル特徴。
+</div>
+
+<h3 id="loss-feat">② 特徴回帰損失 \(\alpha\,\mathrm{MSE}(c_{\text{MLLM}}, C_x(x))\) — 「向き」だけを合わせる</h3>
+<p>
+CoDi-2 の心臓部です。<strong>L2 距離ではなくコサイン類似度</strong>を使っている点、
+そして <strong>予測側だけを L2 正規化している</strong>点に注目してください。
+</p>
+
+<div class="codeblock">
+<div class="codehead"><span class="path">CoDi-2/core/models/mmllama/openllama.py</span> L328–351
+<a href="https://github.com/microsoft/i-Code/blob/9b16730b7e0254f02a833281335c91ee382552e6/CoDi-2/core/models/mmllama/openllama.py#L328-L351" target="_blank" rel="noopener">GitHub ↗</a></div>
+<pre><code class="language-python">outputs = self.llama_model(
+    inputs_embeds=inputs_embeds,
+    attention_mask=attention_mask,
+    return_dict=True,
+    output_hidden_states=True,     # ★ 隠れ状態が必要なので必須
+    labels=targets,
+)
+loss = outputs.loss                # ① テキスト CE
+
+# calculate regression loos
+if 'clip' in self.perception_type:
+    indice_mask = (regression_targets[:, 1:, -1] != -100)      # 特徴を書くべき位置だけ True
+    if indice_mask.sum() > 0:
+        regression_logits = self.codi_llama_decode(outputs.hidden_states[-1][:, :-1])  # 1 つ前の位置から
+        regression_logits_normed = regression_logits/torch.norm(regression_logits, dim=-1, keepdim=True)
+        regression_labels = regression_targets[:, 1:]          # 1 つ後ろへずらした教師
+
+        # Reshape embeddings
+        b, n, c = regression_logits_normed.shape
+        cosine_sim = F.cosine_similarity(regression_labels.transpose(1,2), regression_logits_normed.transpose(1,2))
+        feature_loss = -cosine_sim
+        feature_loss = feature_loss[indice_mask].mean() * 0.1   # ★ 係数 0.1
+    else:
+        feature_loss = torch.tensor(0.0)</code></pre>
+</div>
+
+<div class="callout math">
+<span class="callout-title">数式とコードの対応</span>
+$$\mathcal{L}_{\text{feat}} \;=\; -\,\frac{1}{|\mathcal{F}|}\sum_{(i,t)\,\in\,\mathcal{F}}
+\cos\!\Big(\, P_{\text{out}}\big(\mathbf{h}^{(i)}_{t-1}\big),\; \mathbf{v}^{(i)}_{t} \Big)$$
+\(\mathcal{F}\) は <code>indice_mask</code> が True の位置、
+\(\mathbf{h}_{t-1}\) は<strong>1 つ手前の</strong>最終層隠れ状態、
+\(\mathbf{v}_t\) は ImageBind が返した教師特徴。
+コサインなので<strong>ノルムは学習されず、向きだけが揃えられます</strong>。
+</div>
+
+<div class="callout point">
+<span class="callout-title">なぜ 1 つずらすのか — これは「次特徴予測」</span>
+<code>hidden_states[-1][:, :-1]</code> と <code>regression_targets[:, 1:]</code> という組み合わせは、
+次トークン予測でおなじみの shift とまったく同じ形です。
+つまり CoDi-2 は<strong>「次に来るのはこの特徴だ」を予測する自己回帰モデル</strong>として訓練されており、
+テキストと特徴で学習の枠組みが完全に揃っています。
+論文 Abstract の “autoregressively generate … in the continuous feature space”、
+および結論の “autoregressively produce the latent features that is fed to diffusers” は、
+この 1 行に対応します。
+</div>
+
+<div class="callout warn">
+<span class="callout-title">なぜコサインで足りるのか</span>
+生成編で見るように、この特徴は最終的に unCLIP の <code>noise_augmentor</code> に渡されます。
+CLIP/ImageBind 系の埋め込み条件はもともと方向情報が本質で、
+ImageBind 側の教師も CLS のノルムで割って正規化されています。
+そのため<strong>スケールを合わせる必要がなく、コサインで十分</strong>という設計になっています。
+NExT-GPT が L2 距離を使うのは、あちらの教師が
+「CLIP テキストエンコーダの出力そのもの」という、スケールまで含めて意味のある値だからです。
+</div>
+
+<h3 id="loss-diff">③ 拡散損失 \(\mathcal{L}_{DM}\) — 生成器に通して確かめる</h3>
+<p>
+埋め込みの向きが合っていても、実際に良い絵が出るとは限りません。
+そこで <code>perception_type</code> に <code>'clip-diffusser-back-proop'</code> を指定すると、
+<strong>LLM が生成した特徴を条件に凍結拡散モデルを 1 ステップ回し、そのノイズ予測誤差を足す</strong>
+経路が有効になります。関数名の <code>back-proop</code>(back-prop)が示すとおり、
+狙いは<strong>拡散モデルを貫いて LLM まで勾配を流すこと</strong>です。
+</p>
+
+<div class="callout math">
+<span class="callout-title">論文 §3.2 の式(1)</span>
+$$\mathcal{L}_{DM} = \mathbb{E}_{z,\epsilon,t}\big\lVert \epsilon - \epsilon_\theta\big(z_t,\, t,\, C_y(y)\big)\big\rVert_2^2$$
+\(y\) は条件モダリティ、\(C_y\) はその条件エンコーダ、\(\epsilon_\theta\) は UNet、
+\(z_t\) は時刻 \(t\) のノイズ潜在です。
+CoDi-2 はこの \(C_y(y)\) の位置に<strong>LLM が生成した特徴 \(c_{\text{MLLM}}\)</strong> を差し込みます。
+論文 §1 いわく
+“the gradient obtained from the diffusion models' generation loss also
+<strong>directly back-propagates to the LLM</strong> which can enhance the
+perceptual faithfulness to the inputs including images or audio”。
+</div>
+
+<div class="codeblock">
+<div class="codehead"><span class="path">CoDi-2/core/models/mmllama/openllama.py</span> L353–398(抜粋)
+<a href="https://github.com/microsoft/i-Code/blob/9b16730b7e0254f02a833281335c91ee382552e6/CoDi-2/core/models/mmllama/openllama.py#L353-L398" target="_blank" rel="noopener">GitHub ↗</a></div>
+<pre><code class="language-python">if self.perception_type == 'clip-diffusser-back-proop' and 'image' in inputs:
+    if indice_mask.sum() > 0:
+        self.image_diffuser = self.image_diffuser.float()
+        num_trues = indice_mask.sum(dim=1)
+        assert num_trues.min() == num_trues.max()
+        b, _, c = regression_logits.shape
+        diffusion_inputs = regression_logits[indice_mask.unsqueeze(-1).expand_as(regression_logits)].view(b, num_trues[0], c)
+        diffusion_inputs = diffusion_inputs[:, :1]              # ★ 先頭 1 本だけを条件に使う
+
+        c_adm = diffusion_inputs.squeeze(1).float()
+        if self.image_diffuser.noise_augmentor is not None:
+            c_adm, noise_level_emb = self.image_diffuser.noise_augmentor(c_adm, noise_level=(
+                    torch.ones(batch_size) * self.image_diffuser.noise_augmentor.max_noise_level * 0.5).long().to(c_adm.device))
+            c_adm_noise = torch.cat((c_adm, noise_level_emb), 1).float()   # 1024 + 1024 = 2048
+        uc_encoder = self.image_diffuser.get_learned_conditioning(batch_size * ['longbody, lowres, bad anatomy, ...']).float()
+        c = {"c_crossattn": [uc_encoder], "c_adm": c_adm_noise}
+
+        # 正解画像を 768×768 にして VAE で潜在化
+        latents = self.image_diffuser.encode_first_stage(x_inputs)
+        latents = self.image_diffuser.get_first_stage_encoding(latents)
+        diffusion_loss = self.image_diffuser(latents, c)[0]     # 標準の拡散損失
+        feature_loss += diffusion_loss</code></pre>
+</div>
+
+<p>
+ここで <code>regression_logits</code>(正規化<strong>前</strong>)を使っている点が重要です。
+コサイン損失は正規化後のベクトルに掛かりますが、拡散モデルには生のスケールのまま渡されます。
+つまりこの経路は<strong>「コサインでは決まらないノルムを、生成品質から決めさせる」</strong>役割も担っています。
+</p>
+
+<div class="callout math">
+<span class="callout-title">コードが実際に計算している形</span>
+$$\mathcal{L}_{DM} = \mathbb{E}_{z_0,\,\epsilon,\,t}
+\Big[\, \big\lVert\, \epsilon_{\text{tgt}} - \epsilon_\theta\big(z_t,\, t,\, [\,c_{\text{txt}},\, \mathrm{aug}(P_{\text{out}}(\mathbf{h}))\,]\big) \big\rVert^2 \,\Big]$$
+UNet \(\epsilon_\theta\)・VAE・テキストエンコーダはすべて凍結なので、
+勾配は条件 \(P_{\text{out}}(\mathbf{h})\) を通って <code>codi_llama_decode</code> と LoRA に届きます。
+YAML の <code>parameterization: "v"</code> に従い、実際の予測対象は \(\epsilon\) ではなく v ですが、
+「凍結生成器を通して条件を鍛える」という構図は同じです。
+</div>
+
+<h3 id="vae-variant">補足: <code>perception_type == 'vae'</code> — 書きかけで動かない経路</h3>
+<p>
+コードにはもう一つ、特徴を ImageBind ではなく<strong>VAE 潜在</strong>で扱う分岐が残っています。
+こちらは向きではなく値そのものを合わせるので、素直な平均二乗誤差です。
+</p>
+
+<div class="codeblock">
+<div class="codehead"><span class="path">CoDi-2/core/models/mmllama/openllama.py</span> L402–410
+<a href="https://github.com/microsoft/i-Code/blob/9b16730b7e0254f02a833281335c91ee382552e6/CoDi-2/core/models/mmllama/openllama.py#L402-L410" target="_blank" rel="noopener">GitHub ↗</a></div>
+<pre><code class="language-python">elif self.perception_type == 'vae':
+    regression_indices, regression_targets_vae = regression_targets
+    if len(regression_targets_vae) > 0:
+        hidden_states = outputs.hidden_states[-1][:, :-1]
+        indice_mask = regression_indices.bool()[:, 1:]
+        regression_logits = self.codi_llama_decode(gather_true_values(hidden_states, indice_mask))
+        feature_loss = torch.square(regression_targets_vae-regression_logits).mean()   # MSE
+    else:
+        feature_loss = torch.tensor(0.0)</code></pre>
+</div>
+<p>
+ただし、<strong>この分岐は公開コードのままでは実行できません</strong>。
+<code>codi_llama_proj</code> と <code>codi_llama_decode</code> が作られるのは
+<code>__init__</code> の <code>if 'clip' in self.perception_type:</code> の中だけ(L171)なので、
+<code>perception_type</code> がちょうど <code>'vae'</code> のときこの条件は偽になり、
+2 つの MLP はそもそも生成されません。
+その状態で上のコードに入ると <code>self.codi_llama_decode(...)</code> が
+<strong><code>AttributeError</code> を投げます</strong>
+(それ以前に <code>prompt_wrap</code> の <code>self.codi_llama_proj(...)</code> で落ちます)。
+</p>
+<div class="callout warn">
+<span class="callout-title">つまり <code>'vae'</code> 経路は「未完成の残骸」</span>
+「どちらが本番設定か分からない 2 つの選択肢」ではありません。
+公開されている範囲では <strong><code>'clip'</code> 系だけが動作する唯一の経路</strong>で、
+<code>'vae'</code> 系は<strong>モジュールの初期化が伴っていない書きかけのコード</strong>です
+(外部のパッチでデコーダを別途用意しない限り動きません)。
+論文が扱うのも ImageBind 特徴を使う <code>'clip'</code> 系の設計なので、
+本解説もそちらを主経路として読み解いています。
+<code>'vae'</code> 経路は<strong>「特徴を VAE 潜在で扱う設計も検討されていた形跡」</strong>として見るのが妥当でしょう。
+</div>
+
+<h2 id="pipeline">学習パイプライン — モダリティごとに順番を回す</h2>
+<p>
+公開コードの <code>forward</code> は、冒頭で
+<code>if 'image' in inputs / elif 'text' / elif 'audio'</code> と分岐しており、
+<strong>1 バッチには 1 モダリティしか入らない</strong>作りになっています。
+一見すると手抜きに見えますが、これは論文の学習方針そのものです。
+</p>
+<div class="callout math">
+<span class="callout-title">論文 §B.2</span>
+“The training pipeline involves simultaneous text, image, and audio generation via diffusion.
+To avoid the cumbersome and inefficient aspects of this multitasking approach,
+especially concerning model I/O, we <strong>alternate training phases between text, audio, and image generation</strong>.
+We apply LoRa with a rank of 128 for fine-tuning the model.”
+</div>
+<p>
+3 つの拡散モデル(SD 2.1 unCLIP / AudioLDM2 / zeroscope v2)を同時に GPU に載せるのは重すぎるため、
+<strong>フェーズを切り替えて 1 モダリティずつ学習する</strong>という方針です。
+コードの <code>elif</code> の連なりは、その 1 フェーズ分を切り出したものと読めます。
+</p>
+
+<h2 id="data-sets">学習データ — 「in-context 化」して作る</h2>
+<p>
+論文 §4 は、この学習を成り立たせるためのデータ構築にかなりの紙幅を割いています。
+既存データセットを集めるだけでなく、<strong>それらを in-context 形式に変換する</strong>のがポイントです。
+</p>
+<table>
+  <tr><th>種類</th><th>使うデータ</th><th>役割</th></tr>
+  <tr>
+    <td>マルチモーダル<br>in-context 理解</td>
+    <td>MIMIC-IT(280 万の指示-応答対)</td>
+    <td>出力はテキストのみだが、入力の in-context 理解と指示追従を鍛える</td>
+  </tr>
+  <tr>
+    <td>ペアデータ</td>
+    <td>LAION-400M(画像)/ AudioSet(音声、約 208 万クリップ)/ WebVid(動画、1070 万本)</td>
+    <td>「X → キャプション」と「キャプション → X」の 2 方向のタスクを構成</td>
+  </tr>
+  <tr>
+    <td>指示編集</td>
+    <td>InstructPix2Pix(画像)/ AudioSet を AUDIT 流に加工(音声の追加・除去・置換)</td>
+    <td>「この画像をこう編集して」に応える能力</td>
+  </tr>
+  <tr>
+    <td>構築した<br>in-context 生成</td>
+    <td>InstructPix2Pix の同一プロンプト画像対 / Kosmos-G(Open Images V7、900 万枚)</td>
+    <td>「[image0] と [image1] の間の変換を、[image2] にも適用せよ」という<strong>アナロジー形式</strong>に変換</td>
+  </tr>
+  <tr>
+    <td>テキストのみ<br>データの流用</td>
+    <td>alpaca</td>
+    <td>文中の語句をテキストエンコーダ特徴に差し替え、擬似的なマルチモーダル in-context データにする</td>
+  </tr>
+</table>
+
+<div class="callout point">
+<span class="callout-title">「テキストだけでマルチモーダルを学ぶ」トリック(§4.1)</span>
+最後の行がとくに面白い工夫です。ImageBind はすべてのモダリティを同じ空間に揃えるので、
+<strong>テキストの一部を「そのテキストのエンコーダ特徴」に置き換えても、
+LLM から見れば画像特徴が挿さっているのと同じ形</strong>になります。
+<br><br>
+“A cat typically has a compact, flexible body, covered in soft fur …” を
+“<code>[text0]</code> typically has <code>[text1]</code>, covered in <code>[text2]</code> …”
+に変換する、という具合です(<code>[text0]</code> は “a cat” のテキスト特徴)。
+これで、画像を 1 枚も使わずに interleaved なデータを大量に作れます。
+コードの <code>forward</code> に <code>elif 'text' in inputs:</code> という分岐があり、
+そこで <code>ModalityType.TEXT</code> を ImageBind に通しているのは、この経路のためです。
+</div>
+
+<h2 id="monitor">学習の監視 — トークン正解率</h2>
+<p>
+<code>forward</code> は損失に加えてトークン正解率も返します。
+これは損失には使われず、ログ用の指標です。
+</p>
+
+<div class="codeblock">
+<div class="codehead"><span class="path">CoDi-2/core/models/mmllama/openllama.py</span> L411–421
+<a href="https://github.com/microsoft/i-Code/blob/9b16730b7e0254f02a833281335c91ee382552e6/CoDi-2/core/models/mmllama/openllama.py#L411-L421" target="_blank" rel="noopener">GitHub ↗</a></div>
+<pre><code class="language-python"># calculate the token accuarcy
+chosen_tokens = torch.max(outputs.logits, dim=-1)[1][:, :-1]    # [B, S-1]
+labels = targets[:, 1:]
+gen_acc = (chosen_tokens.reshape(-1) == labels.reshape(-1)).to(torch.long)    # [B*S]
+valid_mask = (labels != -100).reshape(-1)
+valid_tokens = gen_acc & valid_mask    # [B*S]
+if valid_mask.sum().item() > 0:
+    gen_acc = valid_tokens.sum().item() / valid_mask.sum().item()
+else:
+    gen_acc = torch.tensor(0.0)
+return loss, gen_acc, feature_loss</code></pre>
+</div>
+
+<h2 id="codi1">参考: CoDi-1 側の学習(<code>codi.py</code>)</h2>
+<p>
+拡散モデル本体である CoDi-1 の学習コードも同梱されています。
+CoDi-2 の学習では凍結されますが、モダリティごとに損失の平均の取り方を変えている点など、
+any-to-any 拡散の作りが見て取れます。
+</p>
+
+<div class="codeblock">
+<div class="codehead"><span class="path">CoDi-2/core/models/codi.py</span> L188–257(抜粋)
+<a href="https://github.com/microsoft/i-Code/blob/9b16730b7e0254f02a833281335c91ee382552e6/CoDi-2/core/models/codi.py#L188-L257" target="_blank" rel="noopener">GitHub ↗</a></div>
+<pre><code class="language-python">def p_losses(self, x_start, cond, t, noise=None, xtype='image', ctype='prompt', uc=None, ...):
+    noise = [torch.randn_like(x_start_i) for x_start_i in x_start] if noise is None else noise
+    x_noisy = [self.q_sample(x_start=x_start_i, t=t, noise=noise_i) for x_start_i, noise_i in zip(x_start, noise)]
+
+    drop_condition = []
+    for j in range(len(noise[0])):
+        if random.random() &lt; 0.05:          # 5% の確率で条件を無条件化(classifier-free guidance 用)
+            drop_condition.append(True)
+        ...
+    model_output = self.apply_model(x_noisy, t, cond, xtype, ctype, x_0, x_0_type, ...)
+
+    if self.parameterization == "x0":
+        target = x_start
+    elif self.parameterization == "eps":
+        target = noise
+
+    loss = 0.0
+    for model_output_i, target_i, xtype_i in zip(model_output, target, xtype):
+        if xtype_i == 'image':
+            loss_simple = self.get_pixel_loss(model_output_i, target_i, mean=False).mean([1, 2, 3])
+        elif xtype_i == 'video':
+            loss_simple = self.get_pixel_loss(model_output_i, target_i, mean=False).mean([1, 2, 3, 4])
+        elif xtype_i == 'text':
+            loss_simple = self.get_text_loss(model_output_i, target_i).mean([1])
+        elif xtype_i == 'audio':
+            loss_simple = self.get_pixel_loss(model_output_i, target_i, mean=False).mean([1, 2, 3])
+        loss += loss_simple.mean()
+    return loss / len(xtype)                # 出力モダリティ数で平均</code></pre>
+</div>
+<p>
+そして CoDi-2 から使うときは、<code>CoDi.__init__</code> の最後で
+<code>self.freeze()</code> が呼ばれ、全パラメータが <code>requires_grad = False</code> になります
+(<a href="https://github.com/microsoft/i-Code/blob/9b16730b7e0254f02a833281335c91ee382552e6/CoDi-2/core/models/codi.py#L62-L72" target="_blank" rel="noopener">codi.py L62–72</a>)。
+</p>
+
+<h2 id="summary">まとめ</h2>
+<table>
+  <tr><th></th><th>\(\mathcal{L}_t\)</th><th>\(\alpha\,\mathrm{MSE}(c_{\text{MLLM}}, C_x(x))\)</th><th>\(\mathcal{L}_{DM}\)</th></tr>
+  <tr><th>対象位置</th><td><code>target_ids != -100</code></td><td><code>regression_targets != -100</code></td><td>特徴位置の先頭 1 本</td></tr>
+  <tr><th>論文の形</th><td>因果的言語モデル損失</td><td>MSE(重み \(\alpha\))</td><td>式(1)の拡散損失</td></tr>
+  <tr><th>コードの形</th><td>交差エントロピー</td><td><strong>負のコサイン類似度 × 0.1</strong>(<code>'vae'</code> 経路だけ MSE)</td><td>拡散のノイズ予測誤差</td></tr>
+  <tr><th>教師</th><td>応答トークン</td><td>ターゲットの ImageBind 特徴 \(C_x(x)\)</td><td>正解画像の VAE 潜在</td></tr>
+  <tr><th>学習されるもの</th><td colspan="3" style="text-align:center">LoRA(r=128, q/k/v/o)+ <code>codi_llama_proj</code> + <code>codi_llama_decode</code> のみ 🔥</td></tr>
+  <tr><th>凍結されるもの</th><td colspan="3" style="text-align:center">ImageBind / Llama-2 本体 / 拡散モデル(UNet・VAE・テキストエンコーダ)🧊</td></tr>
+</table>
+
+<div class="callout point">
+<span class="callout-title">設計の核心</span>
+CoDi-2 の学習は<strong>「言語モデルの訓練枠組みを、そのまま連続ベクトルにも適用する」</strong>という
+一点に集約されます。次トークン予測と同じ shift、同じマスク機構、同じ <code>forward</code>。
+違うのは、出力を語彙上の分布として測るか(CE)、
+1024 次元空間の向きとして測るか(コサイン)だけ。
+NExT-GPT が「シグナルトークンという新しい語彙」を導入して段階的に学習したのに対し、
+CoDi-2 は<strong>語彙を増やさずラベルの型だけを増やした</strong>、と言えます。
+</div>
+
+<nav class="pager">
+  <a href="architecture.html"><span class="dir">← 前へ</span><span class="title">1. アーキテクチャ詳解</span></a>
+  <a class="next" href="inference.html"><span class="dir">次へ →</span><span class="title">3. 生成プロセス</span></a>
+</nav>
+
+</main>
+
+<footer class="site-footer">
+  <p>引用コード: <a href="https://github.com/microsoft/i-Code/tree/9b16730b7e0254f02a833281335c91ee382552e6/CoDi-2" target="_blank" rel="noopener">microsoft/i-Code — CoDi-2</a>(MIT License)/
+  論文: <a href="https://arxiv.org/abs/2311.18775" target="_blank" rel="noopener">CoDi-2: In-Context, Interleaved, and Interactive Any-to-Any Generation</a>(CVPR 2024)/
+  <a href="https://codi-2.github.io/" target="_blank" rel="noopener">プロジェクトページ</a></p>
+</footer>
+
+<script>
+MathJax = { tex: { inlineMath: [['\\(', '\\)']], displayMath: [['$$', '$$']] } };
+</script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js" async></script>
+<script src="assets/diagram-controls.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-core.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-python.min.js"></script>
+</body>
+</html>

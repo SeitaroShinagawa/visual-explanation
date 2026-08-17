@@ -1,0 +1,610 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CoDi-2 図解 3 — 生成プロセス</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🎼</text></svg>">
+<link rel="stylesheet" href="assets/style.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/themes/prism-tomorrow.min.css">
+<style>
+/* ===== generation timeline (18s cycle) ===== */
+/* phase A: tokens appear one by one */
+#gentime .tok { opacity: 0; animation: gt-tok 18s ease-out infinite; }
+#gentime .tok:nth-of-type(1) { animation-delay: 0.0s; }
+#gentime .tok:nth-of-type(2) { animation-delay: 0.4s; }
+#gentime .tok:nth-of-type(3) { animation-delay: 0.8s; }
+#gentime .tok:nth-of-type(4) { animation-delay: 1.2s; }
+#gentime .tok:nth-of-type(5) { animation-delay: 1.6s; }
+#gentime .tok:nth-of-type(6) { animation-delay: 2.0s; }
+#gentime .tok:nth-of-type(7) { animation-delay: 2.4s; }
+#gentime .tok:nth-of-type(8) { animation-delay: 2.8s; }
+@keyframes gt-tok {
+  0% { opacity: 0; transform: translateY(6px); }
+  2% { opacity: 1; transform: translateY(0); }
+  93% { opacity: 1; }
+  98%, 100% { opacity: 0; }
+}
+/* phase B: <p> detection */
+#gentime .detect { opacity: 0; animation: gt-detect 18s ease-in-out infinite; }
+@keyframes gt-detect {
+  0%, 22% { opacity: 0; }
+  27%, 92% { opacity: 1; }
+  97%, 100% { opacity: 0; }
+}
+/* phase C: hidden state extraction + decode */
+#gentime .extract { opacity: 0; animation: gt-extract 18s ease-in-out infinite; }
+@keyframes gt-extract {
+  0%, 34% { opacity: 0; }
+  39%, 92% { opacity: 1; }
+  97%, 100% { opacity: 0; }
+}
+/* phase D: conditioning assembly */
+#gentime .cond { opacity: 0; animation: gt-cond 18s ease-in-out infinite; }
+@keyframes gt-cond {
+  0%, 50% { opacity: 0; }
+  55%, 92% { opacity: 1; }
+  97%, 100% { opacity: 0; }
+}
+/* phase E: denoise squares */
+#gentime .den { opacity: 0; animation: gt-den 18s ease-in-out infinite; }
+#gentime .den1 { animation-delay: 11.5s; }
+#gentime .den2 { animation-delay: 12.5s; }
+#gentime .den3 { animation-delay: 13.5s; }
+#gentime .den4 { animation-delay: 14.5s; }
+@keyframes gt-den {
+  0% { opacity: 0; }
+  3% { opacity: 1; }
+  16% { opacity: 1; }
+  19%, 100% { opacity: 0; }
+}
+#gentime .den-frame { opacity: 0; animation: gt-frame 18s ease-in-out infinite; }
+@keyframes gt-frame {
+  0%, 62% { opacity: 0; }
+  66%, 95% { opacity: 1; }
+  99%, 100% { opacity: 0; }
+}
+#gentime .den-final { opacity: 0; animation: gt-final 18s ease-in-out infinite; }
+@keyframes gt-final {
+  0%, 86% { opacity: 0; }
+  90%, 95% { opacity: 1; }
+  99%, 100% { opacity: 0; }
+}
+
+/* ===== CFG diagram (9s, 2 steps) ===== */
+#cfg-diagram .branch-c { animation: cfg-c 9s ease-in-out infinite; }
+@keyframes cfg-c {
+  0%, 3% { opacity: 0.28; }
+  8%, 45% { opacity: 1; }
+  50%, 100% { opacity: 0.28; }
+}
+#cfg-diagram .branch-u { animation: cfg-u 9s ease-in-out infinite; }
+@keyframes cfg-u {
+  0%, 50% { opacity: 0.28; }
+  55%, 92% { opacity: 1; }
+  97%, 100% { opacity: 0.28; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #gentime .tok, #gentime .detect, #gentime .extract, #gentime .cond,
+  #gentime .den, #gentime .den-frame, #gentime .den-final { opacity: 1; }
+  #cfg-diagram .branch-c, #cfg-diagram .branch-u { opacity: 1; }
+}
+</style>
+</head>
+<body>
+
+<nav class="topnav">
+  <a class="home-link" href="../index.html">Visual Explanation</a><span class="sep">/</span>
+  <a href="./index.html">CoDi-2 概要</a>
+  <a href="architecture.html">1. アーキテクチャ</a>
+  <a href="training.html">2. 学習プロセス</a>
+  <a href="inference.html" class="current">3. 生成プロセス</a>
+</nav>
+
+<header class="page-header">
+  <h1>3. 生成プロセス</h1>
+  <p>「この写真の犬を、さっきの絵のスタイルで描いて」と頼まれた CoDi-2 の中で何が起きるのか。
+  <strong>テキストと非テキストで出口が分かれる瞬間</strong>を、
+  <code>generate()</code> の実装から拡散サンプリングまで追跡します。</p>
+</header>
+
+<main class="article">
+
+<h2 id="timeline">生成の全体タイムライン</h2>
+<p>
+CoDi-2 の推論は大きく 6 段階です。鍵になるのは
+<strong>「LLM は最後まで普通に自己回帰生成しているだけ」</strong>という点で、
+モダリティの切り替えは<strong>生成が終わったあとの後処理</strong>として実装されています。
+</p>
+
+<figure class="diagram" id="gentime" data-cycle-ms="18000" data-step-count="5">
+<svg viewBox="0 0 920 620" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="CoDi-2 の生成プロセスのタイムラインアニメーション">
+  <defs>
+    <marker id="arrg" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#3556d4"/>
+    </marker>
+  </defs>
+
+  <text x="24" y="26" font-size="11.5" fill="#5b6478" font-weight="bold">USER: "&lt;image&gt; make it look like &lt;image&gt; , and give me the result"</text>
+
+  <!-- phase A -->
+  <text x="24" y="56" font-size="12.5" font-weight="bold" fill="#1c2333">① LLM が自己回帰生成。特別なサンプリングは一切していない(do_sample=True の普通の generate)</text>
+  <g font-size="10.5" class="mono">
+    <g class="tok"><rect x="24"  y="70" width="52" height="30" rx="6" fill="#e9ecf5" stroke="#8a93ad"/><text x="50"  y="90" text-anchor="middle">Here</text></g>
+    <g class="tok"><rect x="82"  y="70" width="36" height="30" rx="6" fill="#e9ecf5" stroke="#8a93ad"/><text x="100" y="90" text-anchor="middle">it</text></g>
+    <g class="tok"><rect x="124" y="70" width="36" height="30" rx="6" fill="#e9ecf5" stroke="#8a93ad"/><text x="142" y="90" text-anchor="middle">is</text></g>
+    <g class="tok"><rect x="166" y="70" width="30" height="30" rx="6" fill="#e9ecf5" stroke="#8a93ad"/><text x="181" y="90" text-anchor="middle">:</text></g>
+    <g class="tok"><rect x="202" y="70" width="42" height="30" rx="6" fill="#fbe4e8" stroke="#d43d51" stroke-width="2"/><text x="223" y="90" text-anchor="middle" fill="#d43d51">▁&lt;</text></g>
+    <g class="tok"><rect x="250" y="70" width="36" height="30" rx="6" fill="#fbe4e8" stroke="#d43d51" stroke-width="2"/><text x="268" y="90" text-anchor="middle" fill="#d43d51">p</text></g>
+    <g class="tok"><rect x="292" y="70" width="36" height="30" rx="6" fill="#fbe4e8" stroke="#d43d51" stroke-width="2"/><text x="310" y="90" text-anchor="middle" fill="#d43d51">&gt;</text></g>
+    <g class="tok"><rect x="334" y="70" width="60" height="30" rx="6" fill="#e9ecf5" stroke="#8a93ad"/><text x="364" y="90" text-anchor="middle">…</text></g>
+  </g>
+  <text x="410" y="90" font-size="10.5" fill="#5b6478" class="mono">stopping_criteria: 2277 (= "##") が出たら停止</text>
+
+  <!-- phase B -->
+  <g class="detect">
+    <path d="M 202 106 L 202 118 L 328 118 L 328 106" fill="none" stroke="#d43d51" stroke-width="2"/>
+    <text x="24" y="142" font-size="12.5" font-weight="bold" fill="#d43d51">② 生成し終わった列を走査して [529, 29886, 29958] = "&lt;p&gt;" の並びを探す(find_pattern)</text>
+    <text x="24" y="160" font-size="10.5" fill="#5b6478">語彙は増やしていないので、これは「モデルが普通に書いた 3 トークンの文字列」でしかない</text>
+  </g>
+
+  <!-- phase C -->
+  <g class="extract">
+    <path d="M 265 168 L 265 190" fill="none" stroke="#3556d4" stroke-width="2.5" marker-end="url(#arrg)"/>
+    <rect x="70" y="194" width="400" height="44" rx="9" fill="#fbe4e8" stroke="#d43d51" stroke-width="1.5"/>
+    <text x="270" y="212" font-size="11.5" text-anchor="middle" fill="#d43d51" font-weight="bold">③ そのパターンの直後の位置の最終層隠れ状態を取り出す</text>
+    <text x="270" y="229" font-size="10" text-anchor="middle" class="mono" fill="#5b6478">hidden_states_last[j+1] : (4096,) &nbsp;— lm_head は通さない</text>
+
+    <rect x="496" y="194" width="400" height="44" rx="9" fill="#e9ecf5" stroke="#8a93ad" stroke-width="1.5"/>
+    <text x="696" y="212" font-size="11.5" text-anchor="middle" font-weight="bold">③' テキストは別ルートでそのまま返る</text>
+    <text x="696" y="229" font-size="10" text-anchor="middle" class="mono" fill="#5b6478">output_text = tokenizer.decode(output_ids)</text>
+
+    <path d="M 265 240 L 265 262" fill="none" stroke="#3556d4" stroke-width="2.5" marker-end="url(#arrg)"/>
+    <rect x="110" y="266" width="320" height="44" rx="9" fill="#e0f5ec" stroke="#1e9e6a" stroke-width="2"/>
+    <text x="270" y="284" font-size="11.5" text-anchor="middle" fill="#1e9e6a" font-weight="bold">④ codi_llama_decode で 1024 次元へ</text>
+    <text x="270" y="301" font-size="10" text-anchor="middle" class="mono" fill="#5b6478">output_features : (N, 1024) = ImageBind 空間の点</text>
+  </g>
+
+  <!-- phase D: conditioning -->
+  <g class="cond">
+    <path d="M 270 312 L 270 336" fill="none" stroke="#3556d4" stroke-width="2.5" marker-end="url(#arrg)"/>
+    <rect x="80" y="340" width="380" height="66" rx="9" fill="#e5eafc" stroke="#3556d4" stroke-width="2"/>
+    <text x="270" y="360" font-size="11.5" text-anchor="middle" fill="#3556d4" font-weight="bold">⑤ noise_augmentor でノイズを載せ、条件ベクトルを組む</text>
+    <text x="270" y="378" font-size="10" text-anchor="middle" class="mono" fill="#5b6478">c_adm, emb = noise_augmentor(c_adm, noise_level=max*0.5)</text>
+    <text x="270" y="396" font-size="10" text-anchor="middle" class="mono" fill="#5b6478">c_adm_noise = cat(c_adm, emb) : (B, 2048)</text>
+  </g>
+
+  <!-- phase E: diffusion -->
+  <g class="den-frame">
+    <path d="M 270 408 L 270 430" fill="none" stroke="#3556d4" stroke-width="2.5" marker-end="url(#arrg)"/>
+    <rect x="60" y="434" width="480" height="150" rx="10" fill="#fff" stroke="#3556d4" stroke-width="2"/>
+    <text x="300" y="456" font-size="12" text-anchor="middle" fill="#3556d4" font-weight="bold">⑥ SD 2.1 unCLIP-H(凍結)を DDIM で 50 ステップ回す</text>
+    <text x="300" y="474" font-size="10" text-anchor="middle" class="mono" fill="#5b6478">sampler.sample(S=50, shape=[4, 96, 96], unconditional_guidance_scale=7.5)</text>
+  </g>
+  <g>
+    <g class="den den1">
+      <rect x="90" y="490" width="70" height="70" rx="8" fill="#c3c9dd"/>
+      <circle cx="108" cy="510" r="3" fill="#9aa2bd"/><circle cx="135" cy="525" r="4" fill="#8a93ad"/>
+      <circle cx="120" cy="545" r="3" fill="#9aa2bd"/><circle cx="145" cy="505" r="3" fill="#aab1c8"/>
+      <text x="125" y="576" font-size="9.5" text-anchor="middle" fill="#5b6478">t = 50(ノイズ)</text>
+    </g>
+    <g class="den den2">
+      <rect x="200" y="490" width="70" height="70" rx="8" fill="#aeb9d8"/>
+      <circle cx="222" cy="515" r="8" fill="#8d99bd"/><circle cx="248" cy="540" r="10" fill="#98a4c4"/>
+      <text x="235" y="576" font-size="9.5" text-anchor="middle" fill="#5b6478">t = 30</text>
+    </g>
+    <g class="den den3">
+      <rect x="310" y="490" width="70" height="70" rx="8" fill="#9db6a8"/>
+      <ellipse cx="337" cy="530" rx="14" ry="9" fill="#7d9c8a"/>
+      <circle cx="353" cy="513" r="7" fill="#87a893"/>
+      <text x="345" y="576" font-size="9.5" text-anchor="middle" fill="#5b6478">t = 10</text>
+    </g>
+    <g class="den den4">
+      <rect x="420" y="490" width="70" height="70" rx="8" fill="#8fce9f"/>
+      <text x="455" y="535" font-size="26" text-anchor="middle">🐕</text>
+      <text x="455" y="576" font-size="9.5" text-anchor="middle" fill="#5b6478">t = 0</text>
+    </g>
+  </g>
+  <g class="den-final">
+    <path d="M 545 520 L 590 520" fill="none" stroke="#3556d4" stroke-width="2.5" marker-end="url(#arrg)"/>
+    <rect x="598" y="480" width="160" height="80" rx="10" fill="#e5eafc" stroke="#3556d4" stroke-width="2"/>
+    <text x="678" y="516" font-size="28" text-anchor="middle">🖼️</text>
+    <text x="678" y="546" font-size="10.5" text-anchor="middle" fill="#5b6478">768×768 の画像</text>
+  </g>
+
+  <!-- side note -->
+  <text x="580" y="300" font-size="11.5" fill="#1c2333" font-weight="bold">2 つの出口の非対称性</text>
+  <text x="580" y="322" font-size="11" fill="#5b6478">テキスト: 語彙分布 → サンプリング → 離散化</text>
+  <text x="580" y="340" font-size="11" fill="#5b6478">非テキスト: 隠れ状態 → 線形変換 → 連続のまま</text>
+  <text x="580" y="362" font-size="11" fill="#d43d51">後者は「語彙のボトルネック」を通らないため、</text>
+  <text x="580" y="380" font-size="11" fill="#d43d51">視覚的な細部を落とさずに拡散モデルへ渡せる。</text>
+  <text x="580" y="410" font-size="11" fill="#5b6478">ただし &lt;p&gt; をどこで書くかは①のテキスト生成が</text>
+  <text x="580" y="428" font-size="11" fill="#5b6478">決めるので、結局 2 つの出口は連動している。</text>
+</svg>
+<figcaption>
+生成の全体タイムライン。①〜④ までは <code>generate()</code> の中、
+⑤以降は <code>generate_image()</code> の中。
+LLM から見れば <code>&lt;p&gt;</code> は「たまたま書いた 3 トークン」に過ぎず、
+それを合図として扱うのは呼び出し側のコードである点が CoDi-2 の特徴。
+</figcaption>
+</figure>
+
+<h2 id="entry">入口 — プロンプトに特徴を織り込む</h2>
+<p>
+推論時のプロンプトは、<code>#image#_0</code> のような<strong>タグ付きの単語</strong>を含む
+1 本の文字列として渡されます。<code>process_and_concat_embeds</code> がこれを
+空白で分割し、タグなら射影済みの特徴を、そうでなければ通常のトークン埋め込みを並べていきます。
+</p>
+
+<div class="codeblock">
+<div class="codehead"><span class="path">CoDi-2/core/models/mmllama/openllama.py</span> L455–474
+<a href="https://github.com/microsoft/i-Code/blob/9b16730b7e0254f02a833281335c91ee382552e6/CoDi-2/core/models/mmllama/openllama.py#L455-L474" target="_blank" rel="noopener">GitHub ↗</a></div>
+<pre><code class="language-python">def process_and_concat_embeds(self, prompt, feature_embeds):
+    batch_size = len(prompt)
+    context_embeds = []
+    for text in prompt[0].split(' '):                      # ★ 空白で切って 1 語ずつ処理
+        if any(tag in text for tag in ['#image#', '#audio#', '#video#', '#text#']):
+            modality_tag, index = text.split('_')          # 例: "#image#_0"
+            projected_embed = self.codi_llama_proj(feature_embeds[modality_tag][int(index)].unsqueeze(0))
+            context_embeds.append(projected_embed)         # 特徴を差し込む
+        else:
+            tokens = self.llama_tokenizer(text, return_tensors="pt", add_special_tokens=False).to(self.device)
+            embeds = self.llama_model.model.model.embed_tokens(tokens.input_ids)
+            context_embeds.append(embeds)                  # 普通のトークン埋め込み
+
+    bos = torch.ones([batch_size, 1],
+                     dtype=tokens.input_ids.dtype,
+                     device=tokens.input_ids.device) * self.llama_tokenizer.bos_token_id
+    bos_embeds = self.llama_model.model.model.embed_tokens(bos)
+    inputs_embeds = torch.cat([bos_embeds] + context_embeds, dim=1)
+    return inputs_embeds</code></pre>
+</div>
+
+<div class="callout point">
+<span class="callout-title">学習時と推論時で入口の実装が違う</span>
+学習時は <code>FEATURE_ID</code> というトークン ID をマスクにして<strong>一括で上書き</strong>していました
+(<a href="architecture.html#weave">アーキテクチャ編 ④</a>)。
+推論時は文字列タグを<strong>逐次連結</strong>します。
+結果として得られる <code>inputs_embeds</code> は同じ形ですが、
+経路が二重化しているのは研究コードらしいところです。
+</div>
+
+<h2 id="generate">テキストの生成 — 何も特別なことをしていない</h2>
+<p>
+<code>generate()</code> は HuggingFace の <code>generate</code> をそのまま呼びます。
+サンプリング設定も普通で、CoDi-2 に固有なのは
+<strong><code>output_hidden_states=True</code> と <code>return_dict_in_generate=True</code></strong>
+—— つまり「あとで隠れ状態を使うから取っておいて」という指定だけです。
+</p>
+
+<div class="codeblock">
+<div class="codehead"><span class="path">CoDi-2/core/models/mmllama/openllama.py</span> L492–509
+<a href="https://github.com/microsoft/i-Code/blob/9b16730b7e0254f02a833281335c91ee382552e6/CoDi-2/core/models/mmllama/openllama.py#L492-L509" target="_blank" rel="noopener">GitHub ↗</a></div>
+<pre><code class="language-python">input_embeds = self.prepare_generation_embedding(inputs)
+stopping_criteria = StoppingCriteriaList([StoppingCriteriaSub(stops=[2277], encounters=1)])
+outputs = self.llama_model.generate(
+    inputs_embeds=input_embeds,
+    max_new_tokens=inputs['max_tgt_len'],
+    top_p=inputs['top_p'],
+    temperature=inputs['temperature'],
+    do_sample=True,
+    use_cache=True,
+    stopping_criteria=stopping_criteria,
+    return_dict_in_generate=True,
+    output_hidden_states=True,        # ★ 非テキスト生成のために隠れ状態を保存
+)
+output_ids = outputs.sequences[0][1:]
+output_text = self.llama_tokenizer.decode(output_ids, skip_special_tokens=True)
+hidden_states_last = []
+for item in outputs.hidden_states:
+    hidden_states_last.append(item[-1].squeeze())         # 各ステップの「最終層」だけを集める</code></pre>
+</div>
+
+<p>
+<strong>テキスト出力はここで完成です。</strong>
+<code>output_text</code> は普通にデコードされた文字列で、
+NExT-GPT のようにシグナルトークンを取り除く後処理すら要りません
+—— <code>&lt;p&gt;</code> は人間が読んでも違和感のないただのタグだからです。
+</p>
+
+<h2 id="marker">非テキストの生成 — <code>&lt;p&gt;</code> という 3 トークン</h2>
+<p>
+続いて、生成された列から <code>&lt;p&gt;</code> を探します。
+</p>
+
+<div class="codeblock">
+<div class="codehead"><span class="path">CoDi-2/core/models/mmllama/openllama.py</span> L511–527
+<a href="https://github.com/microsoft/i-Code/blob/9b16730b7e0254f02a833281335c91ee382552e6/CoDi-2/core/models/mmllama/openllama.py#L511-L527" target="_blank" rel="noopener">GitHub ↗</a></div>
+<pre><code class="language-python">def find_pattern(sequence1, sequence2, pattern):
+    results = []
+    pattern_length = len(pattern)
+    for i in range(len(sequence1) - pattern_length + 1):
+        if sequence1[i:i+pattern_length].detach().cpu().tolist() == pattern:
+            j = i + pattern_length - 1          # パターンの最後の位置
+            if j + 1 &lt; len(sequence2):
+                results.append(sequence2[j + 1])  # ★ その「1 つ後ろ」の隠れ状態を採用
+    return results
+
+hidden_states_filtered = find_pattern(output_ids, hidden_states_last, [529, 29886, 29958])
+if hidden_states_filtered:
+    hidden_states_filtered = torch.stack(hidden_states_filtered)
+    output_features = self.codi_llama_decode(hidden_states_filtered)   # (N, 4096) → (N, 1024)
+else:
+    output_features = None
+return output_text, output_features</code></pre>
+</div>
+
+<div class="callout point">
+<span class="callout-title">[529, 29886, 29958] は何か — 実際に引いてみた</span>
+LLaMA の SentencePiece トークナイザで ID を引くと次のとおりです。
+<table>
+  <tr><th>ID</th><th>ピース</th><th>意味</th></tr>
+  <tr><td><code>529</code></td><td><code>▁&lt;</code></td><td>空白付きの <code>&lt;</code></td></tr>
+  <tr><td><code>29886</code></td><td><code>p</code></td><td>文字 <code>p</code></td></tr>
+  <tr><td><code>29958</code></td><td><code>&gt;</code></td><td>文字 <code>&gt;</code></td></tr>
+  <tr><td><code>2277</code></td><td><code>##</code></td><td>停止条件に使われるトークン</td></tr>
+</table>
+実際 <code>sp.encode('&lt;p&gt;')</code> はちょうど <code>[529, 29886, 29958]</code> を返します。
+つまり探しているのは<strong>「 <code>&lt;p&gt;</code> という 3 トークンの並び」</strong>で、
+新しい語彙ではなく既存の文字を組み合わせただけのマーカーです。
+</div>
+
+<div class="callout math">
+<span class="callout-title">1 つずらす理由</span>
+<code>find_pattern</code> が採るのは <code>sequence2[j+1]</code>、
+つまり <code>&gt;</code> を出力し終えた位置の隠れ状態です。
+自己回帰モデルにおいて位置 \(t\) の隠れ状態は「\(t{+}1\) 番目に来るもの」を決めるので、
+これは<strong>「<code>&lt;p&gt;</code> の次に来るべきもの」= 生成すべき特徴</strong>にほかなりません。
+<a href="training.html#loss-feat">学習編②</a>の
+<code>hidden_states[-1][:, :-1]</code> と <code>regression_targets[:, 1:]</code> の shift と、
+きれいに同じ関係になっています。
+なお <code>output_ids = outputs.sequences[0][1:]</code> の <code>[1:]</code> は、
+<code>inputs_embeds</code> から生成したときに <code>sequences</code> の先頭に付く分を落として
+<code>hidden_states</code> 側と添字を合わせるためのものです。
+</div>
+
+<h2 id="two-exits">核心 — テキストと非テキストの生成方法を並べる</h2>
+<p>
+ここまでを 1 枚の表に整理します。CoDi-2 の「any-to-any 生成」は、
+この 2 列の非対称性で説明できます。
+</p>
+
+<table>
+  <tr><th></th><th>📝 テキスト</th><th>🖼️🔊🎬 テキスト以外</th></tr>
+  <tr><th>出力の実体</th><td>語彙 ID の列(離散)</td><td>1024 次元ベクトル(連続)</td></tr>
+  <tr><th>通る層</th><td><code>lm_head</code>(4096 → 32000)</td><td><code>codi_llama_decode</code>(4096 → 1024)</td></tr>
+  <tr><th>確率的か</th><td>Yes(<code>do_sample=True</code>, top-p, temperature)</td><td>No(決定的な線形変換)</td></tr>
+  <tr><th>生成のタイミング</th><td>自己回帰ループの各ステップ</td><td>ループ終了<strong>後</strong>にまとめて抽出</td></tr>
+  <tr><th>合図</th><td>—</td><td>直前に <code>&lt;p&gt;</code> が書かれていること</td></tr>
+  <tr><th>学習時の損失</th><td>\(\mathcal{L}_t\)(交差エントロピー)</td><td>\(\alpha\,\mathrm{MSE}\)(コードはコサイン)+ \(\mathcal{L}_{DM}\)</td></tr>
+  <tr><th>後段</th><td>そのままユーザーへ</td><td>拡散モデルの条件になり、デノイズを経て実データへ</td></tr>
+</table>
+
+<div class="callout warn">
+<span class="callout-title">「自己回帰的に連続特徴を生成する」の実際</span>
+論文は Abstract で “autoregressively generate … in the continuous feature space”、
+結論で “autoregressively produce the latent features that is fed to diffusers” と述べており、
+<strong>学習時</strong>は確かにその通り(1 つ前の隠れ状態から次の特徴を予測する)です。
+一方<strong>公開されている推論コード</strong>では、生成した特徴を入力列に戻して次のステップへ送る
+—— という<strong>フィードバックは行われていません</strong>。
+<code>generate()</code> はテキストを最後まで生成し、そのあとで隠れ状態を後から拾います。
+そのため <code>&lt;p&gt;</code> が複数回現れても、それぞれの特徴は
+「そのときの隠れ状態」から独立に読み出される形になります。
+複数特徴を真に連鎖させる推論を行うには、呼び出し側で多ターンに分けて回す必要があります。
+</div>
+
+<h2 id="diffusion">拡散モデルの呼び出し — 条件は 1 本のベクトル</h2>
+<p>
+最後は <code>generate_image()</code> です。ここが CoDi-2 でいちばん面白い部分かもしれません。
+</p>
+
+<div class="codeblock">
+<div class="codehead"><span class="path">CoDi-2/core/models/mmllama/openllama.py</span> L577–604(抜粋)
+<a href="https://github.com/microsoft/i-Code/blob/9b16730b7e0254f02a833281335c91ee382552e6/CoDi-2/core/models/mmllama/openllama.py#L577-L604" target="_blank" rel="noopener">GitHub ↗</a></div>
+<pre><code class="language-python">def generate_image(self, features, xtype, image_size=768, n_samples=1, ddim_steps=50, scale=7.5):
+    from ldm.models.diffusion.ddim import DDIMSampler
+    sampler = DDIMSampler(self.image_diffuser, device=self.device)
+
+    c_adm = repeat(features, '1 ... -> b ...', b=n_samples)[:, 0]
+    if self.image_diffuser.noise_augmentor is not None:
+        c_adm, noise_level_emb = self.image_diffuser.noise_augmentor(c_adm, noise_level=(
+                torch.ones(n_samples) * self.image_diffuser.noise_augmentor.max_noise_level * 0.5).long().to(c_adm.device))
+        c_adm_noise = torch.cat((c_adm, noise_level_emb), 1)          # 1024 + 1024 = 2048
+
+    uc_encoder = self.image_diffuser.get_learned_conditioning(
+        n_samples * ['longbody, lowres, bad anatomy, bad hands, missing fingers, extra digit, '
+                     'fewer digits, cropped, worst quality, low quality'])
+    uc = {"c_crossattn": [uc_encoder], "c_adm": torch.zeros_like(c_adm_noise)}   # ★ 無条件側
+    c = {"c_crossattn": [uc_encoder], "c_adm": c_adm_noise}                       # ★ 条件側
+
+    samples, _ = sampler.sample(S=ddim_steps, conditioning=c, batch_size=n_samples,
+                                shape=[4, image_size//8, image_size//8],
+                                unconditional_guidance_scale=scale,       # 7.5
+                                unconditional_conditioning=uc, eta=0.0, x_T=None)
+
+    x_samples = self.image_diffuser.decode_first_stage(samples)
+    x_samples = torch.clamp((x_samples + 1.0) / 2.0, min=0.0, max=1.0)</code></pre>
+</div>
+
+<h3 id="cfg">CFG が「画像埋め込みだけ」に効く仕掛け</h3>
+<p>
+<code>c</code> と <code>uc</code> をよく見比べてください。
+<strong><code>c_crossattn</code>(テキスト側)は完全に同じ</strong>で、
+違うのは <code>c_adm</code> が本物か <code>zeros_like</code> かだけです。
+classifier-free guidance の差分
+\(\epsilon_c - \epsilon_u\) は<strong>ImageBind 特徴の寄与だけを取り出す</strong>ことになります。
+</p>
+
+<figure class="diagram" id="cfg-diagram" data-cycle-ms="9000" data-step-count="2">
+<svg viewBox="0 0 900 340" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="classifier-free guidance の条件側と無条件側の違いを示す図">
+  <defs>
+    <marker id="arrc" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#8a93ad"/>
+    </marker>
+  </defs>
+
+  <text x="24" y="28" font-size="12.5" font-weight="bold" fill="#1c2333">UNet は 2 回呼ばれる。違いは c_adm の中身だけ</text>
+
+  <g class="branch-c">
+    <rect x="24" y="46" width="330" height="106" rx="10" fill="#e5eafc" stroke="#3556d4" stroke-width="2"/>
+    <text x="189" y="70" font-size="12.5" text-anchor="middle" font-weight="bold" fill="#3556d4">c(条件つき)</text>
+    <rect x="44" y="82" width="290" height="26" rx="6" fill="#fff" stroke="#8a93ad"/>
+    <text x="189" y="100" font-size="10.5" text-anchor="middle" class="mono" fill="#5b6478">c_crossattn = ネガティブプロンプト埋め込み</text>
+    <rect x="44" y="114" width="290" height="26" rx="6" fill="#fbe4e8" stroke="#d43d51" stroke-width="2"/>
+    <text x="189" y="132" font-size="10.5" text-anchor="middle" class="mono" fill="#d43d51">c_adm = LLM が書いた特徴 + noise emb</text>
+  </g>
+
+  <g class="branch-u">
+    <rect x="386" y="46" width="330" height="106" rx="10" fill="#f2f4fa" stroke="#8a93ad" stroke-width="2"/>
+    <text x="551" y="70" font-size="12.5" text-anchor="middle" font-weight="bold" fill="#5b6478">uc(無条件)</text>
+    <rect x="406" y="82" width="290" height="26" rx="6" fill="#fff" stroke="#8a93ad"/>
+    <text x="551" y="100" font-size="10.5" text-anchor="middle" class="mono" fill="#5b6478">c_crossattn = まったく同じもの</text>
+    <rect x="406" y="114" width="290" height="26" rx="6" fill="#e9ecf5" stroke="#8a93ad" stroke-dasharray="4 3"/>
+    <text x="551" y="132" font-size="10.5" text-anchor="middle" class="mono" fill="#9aa2bd">c_adm = torch.zeros_like(...)</text>
+  </g>
+
+  <path d="M 189 154 L 189 186" fill="none" stroke="#8a93ad" stroke-width="2" marker-end="url(#arrc)"/>
+  <path d="M 551 154 L 551 186" fill="none" stroke="#8a93ad" stroke-width="2" marker-end="url(#arrc)"/>
+
+  <rect x="24" y="190" width="692" height="50" rx="10" fill="#e0f5ec" stroke="#1e9e6a" stroke-width="2"/>
+  <text x="370" y="211" font-size="12" text-anchor="middle" font-weight="bold" fill="#1e9e6a">ε̂ = ε_u + 7.5 · (ε_c − ε_u)</text>
+  <text x="370" y="230" font-size="10.5" text-anchor="middle" fill="#5b6478">テキスト側が相殺されるので、guidance は「ImageBind 特徴に従え」という力としてだけ働く</text>
+
+  <text x="744" y="80" font-size="11.5" fill="#5b6478">ネガティブプロンプトは</text>
+  <text x="744" y="98" font-size="11.5" fill="#5b6478">両側に等しく入るので</text>
+  <text x="744" y="116" font-size="11.5" fill="#5b6478">差分では消える。</text>
+  <text x="744" y="140" font-size="11.5" fill="#5b6478">品質の底上げ役として</text>
+  <text x="744" y="158" font-size="11.5" fill="#5b6478">常時効かせる使い方。</text>
+
+  <text x="24" y="272" font-size="11.5" fill="#1c2333" font-weight="bold">noise_level = max_noise_level × 0.5 の意味</text>
+  <text x="24" y="294" font-size="11.5" fill="#5b6478">unCLIP は学習時、条件の画像埋め込みにノイズを載せて汎化を促す。推論でも中程度(0.5)のノイズを載せることで、</text>
+  <text x="24" y="312" font-size="11.5" fill="#5b6478">LLM が書いた特徴が「本物の ImageBind 埋め込み」から多少ずれていても破綻しにくくなる — 事実上の許容幅。</text>
+</svg>
+<figcaption>
+条件側と無条件側の差。<code>c_crossattn</code> を共通のネガティブプロンプトで固定し、
+<code>c_adm</code> だけを切り替えることで、CFG のスケール 7.5 が
+「LLM が生成した特徴にどれだけ忠実に従うか」のつまみになっている。
+</figcaption>
+</figure>
+
+<div class="callout math">
+<span class="callout-title">論文もそう書いている(§B.1)</span>
+“To effectively condition the image diffusion model, we employ
+<strong>negative prompts as cross-attention conditions</strong> and utilize
+<strong>MLLM-generated features for embedding guidance</strong>.
+… These negative prompts function as unconditioned input guidance,
+serving to enhance the quality of both the image and generated features.”
+<br><br>
+コードから読み取った「テキスト側はネガティブプロンプトで固定し、意味の制御は <code>c_adm</code> が担う」という構造は、
+論文にそのまま書かれていました。
+実際に使われる文字列はコードと論文で少し違い、論文が挙げるのは
+‘worst quality, normal quality, low quality, low res, blurry, watermark, logo, banner, …’ です。
+音声側にも別のネガティブプロンプト(‘distorted, muffled, static noise, …’)が用意されています。
+</div>
+
+<div class="callout point">
+<span class="callout-title">NExT-GPT との対比</span>
+NExT-GPT は <code>prompt_embeds</code>(77×1024 の CLIP テキスト埋め込み)を渡すので、
+拡散モデルから見れば<strong>「長い文章でプロンプトされた」</strong>のと同じ状態でした。
+CoDi-2 は <code>c_adm</code>(1×1024 の画像埋め込み)を渡すので、
+拡散モデルから見れば<strong>「参照画像を 1 枚見せられた」</strong>のと同じ状態になります。
+だからこそ CoDi-2 は「この被写体のまま別のポーズで」といった
+subject-driven な生成・編集に強い、という理屈になります。
+</div>
+
+<h2 id="fidelity">元データを保ちたいときの追加入力</h2>
+<p>
+画像編集のように「元の絵をできるだけ残したい」タスクでは、条件ベクトル 1 本では情報が足りません。
+論文 §5.1 はこう補足しています。
+</p>
+<div class="callout math">
+<span class="callout-title">論文 §5.1</span>
+“For images or audio that require higher fidelity to the original input, we additionally feed
+<strong>the original image or audio to the diffusion model alongside the generated features
+by concatenation of the diffusion noise</strong>.”
+</div>
+<p>
+つまり <code>c_adm</code>(意味)に加えて、<strong>元データの潜在をノイズにチャンネル方向で連結</strong>して
+UNet に流し込む、という二段構えです。
+CoDi-1 側のコードには <code>x_0_att_type='concat'</code> としてこの仕組みが残っており、
+<code>x_noisy[i] = torch.cat([x_0[i], x_noisy[i]], 2)</code> という行がそれにあたります
+(<a href="architecture.html#concat">アーキテクチャ編</a>)。
+「何を描くか」は連続特徴が、「元の画をどれだけ残すか」は連結入力が担当する、という役割分担です。
+</p>
+
+<h2 id="other-modalities">画像以外のモダリティ</h2>
+<p>
+論文 §5.1 が挙げる生成器は <strong>AudioLDM2</strong>(音声)と <strong>zeroscope v2 576w</strong>(動画)です。
+一方、公開コードに残っているのは CoDi-1 のデコーダを呼ぶ <code>decode()</code>
+(<a href="architecture.html#others">アーキテクチャ編 ⑥</a>)で、
+潜在 <code>z</code> を波形やフレーム列に戻すところまでしか実装されていません。
+<strong>「1024 次元の特徴 → 潜在 <code>z</code>」を作る拡散サンプリングの配線は公開コードに含まれていない</strong>ため、
+音声・動画の生成経路をそのまま再現することはできません。
+</p>
+
+<div class="callout warn">
+<span class="callout-title">⚠️ 公開コードで実際に動く経路</span>
+<ul>
+  <li><strong>動く</strong>: テキスト生成(<code>generate</code>)、画像生成(<code>generate_image</code>)</li>
+  <li><strong>配線が足りない</strong>: 音声・動画生成。<code>decode()</code> と
+  <code>extract_multimodal_feature()</code> が参照する <code>self.codi</code> が
+  <code>__init__</code> で生成されておらず、<code>inference()</code>(L572)が呼ぶ
+  <code>self.get_llm_outputs</code> も未定義</li>
+  <li><strong>細かい点</strong>: <code>generate_image</code> の
+  <code>repeat(features, '1 ... -> b ...')</code> は <code>features</code> の先頭次元が 1 であること、
+  すなわち <code>(1, N, 1024)</code> の形を前提にしていますが、
+  <code>generate()</code> が返すのは <code>(N, 1024)</code> です。
+  そのまま繋ぐと形が合わないため、呼び出し側で <code>unsqueeze(0)</code> 相当の調整が必要です</li>
+  <li><strong>特徴は何本使われるか</strong>: 続く <code>[:, 0]</code> が示すとおり、
+  <code>generate_image</code> が条件に使うのは<strong>先頭の 1 本だけ</strong>です。
+  一方、論文・プロジェクトページの
+  <a href="https://codi-2.github.io/static/images/main_model.png" target="_blank" rel="noopener">アーキテクチャ図</a>では
+  Decoder に入る連続特徴が<strong>複数マス</strong>描かれており、
+  学習側も <code>FEATURE_ID</code> を <code>perception_len</code> 個並べられる作りです。
+  公開された推論コードは、その一般形のうち最小構成だけを配線したものと読めます</li>
+</ul>
+公開されているのは<strong>研究コードのスナップショット</strong>であり、
+配布されている推論スクリプトやチェックポイントとセットで動く前提のものと考えるのが妥当です。
+本解説はこれらを「設計を読むための資料」として扱っています。
+</div>
+
+<h2 id="summary">まとめ</h2>
+<div class="callout point">
+<span class="callout-title">CoDi-2 の生成プロセスを 3 行で</span>
+<ol style="margin:0.4rem 0 0; padding-left:1.4em;">
+  <li>LLM は<strong>ふつうに文章を書く</strong>。その中に <code>&lt;p&gt;</code> という 3 トークンを書くことがある。</li>
+  <li><code>&lt;p&gt;</code> の直後の隠れ状態を <code>codi_llama_decode</code> に通すと、<strong>ImageBind 空間の 1024 次元ベクトル</strong>になる。</li>
+  <li>そのベクトルを条件に、ImageBind 対応の unCLIP 拡散モデルを回すと画像が出る。<strong>語彙を通らないので情報が丸められない。</strong></li>
+</ol>
+</div>
+<p>
+NExT-GPT が「LLM に拡散モデル用のプロンプトを書かせる」道を選んだのに対し、
+CoDi-2 は「LLM に画像そのものの埋め込みを書かせる」道を選びました。
+どちらも凍結モデルを小さな射影層で接着する点では同じですが、
+<strong>やりとりする表現が「言語的なもの」か「知覚的なもの」か</strong>という違いが、
+得意なタスク(指示追従の文脈理解 vs 被写体・スタイルの保存)の違いに直結しています。
+</p>
+
+<nav class="pager">
+  <a href="training.html"><span class="dir">← 前へ</span><span class="title">2. 学習プロセス</span></a>
+  <a class="next" href="./index.html"><span class="dir">戻る →</span><span class="title">CoDi-2 概要</span></a>
+</nav>
+
+</main>
+
+<footer class="site-footer">
+  <p>引用コード: <a href="https://github.com/microsoft/i-Code/tree/9b16730b7e0254f02a833281335c91ee382552e6/CoDi-2" target="_blank" rel="noopener">microsoft/i-Code — CoDi-2</a>(MIT License)/
+  論文: <a href="https://arxiv.org/abs/2311.18775" target="_blank" rel="noopener">CoDi-2: In-Context, Interleaved, and Interactive Any-to-Any Generation</a>(CVPR 2024)/
+  <a href="https://codi-2.github.io/" target="_blank" rel="noopener">プロジェクトページ</a></p>
+</footer>
+
+<script>
+MathJax = { tex: { inlineMath: [['\\(', '\\)']], displayMath: [['$$', '$$']] } };
+</script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js" async></script>
+<script src="assets/diagram-controls.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-core.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-python.min.js"></script>
+</body>
+</html>
