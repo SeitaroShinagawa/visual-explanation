@@ -17,6 +17,9 @@ ImageBind・LLaMA(Vicuna)+ LoRA・ImageBind 条件版 Stable Diffusion 2.1 unCLI
 | `inference.html` | `generate()` の追跡(`<p>` 検出 → 隠れ状態 → c_adm → DDIM) |
 
 - 対象コード: 公式リポジトリのコミット [`9b16730`](https://github.com/microsoft/i-Code/tree/9b16730b7e0254f02a833281335c91ee382552e6/CoDi-2)(MIT License)
+- 参照した一次資料: 上記コード / [CoDi-2/README.md](https://github.com/microsoft/i-Code/blob/9b16730b7e0254f02a833281335c91ee382552e6/CoDi-2/README.md) の Abstract /
+  [プロジェクトページ](https://codi-2.github.io/) の “Model Architecture”・“Tasks” 節とアーキテクチャ図
+  (作成環境から arXiv / CVF にアクセスできなかったため、論文本文の Method 節・数式・データセット詳細は未参照)
 - 設計方針(作成時の選択): 言語=日本語 / 深さ=コード+数式対応 / 図=CSS 自動ループ+ステップ操作
   / スタイルは NExT-GPT トピックの `assets/style.css` をそのまま複製(トピックを自己完結させる方針)
 
@@ -37,6 +40,9 @@ ImageBind・LLaMA(Vicuna)+ LoRA・ImageBind 条件版 Stable Diffusion 2.1 unCLI
    「トークンを当てる/ベクトルを当てる」の住み分けがラベル生成だけで表現されている。
 4. **損失は L2 ではなくコサイン** — `feature_loss = -cosine_sim ... * 0.1`。
    拡散側が受け取るのは方向情報が本質の画像埋め込み条件なので、スケールを合わせる必要がない。
+   なお著者はプロジェクトページで学習を「token loss + 拡散モデル由来の pixel loss」と説明しており、
+   コード上フラグ制御になっている拡散損失(`clip-diffusser-back-proop`)が本来の標準構成と読める。
+   コードにはその中間項としてコサイン回帰損失が常時存在する。
 5. **CFG が画像埋め込みだけに効く** — `c` と `uc` で `c_crossattn`(ネガティブプロンプト)は
    共通、違うのは `c_adm` が本物か `zeros_like` かだけ。差分を取るとテキスト側は相殺される。
 6. **公開コードは推論グルーが一部欠けている** — `core/datasets/`(`FEATURE_ID` の定義元)が存在せず、

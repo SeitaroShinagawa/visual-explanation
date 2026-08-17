@@ -71,6 +71,20 @@
 その入口の形と損失の定義から、CoDi-2 が何を学ぼうとしているかは十分に読み取れます。
 </div>
 
+<div class="callout point">
+<span class="callout-title">著者による学習方針(プロジェクトページより)</span>
+“In the training phase, our approach employs <strong>pixel loss obtained from the diffusion models
+alongside token loss</strong>, adhering to the standard causal generation loss.”
+(<a href="https://codi-2.github.io/" target="_blank" rel="noopener">codi-2.github.io</a>)
+<br><br>
+つまり著者の想定は<strong>「トークン損失 + 拡散モデル由来のピクセル損失」</strong>の 2 本立てです。
+一方コードには、その中間項として<strong>特徴の回帰損失(コサイン)</strong>が常時存在し、
+ピクセル損失のほうが <code>perception_type</code> フラグで切り替わる作りになっています。
+本章はコードに即して 3 本立て(<a href="#loss-text">①テキスト</a> /
+<a href="#loss-feat">②特徴回帰</a> / <a href="#loss-diff">③拡散</a>)として読み解き、
+著者の記述との対応を都度示します。
+</div>
+
 <h2 id="data">学習データの形 — 会話を 1 本の系列に潰す</h2>
 <p>
 学習サンプルは <code>{'from': 'human'|'gpt', 'value': ...}</code> のターン列です。
@@ -240,7 +254,7 @@ $$\mathcal{L} \;=\; \underbrace{\mathcal{L}_{\text{text}}}_{\text{outputs.loss}}
 \;\;\big[\; +\; \mathcal{L}_{\text{diff}} \;\big]$$
 角括弧の \(\mathcal{L}_{\text{diff}}\) は
 <code>perception_type == 'clip-diffusser-back-proop'</code> のときだけ
-<code>feature_loss</code> に加算される任意項です。
+<code>feature_loss</code> に加算される項です(コード上はフラグ制御ですが、著者はこれをトークン損失と並ぶ学習の 2 本柱として説明しています)。
 </div>
 
 <figure class="diagram" id="lossflow" data-cycle-ms="12000" data-step-count="3">
@@ -291,7 +305,7 @@ $$\mathcal{L} \;=\; \underbrace{\mathcal{L}_{\text{text}}}_{\text{outputs.loss}}
   <g class="diff-path">
     <path d="M 450 302 L 450 332" fill="none" stroke="#e07b1f" stroke-width="2.5" marker-end="url(#arrl)"/>
     <rect x="250" y="336" width="400" height="66" rx="10" fill="#fdeeda" stroke="#e07b1f" stroke-width="2"/>
-    <text x="450" y="356" font-size="12" text-anchor="middle" font-weight="bold" fill="#e07b1f">③ L_diff(任意): 生成した特徴で本当に SD-unCLIP を回す</text>
+    <text x="450" y="356" font-size="12" text-anchor="middle" font-weight="bold" fill="#e07b1f">③ L_diff(著者の言う pixel loss): 生成した特徴で本当に SD-unCLIP を回す</text>
     <text x="450" y="374" font-size="10.5" text-anchor="middle" class="mono" fill="#5b6478">c_adm = regression_logits[:, :1]</text>
     <text x="450" y="391" font-size="10.5" text-anchor="middle" class="mono" fill="#5b6478">→ image_diffuser(latents, c)[0]</text>
 
@@ -391,12 +405,18 @@ NExT-GPT が L2 距離を使うのは、あちらの教師が
 「CLIP テキストエンコーダの出力そのもの」という、スケールまで含めて意味のある値だからです。
 </div>
 
-<h3 id="loss-diff">③ 拡散損失 \(\mathcal{L}_{\text{diff}}\)(任意) — 生成器に通して確かめる</h3>
+<h3 id="loss-diff">③ 拡散損失 \(\mathcal{L}_{\text{diff}}\) — 生成器に通して確かめる</h3>
 <p>
 埋め込みの向きが合っていても、実際に良い絵が出るとは限りません。
 そこで <code>perception_type</code> に <code>'clip-diffusser-back-proop'</code> を指定すると、
 <strong>LLM が生成した特徴を条件に凍結拡散モデルを 1 ステップ回し、そのノイズ予測誤差を足す</strong>
 経路が有効になります。
+</p>
+<p>
+これが著者の言う <strong>“pixel loss obtained from the diffusion models”</strong> に対応する項です。
+コード上はフラグで切り替わる形ですが、
+著者はこれを<strong>「トークン損失と並ぶ、学習の 2 本柱の一方」</strong>として説明しているので、
+本番の学習設定では有効になっていたと読むのが自然でしょう。
 </p>
 
 <div class="codeblock">
@@ -538,7 +558,7 @@ any-to-any 拡散の作りが見て取れます。
 
 <h2 id="summary">まとめ</h2>
 <table>
-  <tr><th></th><th>\(\mathcal{L}_{\text{text}}\)</th><th>\(\mathcal{L}_{\text{feat}}\)</th><th>\(\mathcal{L}_{\text{diff}}\)(任意)</th></tr>
+  <tr><th></th><th>\(\mathcal{L}_{\text{text}}\)</th><th>\(\mathcal{L}_{\text{feat}}\)</th><th>\(\mathcal{L}_{\text{diff}}\)(= pixel loss)</th></tr>
   <tr><th>対象位置</th><td><code>target_ids != -100</code></td><td><code>regression_targets != -100</code></td><td>特徴位置の先頭 1 本</td></tr>
   <tr><th>形</th><td>交差エントロピー</td><td>負のコサイン類似度 × 0.1</td><td>拡散のノイズ予測誤差</td></tr>
   <tr><th>教師</th><td>応答トークン</td><td>ImageBind の実特徴</td><td>正解画像の VAE 潜在</td></tr>
@@ -564,7 +584,9 @@ CoDi-2 は<strong>語彙を増やさずラベルの型だけを増やした</str
 </main>
 
 <footer class="site-footer">
-  <p>引用コード: <a href="https://github.com/microsoft/i-Code/tree/9b16730b7e0254f02a833281335c91ee382552e6/CoDi-2" target="_blank" rel="noopener">microsoft/i-Code — CoDi-2</a>(MIT License)</p>
+  <p>引用コード: <a href="https://github.com/microsoft/i-Code/tree/9b16730b7e0254f02a833281335c91ee382552e6/CoDi-2" target="_blank" rel="noopener">microsoft/i-Code — CoDi-2</a>(MIT License)/
+  論文: <a href="https://arxiv.org/abs/2311.18775" target="_blank" rel="noopener">CoDi-2: In-Context, Interleaved, and Interactive Any-to-Any Generation</a>(CVPR 2024)/
+  <a href="https://codi-2.github.io/" target="_blank" rel="noopener">プロジェクトページ</a></p>
 </footer>
 
 <script>

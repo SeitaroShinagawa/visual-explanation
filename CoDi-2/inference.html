@@ -518,6 +518,13 @@ subject-driven な生成・編集に強い、という理屈になります。
   すなわち <code>(1, N, 1024)</code> の形を前提にしていますが、
   <code>generate()</code> が返すのは <code>(N, 1024)</code> です。
   そのまま繋ぐと形が合わないため、呼び出し側で <code>unsqueeze(0)</code> 相当の調整が必要です</li>
+  <li><strong>特徴は何本使われるか</strong>: 続く <code>[:, 0]</code> が示すとおり、
+  <code>generate_image</code> が条件に使うのは<strong>先頭の 1 本だけ</strong>です。
+  一方、論文・プロジェクトページの
+  <a href="https://codi-2.github.io/static/images/main_model.png" target="_blank" rel="noopener">アーキテクチャ図</a>では
+  Decoder に入る連続特徴が<strong>複数マス</strong>描かれており、
+  学習側も <code>FEATURE_ID</code> を <code>perception_len</code> 個並べられる作りです。
+  公開された推論コードは、その一般形のうち最小構成だけを配線したものと読めます</li>
 </ul>
 公開されているのは<strong>研究コードのスナップショット</strong>であり、
 配布されている推論スクリプトやチェックポイントとセットで動く前提のものと考えるのが妥当です。
@@ -549,7 +556,9 @@ CoDi-2 は「LLM に画像そのものの埋め込みを書かせる」道を選
 </main>
 
 <footer class="site-footer">
-  <p>引用コード: <a href="https://github.com/microsoft/i-Code/tree/9b16730b7e0254f02a833281335c91ee382552e6/CoDi-2" target="_blank" rel="noopener">microsoft/i-Code — CoDi-2</a>(MIT License)</p>
+  <p>引用コード: <a href="https://github.com/microsoft/i-Code/tree/9b16730b7e0254f02a833281335c91ee382552e6/CoDi-2" target="_blank" rel="noopener">microsoft/i-Code — CoDi-2</a>(MIT License)/
+  論文: <a href="https://arxiv.org/abs/2311.18775" target="_blank" rel="noopener">CoDi-2: In-Context, Interleaved, and Interactive Any-to-Any Generation</a>(CVPR 2024)/
+  <a href="https://codi-2.github.io/" target="_blank" rel="noopener">プロジェクトページ</a></p>
 </footer>
 
 <script>

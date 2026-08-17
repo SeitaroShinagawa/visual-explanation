@@ -94,6 +94,21 @@ CoDi-2 は画像を作るとき、「画像を表す特別な語彙トークン�
 違いは「LLM と拡散モデルの間で何をやりとりするか」にあります。
 </p>
 
+<div class="callout point">
+<span class="callout-title">著者による設計の要約(プロジェクトページ “Model Architecture” より)</span>
+“CoDi-2 comprises a multimodal large language model that encompasses <strong>encoder and decoder for both
+audio and vision inputs</strong>, as well as a large language model. This architecture facilitates the decoding
+of image or audio inputs using diffusion models. In the training phase, our approach employs
+<strong>pixel loss obtained from the diffusion models alongside token loss</strong>, adhering to the standard
+causal generation loss.”
+(<a href="https://codi-2.github.io/" target="_blank" rel="noopener">codi-2.github.io</a>)
+<br><br>
+最後の一文が重要です。学習は<strong>「トークン損失(標準の因果的言語モデル損失)+ 拡散モデル由来のピクセル損失」</strong>
+という 2 本立てだと明言されています。公開コードではこのピクセル損失が
+<code>perception_type</code> フラグで切り替わる形になっており、
+その対応関係は<a href="training.html#loss-diff">学習編③</a>で確認します。
+</div>
+
 <h2 id="overview">全体アーキテクチャ</h2>
 <p>
 データの流れは
@@ -226,6 +241,21 @@ CoDi-2 の全体データフロー。テキストと非テキストで<strong>�
 テンソル形状を追った詳細は<a href="architecture.html">アーキテクチャ編</a>へ。
 </figcaption>
 </figure>
+
+<div class="callout math">
+<span class="callout-title">論文の図との対応</span>
+論文・プロジェクトページのアーキテクチャ図(<a href="https://codi-2.github.io/static/images/main_model.png" target="_blank" rel="noopener">main_model.png</a>)は、
+上の図と同じ構造を最小限の要素で描いています。すなわち
+<strong>「Text Embed / Image Encoder🔒 / Audio Encoder🔒 が 1 本の入力列に交互に並び、
+MLLM を経て、出力列の一部(連続特徴)が Decoder🔒 に入って画像になる」</strong>。
+🔒 が付いているのはエンコーダとデコーダで、<strong>学習されるのは MLLM 側だけ</strong>という
+本解説の読み方と一致します。
+<br><br>
+なお論文の図では、Decoder に入る連続特徴が<strong>複数個(3 マス)</strong>描かれています。
+学習コードも <code>FEATURE_ID</code> を複数並べられる作りですが、
+公開されている <code>generate_image()</code> は先頭の 1 本だけを条件に使います
+(<a href="inference.html#other-modalities">生成編の注記</a>)。
+</div>
 
 <div class="callout warn">
 <span class="callout-title">公開コードの範囲について(重要)</span>
@@ -415,13 +445,13 @@ CoDi-2 は LLM に<strong>「画像そのものの埋め込みを書かせる」
 <h3>学習: 損失は「トークンの当てっこ」+「ベクトルの向き合わせ」</h3>
 <p>
 <code>forward</code> が返すのは <code>(loss, gen_acc, feature_loss)</code> の 3 つ組で、
-損失は次の 2 本(+ 任意の 3 本目)です。
+損失は次の 3 本です。
 </p>
 <ol>
   <li><strong>テキスト CE 損失</strong>: LLaMA 標準の次トークン予測。ただし<strong>特徴を出すべき位置は <code>-100</code> でマスクされ、CE の対象外</strong></li>
   <li><strong>特徴回帰損失</strong>: その位置の隠れ状態を <code>codi_llama_decode</code> に通し、
   ImageBind が返した本物の特徴と<strong>コサイン類似度を最大化</strong>(係数 0.1)</li>
-  <li><strong>(任意)拡散損失</strong>: 生成した特徴で実際に SD-unCLIP を走らせ、そのノイズ予測誤差も足す</li>
+  <li><strong>拡散損失(著者の言う pixel loss)</strong>: 生成した特徴で実際に SD-unCLIP を走らせ、そのノイズ予測誤差も足す(コード上は <code>perception_type</code> フラグで切り替わる)</li>
 </ol>
 <p>数式とコードの対応は<a href="training.html">学習編</a>で追いかけます。</p>
 
@@ -431,6 +461,39 @@ CoDi-2 は LLM に<strong>「画像そのものの埋め込みを書かせる」
 その直後の位置の<strong>最終層隠れ状態</strong>が抜き出されます。
 語彙に射影される前の生のベクトルなので、情報は連続のまま保たれます。
 これを 1024 次元へ落とし、SD 2.1 unCLIP の <code>c_adm</code> に流し込めば画像が出てきます。詳細は<a href="inference.html">生成編</a>へ。
+</p>
+
+<h2 id="tasks">この設計が狙うタスク</h2>
+<p>
+なぜ「語彙を通さない連続特徴」にこだわるのか —— その答えは、
+著者が挙げるタスク類型を見ると腑に落ちます。
+</p>
+<table>
+  <tr><th>類型</th><th>内容</th></tr>
+  <tr>
+    <td><strong>Zero-shot prompting</strong></td>
+    <td>例示なしで推論し、新しい内容を生成する</td>
+  </tr>
+  <tr>
+    <td><strong>Exemplar learning</strong><br>(one/few-shot)</td>
+    <td>「望ましい出力の例」を 1 つ見せてから、新しい入力に同じ操作を適用させる</td>
+  </tr>
+  <tr>
+    <td><strong>Concept learning</strong><br>(one/few-shot)</td>
+    <td>複数の例に共通する概念・属性(画風やパターンなど)を学び取り、それを備えた新しい内容を作る</td>
+  </tr>
+  <tr>
+    <td><strong>Subject-driven learning</strong><br>(one/few-shot)</td>
+    <td>与えられた画像群の<strong>被写体</strong>を保ったまま、新しい内容を生成する</td>
+  </tr>
+</table>
+<p>
+いずれも<strong>「言葉にしきれないもの(画風・被写体の同一性・音色)を、例から拾って再現する」</strong>タスクです。
+LLM の出力をいったんテキストに落としてから拡散モデルに渡す方式では、
+この「言葉にならない情報」がボトルネックで削られてしまいます。
+CoDi-2 が語彙を通さず ImageBind 空間のベクトルを直接手渡すのは、
+まさにこの削れを避けるためだと読めます。
+(タスク類型の出典: <a href="https://codi-2.github.io/" target="_blank" rel="noopener">codi-2.github.io</a> の “Tasks” 節)
 </p>
 
 <h2 id="chapters">章立て</h2>
@@ -461,7 +524,8 @@ CoDi-2 は LLM に<strong>「画像そのものの埋め込みを書かせる」
 
 <footer class="site-footer">
   <p>引用コード: <a href="https://github.com/microsoft/i-Code/tree/9b16730b7e0254f02a833281335c91ee382552e6/CoDi-2" target="_blank" rel="noopener">microsoft/i-Code — CoDi-2</a>(MIT License)/
-  論文: CoDi-2: In-Context, Interleaved, and Interactive Any-to-Any Generation(CVPR 2024)</p>
+  論文: <a href="https://arxiv.org/abs/2311.18775" target="_blank" rel="noopener">CoDi-2: In-Context, Interleaved, and Interactive Any-to-Any Generation</a>(CVPR 2024)/
+  <a href="https://codi-2.github.io/" target="_blank" rel="noopener">プロジェクトページ</a></p>
 </footer>
 
 <script>
