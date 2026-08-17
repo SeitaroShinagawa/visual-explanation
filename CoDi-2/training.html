@@ -273,8 +273,8 @@ $$\mathcal{L} \;=\;
 <span class="callout-title">論文は MSE、コードの主経路はコサイン</span>
 第 2 項について、論文は明確に <strong>MSE</strong> と書いていますが、
 公開コードの <code>'clip'</code> 経路が実際に計算するのは<strong>負のコサイン類似度</strong>です。
-literal な MSE を計算しているのは <code>'vae'</code> 経路のほう
-(<a href="#vae-variant">後述</a>の <code>torch.square(...).mean()</code>)。
+literal な MSE を計算しているのは <code>'vae'</code> 経路のほうですが、
+そちらは<a href="#vae-variant">後述</a>のとおり<strong>公開コードのままでは実行できません</strong>。
 ImageBind 特徴を扱う <code>'clip'</code> 経路では、
 スケールを揃える必要がないぶんコサインのほうが素直だという判断だと考えられますが、
 <strong>論文の式とコードが厳密には一致しない箇所</strong>なので、そのまま記しておきます。
@@ -493,7 +493,7 @@ YAML の <code>parameterization: "v"</code> に従い、実際の予測対象は
 「凍結生成器を通して条件を鍛える」という構図は同じです。
 </div>
 
-<h3 id="vae-variant">補足: <code>perception_type == 'vae'</code> のもう一つの経路</h3>
+<h3 id="vae-variant">補足: <code>perception_type == 'vae'</code> — 書きかけで動かない経路</h3>
 <p>
 コードにはもう一つ、特徴を ImageBind ではなく<strong>VAE 潜在</strong>で扱う分岐が残っています。
 こちらは向きではなく値そのものを合わせるので、素直な平均二乗誤差です。
@@ -513,12 +513,25 @@ YAML の <code>parameterization: "v"</code> に従い、実際の予測対象は
         feature_loss = torch.tensor(0.0)</code></pre>
 </div>
 <p>
-<code>'clip'</code> 系と <code>'vae'</code> 系のどちらを本番設定としたかは公開コードからは断定できませんが、
-<code>__init__</code> で <code>codi_llama_proj</code> / <code>codi_llama_decode</code> が作られるのは
-<code>'clip' in self.perception_type</code> のときだけ(L171)であり、
-<code>generate()</code> も ImageBind 系の前提で書かれているため、
-<strong><code>'clip'</code> 系が主経路</strong>と読むのが自然です。
+ただし、<strong>この分岐は公開コードのままでは実行できません</strong>。
+<code>codi_llama_proj</code> と <code>codi_llama_decode</code> が作られるのは
+<code>__init__</code> の <code>if 'clip' in self.perception_type:</code> の中だけ(L171)なので、
+<code>perception_type</code> がちょうど <code>'vae'</code> のときこの条件は偽になり、
+2 つの MLP はそもそも生成されません。
+その状態で上のコードに入ると <code>self.codi_llama_decode(...)</code> が
+<strong><code>AttributeError</code> を投げます</strong>
+(それ以前に <code>prompt_wrap</code> の <code>self.codi_llama_proj(...)</code> で落ちます)。
 </p>
+<div class="callout warn">
+<span class="callout-title">つまり <code>'vae'</code> 経路は「未完成の残骸」</span>
+「どちらが本番設定か分からない 2 つの選択肢」ではありません。
+公開されている範囲では <strong><code>'clip'</code> 系だけが動作する唯一の経路</strong>で、
+<code>'vae'</code> 系は<strong>モジュールの初期化が伴っていない書きかけのコード</strong>です
+(外部のパッチでデコーダを別途用意しない限り動きません)。
+論文が扱うのも ImageBind 特徴を使う <code>'clip'</code> 系の設計なので、
+本解説もそちらを主経路として読み解いています。
+<code>'vae'</code> 経路は<strong>「特徴を VAE 潜在で扱う設計も検討されていた形跡」</strong>として見るのが妥当でしょう。
+</div>
 
 <h2 id="pipeline">学習パイプライン — モダリティごとに順番を回す</h2>
 <p>

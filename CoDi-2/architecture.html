@@ -9,18 +9,20 @@
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/themes/prism-tomorrow.min.css">
 <style>
 /* ===== tensor-shape pipeline (14s, 7 steps) ===== */
+/* `backwards` is required: without it a delayed step keeps its base opacity (1)
+   until its delay elapses, so the whole first cycle shows every step highlighted. */
 @keyframes sh-step {
   0%, 4% { opacity: 0.3; }
   8%, 26% { opacity: 1; }
   30%, 100% { opacity: 0.3; }
 }
-#shapes .p1 { animation: sh-step 14s ease-in-out infinite; animation-delay: 0s; }
-#shapes .p2 { animation: sh-step 14s ease-in-out infinite; animation-delay: 2s; }
-#shapes .p3 { animation: sh-step 14s ease-in-out infinite; animation-delay: 4s; }
-#shapes .p4 { animation: sh-step 14s ease-in-out infinite; animation-delay: 6s; }
-#shapes .p5 { animation: sh-step 14s ease-in-out infinite; animation-delay: 8s; }
-#shapes .p6 { animation: sh-step 14s ease-in-out infinite; animation-delay: 10s; }
-#shapes .p7 { animation: sh-step 14s ease-in-out infinite; animation-delay: 12s; }
+#shapes .p1 { animation: sh-step 14s ease-in-out infinite backwards; animation-delay: 0s; }
+#shapes .p2 { animation: sh-step 14s ease-in-out infinite backwards; animation-delay: 2s; }
+#shapes .p3 { animation: sh-step 14s ease-in-out infinite backwards; animation-delay: 4s; }
+#shapes .p4 { animation: sh-step 14s ease-in-out infinite backwards; animation-delay: 6s; }
+#shapes .p5 { animation: sh-step 14s ease-in-out infinite backwards; animation-delay: 8s; }
+#shapes .p6 { animation: sh-step 14s ease-in-out infinite backwards; animation-delay: 10s; }
+#shapes .p7 { animation: sh-step 14s ease-in-out infinite backwards; animation-delay: 12s; }
 
 /* ===== input weaving diagram (12s, 4 steps) ===== */
 #weave-diagram .w1 { animation: wv 12s ease-in-out infinite; animation-delay: 0s; opacity: 0; }

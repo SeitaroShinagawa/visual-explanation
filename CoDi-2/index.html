@@ -9,21 +9,23 @@
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/themes/prism-tomorrow.min.css">
 <style>
 /* ===== overview diagram: stage highlight cycle (12s) ===== */
+/* `backwards` is required: without it a delayed group keeps its base opacity (1)
+   until its delay elapses, so the whole first cycle shows every stage highlighted. */
 @keyframes ov-bright {
   0%, 18%, 100% { opacity: 0.55; }
   6%, 12% { opacity: 1; }
 }
-#ov-diagram .s1 { animation: ov-bright 12s ease-in-out infinite; animation-delay: 0s; }
-#ov-diagram .s2 { animation: ov-bright 12s ease-in-out infinite; animation-delay: 1.7s; }
-#ov-diagram .s3 { animation: ov-bright 12s ease-in-out infinite; animation-delay: 3.4s; }
-#ov-diagram .s4 { animation: ov-bright 12s ease-in-out infinite; animation-delay: 5.1s; }
-#ov-diagram .s5 { animation: ov-bright 12s ease-in-out infinite; animation-delay: 6.8s; }
-#ov-diagram .s6 { animation: ov-bright 12s ease-in-out infinite; animation-delay: 8.5s; }
-#ov-diagram .s7 { animation: ov-bright 12s ease-in-out infinite; animation-delay: 10.2s; }
+#ov-diagram .s1 { animation: ov-bright 12s ease-in-out infinite backwards; animation-delay: 0s; }
+#ov-diagram .s2 { animation: ov-bright 12s ease-in-out infinite backwards; animation-delay: 1.7s; }
+#ov-diagram .s3 { animation: ov-bright 12s ease-in-out infinite backwards; animation-delay: 3.4s; }
+#ov-diagram .s4 { animation: ov-bright 12s ease-in-out infinite backwards; animation-delay: 5.1s; }
+#ov-diagram .s5 { animation: ov-bright 12s ease-in-out infinite backwards; animation-delay: 6.8s; }
+#ov-diagram .s6 { animation: ov-bright 12s ease-in-out infinite backwards; animation-delay: 8.5s; }
+#ov-diagram .s7 { animation: ov-bright 12s ease-in-out infinite backwards; animation-delay: 10.2s; }
 
 /* ===== CoDi-1 vs CoDi-2: text routing (10s) ===== */
-#texthop .c1 { animation: th-half 10s ease-in-out infinite; }
-#texthop .c2 { animation: th-half 10s ease-in-out infinite; animation-delay: 5s; }
+#texthop .c1 { animation: th-half 10s ease-in-out infinite backwards; }
+#texthop .c2 { animation: th-half 10s ease-in-out infinite backwards; animation-delay: 5s; }
 @keyframes th-half {
   0%, 3% { opacity: 0.3; }
   8%, 45% { opacity: 1; }
