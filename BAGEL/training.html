@@ -1,0 +1,945 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BAGEL 2. 学習プロセス — CE と Rectified Flow の 2 本立て</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🥯</text></svg>">
+<link rel="stylesheet" href="assets/style.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/themes/prism-tomorrow.min.css">
+<style>
+/* ===== stage timeline (12s, 4 steps) ===== */
+@keyframes stg {
+  0%, 22%, 100% { opacity: 0.35; }
+  4%, 18% { opacity: 1; }
+}
+#stages-fig .t1 { animation: stg 12s ease-in-out infinite backwards; animation-delay: 0s; }
+#stages-fig .t2 { animation: stg 12s ease-in-out infinite backwards; animation-delay: 3s; }
+#stages-fig .t3 { animation: stg 12s ease-in-out infinite backwards; animation-delay: 6s; }
+#stages-fig .t4 { animation: stg 12s ease-in-out infinite backwards; animation-delay: 9s; }
+
+/* ===== sequence build (15s, 5 steps) ===== */
+@keyframes seqs {
+  0%, 18%, 100% { opacity: 0.3; }
+  3%, 15% { opacity: 1; }
+}
+#seqbuild .b1 { animation: seqs 15s ease-in-out infinite backwards; animation-delay: 0s; }
+#seqbuild .b2 { animation: seqs 15s ease-in-out infinite backwards; animation-delay: 3s; }
+#seqbuild .b3 { animation: seqs 15s ease-in-out infinite backwards; animation-delay: 6s; }
+#seqbuild .b4 { animation: seqs 15s ease-in-out infinite backwards; animation-delay: 9s; }
+#seqbuild .b5 { animation: seqs 15s ease-in-out infinite backwards; animation-delay: 12s; }
+
+/* ===== rectified flow (12s, 4 steps) ===== */
+@keyframes rf {
+  0%, 22%, 100% { opacity: 0.3; }
+  4%, 18% { opacity: 1; }
+}
+#flowtrain .f1 { animation: rf 12s ease-in-out infinite backwards; animation-delay: 0s; }
+#flowtrain .f2 { animation: rf 12s ease-in-out infinite backwards; animation-delay: 3s; }
+#flowtrain .f3 { animation: rf 12s ease-in-out infinite backwards; animation-delay: 6s; }
+#flowtrain .f4 { animation: rf 12s ease-in-out infinite backwards; animation-delay: 9s; }
+/* the interpolating dot slides along the segment */
+#flowtrain .xdot { animation: xslide 12s ease-in-out infinite; }
+@keyframes xslide {
+  0%, 100% { transform: translateX(0px); }
+  50% { transform: translateX(300px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #stages-fig .t1, #stages-fig .t2, #stages-fig .t3, #stages-fig .t4 { opacity: 1; }
+  #seqbuild .b1, #seqbuild .b2, #seqbuild .b3, #seqbuild .b4, #seqbuild .b5 { opacity: 1; }
+  #flowtrain .f1, #flowtrain .f2, #flowtrain .f3, #flowtrain .f4 { opacity: 1; }
+  #flowtrain .xdot { transform: translateX(150px); }
+}
+</style>
+</head>
+<body>
+
+<nav class="topnav">
+  <a class="home-link" href="../index.html">Visual Explanation</a><span class="sep">/</span>
+  <a href="./index.html">BAGEL 概要</a>
+  <a href="architecture.html">1. アーキテクチャ</a>
+  <a href="training.html" class="current">2. 学習プロセス</a>
+  <a href="inference.html">3. 生成プロセス</a>
+</nav>
+
+<header class="page-header">
+  <h1>2. 学習プロセス</h1>
+  <p>1 枚のシーケンスの中で<strong>テキストの CE 損失</strong>と
+  <strong>画像の Rectified Flow MSE 損失</strong>が同時に計算される仕組みを、
+  データの組み立てから損失の合成まで追いかけます。</p>
+</header>
+
+<main class="article">
+
+<h2 id="stages">学習の全体像 — 4 つのステージ</h2>
+<p>
+論文は BAGEL の学習を 4 段階に分けています。
+「まず言葉と絵を同じ土俵に載せ、次に大量に読ませ、解像度を上げ、最後に磨く」という順序です。
+</p>
+
+<figure class="diagram" id="stages-fig" data-cycle-ms="12000" data-step-count="4">
+<svg viewBox="0 0 900 340" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="BAGEL の 4 段階学習(Alignment / PT / CT / SFT)のタイムライン">
+  <line x1="30" y1="60" x2="870" y2="60" stroke="#dde2ee" stroke-width="4"/>
+
+  <g class="t1">
+    <circle cx="120" cy="60" r="11" fill="#3556d4"/>
+    <rect x="30" y="86" width="180" height="150" rx="10" fill="#e5eafc" stroke="#3556d4" stroke-width="2"/>
+    <text x="120" y="110" font-size="13" font-weight="bold" text-anchor="middle" fill="#3556d4">① Alignment</text>
+    <text x="42" y="134" font-size="10.5" fill="#5b6478">ViT と LLM を凍結し、</text>
+    <text x="42" y="152" font-size="10.5" fill="#5b6478">connector(MLP)だけ学習</text>
+    <text x="42" y="176" font-size="10.5" fill="#5b6478">画像–テキスト対でキャプション</text>
+    <text x="42" y="194" font-size="10.5" fill="#5b6478">解像度は 378×378 に固定</text>
+    <text x="42" y="220" font-size="10.5" fill="#d43d51">= 「目」を言語に接続する段階</text>
+  </g>
+
+  <g class="t2">
+    <circle cx="330" cy="60" r="11" fill="#7b46c9"/>
+    <rect x="228" y="86" width="204" height="150" rx="10" fill="#efe6fb" stroke="#7b46c9" stroke-width="2"/>
+    <text x="330" y="110" font-size="13" font-weight="bold" text-anchor="middle" fill="#7b46c9">② Pre-training (PT)</text>
+    <text x="240" y="134" font-size="10.5" fill="#5b6478">QK-Norm を追加し、</text>
+    <text x="240" y="152" font-size="10.5" fill="#5b6478">VAE 以外の全パラメータを学習</text>
+    <text x="240" y="176" font-size="10.5" fill="#5b6478">テキスト / 画像テキスト対 /</text>
+    <text x="240" y="194" font-size="10.5" fill="#5b6478">会話 / web・動画 interleaved</text>
+    <text x="240" y="220" font-size="11" fill="#d43d51" font-weight="bold">約 2.5T トークン</text>
+  </g>
+
+  <g class="t3">
+    <circle cx="550" cy="60" r="11" fill="#1e9e6a"/>
+    <rect x="450" y="86" width="200" height="150" rx="10" fill="#e0f5ec" stroke="#1e9e6a" stroke-width="2"/>
+    <text x="550" y="110" font-size="13" font-weight="bold" text-anchor="middle" fill="#1e9e6a">③ Continued Training</text>
+    <text x="462" y="134" font-size="10.5" fill="#5b6478">視覚入力の解像度を上げる</text>
+    <text x="462" y="158" font-size="10.5" fill="#5b6478">interleaved データの</text>
+    <text x="462" y="176" font-size="10.5" fill="#5b6478">サンプリング比率を高める</text>
+    <text x="462" y="200" font-size="10.5" fill="#5b6478">= 跨モダリティ推論を重点学習</text>
+    <text x="462" y="222" font-size="11" fill="#d43d51" font-weight="bold">約 2.6T トークン</text>
+  </g>
+
+  <g class="t4">
+    <circle cx="770" cy="60" r="11" fill="#e07b1f"/>
+    <rect x="668" y="86" width="200" height="150" rx="10" fill="#fdeeda" stroke="#e07b1f" stroke-width="2"/>
+    <text x="768" y="110" font-size="13" font-weight="bold" text-anchor="middle" fill="#e07b1f">④ SFT</text>
+    <text x="680" y="134" font-size="10.5" fill="#5b6478">画像テキスト対・interleaved</text>
+    <text x="680" y="152" font-size="10.5" fill="#5b6478">生成データから高品質部分集合</text>
+    <text x="680" y="176" font-size="10.5" fill="#5b6478">を作って仕上げ</text>
+    <text x="680" y="200" font-size="10.5" fill="#5b6478">公開コードの fine-tuning 例も</text>
+    <text x="680" y="218" font-size="10.5" fill="#5b6478">この段階に相当(lr 2.5e-5)</text>
+  </g>
+
+  <text x="30" y="272" font-size="11.5" fill="#5b6478">論文が「emerging properties」と呼ぶのは、この過程で能力が<tspan font-weight="bold">段階的に立ち上がる</tspan>こと ——</text>
+  <text x="30" y="292" font-size="11.5" fill="#5b6478">まず理解と生成が現れ、次に基本的な編集ができるようになり、最後に「知的な編集」が遅れて出現する。</text>
+  <text x="30" y="316" font-size="11.5" fill="#d43d51">データ量・解像度・interleaved 比率を段階的に上げるという設計が、この順序と対応している。</text>
+</svg>
+<figcaption>
+学習ステージの流れ。<strong>公開されている <code>train/pretrain_unified_navit.py</code> は
+このうち PT / CT / SFT に共通で使える 1 本のスクリプト</strong>で、
+どの段階かは引数(解像度・データ構成・凍結フラグ・学習率)で切り替わります。
+</figcaption>
+</figure>
+
+<div class="callout point">
+<span class="callout-title">出典について</span>
+ステージ構成・トークン数・ハイパーパラメータは論文 Table 3 の値です。
+以降のコードの説明はすべて、クローンした
+<a href="https://github.com/ByteDance-Seed/Bagel/tree/a2fa77dd8caeefc41e6607ae0ec17408d3f4ee9f" target="_blank" rel="noopener">コミット <code>a2fa77d</code></a>
+の実ファイルからの引用です。<strong>両者が食い違う箇所は都度 ⚠️ で明示します</strong>
+(本ページでは <a href="#losses">損失の重み</a> と <a href="#cfgdrop">CFG ドロップアウト率</a> の 2 件)。
+</div>
+
+<h3>論文 Table 3 の主要ハイパーパラメータ</h3>
+<table>
+  <tr><th></th><th>Alignment</th><th>PT</th><th>CT</th><th>SFT</th></tr>
+  <tr><th>学習率</th><td>1×10⁻³</td><td>1×10⁻⁴</td><td>1×10⁻⁴</td><td>2.5×10⁻⁵</td></tr>
+  <tr><th>スケジューラ</th><td>Cosine</td><td colspan="3">Constant(<strong>データを足しても学習を再開せずに済むよう</strong>定数にしている)</td></tr>
+  <tr><th>損失重み (CE : MSE)</th><td>—</td><td colspan="3"><strong>0.25 : 1</strong></td></tr>
+  <tr><th>学習ステップ</th><td>5K</td><td>200K</td><td>100K</td><td>15K</td></tr>
+  <tr><th>累積トークン</th><td>4.9B</td><td><strong>2.5T</strong></td><td><strong>2.6T</strong></td><td>72.7B</td></tr>
+  <tr><th>EMA 減衰</th><td>—</td><td>0.9999</td><td>0.9999</td><td>0.995</td></tr>
+  <tr><th>rank ごとの系列長</th><td colspan="2">32K–36K</td><td colspan="2">40K–45K</td></tr>
+  <tr><th>最大文脈長</th><td>16K</td><td>16K</td><td>40K</td><td>40K</td></tr>
+  <tr><th>生成解像度<br>(短辺下限, 長辺上限)</th><td>—</td><td>(256, 512)</td><td>(512, 1024)</td><td>(512, 1024)</td></tr>
+  <tr><th>理解解像度</th><td>(378, 378)</td><td>(224, 980)</td><td>(378, 980)</td><td>(378, 980)</td></tr>
+  <tr><th>拡散 timestep shift</th><td>—</td><td>1.0</td><td><strong>4.0</strong></td><td><strong>4.0</strong></td></tr>
+</table>
+<p>
+最適化は全ステージ AdamW(\(\beta_1{=}0.9,\ \beta_2{=}0.95\))。
+特徴的なのは <strong>\(\epsilon = 1{\times}10^{-15}\)</strong> という極端に小さな値で、
+論文はこれを<strong>損失スパイクを抑えるため</strong>だと説明しています。
+また CT 以降で解像度を上げる際、<strong>timestep shift も 1.0 から 4.0 に上げています</strong> ——
+解像度が上がるとトークン数が増え、同じノイズ量でも実質的な難易度が変わるため、
+「適切なノイズレベル分布を保つ」ための調整です
+(<a href="inference.html#image">生成編</a>で見る推論時の <code>timestep_shift</code> と同じ式です)。
+</p>
+
+<h2 id="data">何を、どれだけ食わせたか</h2>
+<p>
+論文 Table 1 のデータ統計です。<strong>灰色で示された 3 行が interleaved データ</strong>で、
+BAGEL の「複雑な編集能力」を支えているのはここだと論文は主張しています。
+</p>
+<table>
+  <tr><th>データ種別</th><th>件数</th><th>トークン数</th></tr>
+  <tr><td>テキストのみ</td><td>400M</td><td>0.4T</td></tr>
+  <tr><td>画像テキスト対(理解用)</td><td>500M</td><td>0.5T</td></tr>
+  <tr><td>画像テキスト対(生成用)</td><td>1600M</td><td>2.6T</td></tr>
+  <tr><td><strong>interleaved 理解データ</strong></td><td>100M</td><td>0.5T</td></tr>
+  <tr><td><strong>interleaved 生成データ: 動画由来</strong></td><td>45M</td><td>0.7T</td></tr>
+  <tr><td><strong>interleaved 生成データ: web 由来</strong></td><td>20M</td><td>0.4T</td></tr>
+</table>
+
+<h3>ステージごとのサンプリング比率</h3>
+<p>
+同じデータ集合でも、ステージごとに<strong>引く確率</strong>を変えていきます(論文 Table 3)。
+</p>
+<table>
+  <tr><th>データ</th><th>Alignment</th><th>PT</th><th>CT</th><th>SFT</th></tr>
+  <tr><td>テキスト</td><td>0.0</td><td>0.05</td><td>0.05</td><td>0.05</td></tr>
+  <tr><td>画像テキスト対(T2I)</td><td>0.0</td><td>0.6</td><td>0.4</td><td>0.3</td></tr>
+  <tr><td>画像テキスト対(I2T)</td><td><strong>1.0</strong></td><td>0.1</td><td>0.1</td><td>0.05</td></tr>
+  <tr><td><strong>interleaved 理解</strong></td><td>0.0</td><td>0.1</td><td>0.15</td><td>0.2</td></tr>
+  <tr><td><strong>interleaved 生成: 動画</strong></td><td>0.0</td><td>0.1</td><td>0.15</td><td>0.2</td></tr>
+  <tr><td><strong>interleaved 生成: web</strong></td><td>0.0</td><td>0.05</td><td>0.15</td><td>0.2</td></tr>
+  <tr><td colspan="5" style="text-align:left"><em>interleaved 系の合計</em>: 0.0 → <strong>0.25</strong> → <strong>0.45</strong> → <strong>0.6</strong></td></tr>
+</table>
+<p>
+段階が進むほど interleaved の比率が上がっていくのが一目で分かります。
+Alignment では I2T(画像→テキスト)だけ、PT では T2I が 6 割を占め、
+CT・SFT で interleaved に重心が移る —— という設計です。
+</p>
+
+<div class="callout math">
+<span class="callout-title">なぜ生成データを多めに引くのか(論文 §4.1)</span>
+論文は 1.5B モデルで、生成データと理解データの比率を振るアブレーションを行っています。
+生成の比率を 50%(1g1u)から 80%(4g1u)に上げると <strong>MSE 損失は一貫して下がり、
+絶対値で 0.4% の改善</strong>(rectified flow では実用上かなり大きい差)。
+一方 CE 損失には一貫した傾向が見られず、最大の差でも 0.07 で下流ベンチマークへの影響は無視できる ——
+だから<strong>生成サンプルは理解サンプルよりずっと多く引くべきだ</strong>、というのが結論です。
+Table 3 の比率(PT で T2I 0.6 対 I2T 0.1)は、この知見の反映です。
+</div>
+
+<div class="callout math">
+<span class="callout-title">なぜ CE : MSE = 0.25 : 1 なのか(論文 §4.2)</span>
+学習率のアブレーションでは、2 つの損失が<strong>正反対の反応</strong>を示しました ——
+<strong>学習率を上げると MSE の収束は速くなるが、CE は悪化する</strong>。
+1 つの学習率で両方を満足させることはできません。
+そこで著者らは学習率を一本化したまま、<strong>損失側に別々の重みを割り当てて</strong>この綱引きに折り合いをつけました。
+これが Table 3 の 0.25 : 1 です。
+<br><br>
+<span style="color:#e07b1f">⚠️</span> なお<strong>公開コードの既定値は
+<code>ce_weight = mse_weight = 1.0</code></strong> で、論文のレシピとは異なります。
+再現を試みる場合は <code>--ce-weight 0.25</code> 相当の指定が要ります。
+</div>
+
+<h2 id="seq">データがシーケンスになるまで</h2>
+<p>
+BAGEL のデータパイプラインは 2 段構えです。
+</p>
+<ol>
+  <li><strong>データセット側</strong>が <code>sequence_plan</code> という「設計図」を作る
+  (どの順で、何を、損失ありで置くか)</li>
+  <li><strong>パッカー側</strong>(<code>PackedDataset.pack_sequence</code>)が設計図を読んで、
+  実際のトークン列・位置 ID・損失インデックス・attention モードを組み立てる</li>
+</ol>
+
+<h3>設計図の作り方 — 1 枚の画像から最大 3 種類のトークン</h3>
+<p>
+interleave 系データセットの基底クラスにある <code>_add_image</code> が、この設計の核心です。
+<strong>3 つのフラグ(<code>need_loss</code> / <code>need_vae</code> / <code>need_vit</code>)が独立していて、
+複数立てると同じ画像が列に複数回登場します</strong>。
+</p>
+
+<div class="codeblock">
+<div class="codehead"><span class="path">data/interleave_datasets/interleave_t2i_dataset.py</span> L36–86
+<a href="https://github.com/ByteDance-Seed/Bagel/blob/a2fa77dd8caeefc41e6607ae0ec17408d3f4ee9f/data/interleave_datasets/interleave_t2i_dataset.py#L36-L86" target="_blank" rel="noopener">GitHub ↗</a></div>
+<pre><code class="language-python">    def _add_image(self, data, image, need_loss, need_vae, need_vit, enable_cfg=True):
+        assert need_loss or need_vae or need_vit
+
+        if need_loss:                       # ① 生成対象としての VAE トークン(ノイズが載る)
+            data['sequence_plan'].append(
+                {'type': 'vae_image', 'enable_cfg': 0, 'loss': 1, ...}
+            )
+            image_tensor = self.transform(image)
+            ...
+
+        if need_vae:                        # ② 条件としての VAE トークン(ノイズなし)
+            data['sequence_plan'].append(
+                {'type': 'vae_image', 'enable_cfg': int(enable_cfg), 'loss': 0, ...}
+            )
+            image_tensor = self.transform(image)
+            ...
+            data['image_tensor_list'].append(image_tensor.clone())
+
+        if need_vit:                        # ③ 意味レベルの ViT トークン
+            data['sequence_plan'].append(
+                {'type': 'vit_image', 'enable_cfg': int(enable_cfg), 'loss': 0, ...}
+            )
+            vit_image_tensor = self.vit_transform(image)
+            ...</code></pre>
+</div>
+
+<div class="callout point">
+<span class="callout-title">注目: <code>enable_cfg</code> が ① だけ 0 になっている</span>
+<code>enable_cfg</code> は「CFG のためにこのトークンをランダムに落としてよいか」のフラグです。
+生成対象(①)は<strong>落としてはいけない</strong>ので 0 が固定で書かれています。
+条件として置かれる ② ③ だけがドロップアウトの対象になります。
+<a href="#cfgdrop">後述</a>のとおり、この 1 行が推論時の二重 CFG を可能にしています。
+</div>
+
+<h3>画像編集サンプルの実例</h3>
+<p>
+実際に <code>UnifiedEditIterableDataset</code> がどう組むかを見ると、フラグの使い分けが分かります。
+</p>
+
+<div class="codeblock">
+<div class="codehead"><span class="path">data/interleave_datasets/edit_dataset.py</span> L21–72(抜粋)
+<a href="https://github.com/ByteDance-Seed/Bagel/blob/a2fa77dd8caeefc41e6607ae0ec17408d3f4ee9f/data/interleave_datasets/edit_dataset.py#L21-L72" target="_blank" rel="noopener">GitHub ↗</a></div>
+<pre><code class="language-python">class UnifiedEditIterableDataset(InterleavedBaseIterableDataset, ParquetStandardIterableDataset):
+
+    def parse_row(self, row):
+        ...
+        data = self._init_data()
+        data = self._add_image(                      # 編集元の画像
+            data, Image.open(...),
+            need_loss=False, need_vae=True, need_vit=True,    # ← 条件として 2 種類
+        )
+        ...
+        for idx in range(start_idx + 1, end_idx + 1):
+            instruction = random.choice(row["instruction_list"][idx-1])
+            data = self._add_text(data, instruction, need_loss=False)   # 指示文(損失なし)
+            if idx != end_idx:
+                data = self._add_image(              # 途中の画像: 描かせつつ、次の条件にもする
+                    data, ..., need_loss=True, need_vae=True, need_vit=True,
+                )
+            else:
+                data = self._add_image(              # 最後の画像: 描かせるだけ
+                    data, ..., need_loss=True, need_vae=False, need_vit=False,
+                )
+        return data</code></pre>
+</div>
+
+<figure class="diagram" id="seqbuild" data-cycle-ms="15000" data-step-count="5">
+<svg viewBox="0 0 900 430" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="画像編集サンプルが1本のトークン列に組み上がる図">
+  <defs>
+    <marker id="arrs" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#8a93ad"/>
+    </marker>
+  </defs>
+  <text x="24" y="28" font-size="13" font-weight="bold" fill="#5b6478">「この画像の犬を猫に変えて」という編集サンプルが列になるまで</text>
+
+  <!-- step 1: source image -> vae -->
+  <g class="b1">
+    <rect x="24" y="46" width="164" height="70" rx="9" fill="#e0f5ec" stroke="#1e9e6a" stroke-width="2"/>
+    <text x="106" y="70" font-size="11.5" text-anchor="middle" fill="#1e9e6a" font-weight="bold">① 元画像 → clean VAE</text>
+    <text x="106" y="90" font-size="10" text-anchor="middle" class="mono" fill="#5b6478">loss=0, attn='full'</text>
+    <text x="106" y="107" font-size="10" text-anchor="middle" fill="#5b6478">画素をそのまま条件に</text>
+  </g>
+
+  <!-- step 2: source image -> vit -->
+  <g class="b2">
+    <rect x="204" y="46" width="164" height="70" rx="9" fill="#e5eafc" stroke="#3556d4" stroke-width="2"/>
+    <text x="286" y="70" font-size="11.5" text-anchor="middle" fill="#3556d4" font-weight="bold">② 同じ元画像 → ViT</text>
+    <text x="286" y="90" font-size="10" text-anchor="middle" class="mono" fill="#5b6478">loss=0, attn='full'</text>
+    <text x="286" y="107" font-size="10" text-anchor="middle" fill="#5b6478">「犬が写っている」という意味</text>
+  </g>
+
+  <!-- step 3: instruction -->
+  <g class="b3">
+    <rect x="384" y="46" width="164" height="70" rx="9" fill="#f2f4fa" stroke="#8a93ad" stroke-width="2"/>
+    <text x="466" y="70" font-size="11.5" text-anchor="middle" fill="#5b6478" font-weight="bold">③ 指示テキスト</text>
+    <text x="466" y="90" font-size="10" text-anchor="middle" class="mono" fill="#5b6478">loss=0, attn='causal'</text>
+    <text x="466" y="107" font-size="10" text-anchor="middle" fill="#5b6478">「犬を猫に変えて」</text>
+  </g>
+
+  <!-- step 4: target -->
+  <g class="b4">
+    <rect x="564" y="46" width="180" height="70" rx="9" fill="#fbe4e8" stroke="#d43d51" stroke-width="2.5"/>
+    <text x="654" y="70" font-size="11.5" text-anchor="middle" fill="#d43d51" font-weight="bold">④ 目標画像 → noised VAE</text>
+    <text x="654" y="90" font-size="10" text-anchor="middle" class="mono" fill="#5b6478">loss=1, attn='noise'</text>
+    <text x="654" y="107" font-size="10" text-anchor="middle" fill="#d43d51">ここだけ MSE がかかる</text>
+  </g>
+
+  <!-- step 5: packed sequence -->
+  <g class="b5">
+    <text x="24" y="138" font-size="12.5" font-weight="bold" fill="#5b6478">⑤ pack_sequence が 1 本のトークン列に流し込む</text>
+    <path d="M 106 146 L 106 176" fill="none" stroke="#8a93ad" stroke-width="1.6" marker-end="url(#arrs)"/>
+    <path d="M 286 146 L 286 176" fill="none" stroke="#8a93ad" stroke-width="1.6" marker-end="url(#arrs)"/>
+    <path d="M 466 146 L 466 176" fill="none" stroke="#8a93ad" stroke-width="1.6" marker-end="url(#arrs)"/>
+    <path d="M 654 146 L 654 176" fill="none" stroke="#8a93ad" stroke-width="1.6" marker-end="url(#arrs)"/>
+
+    <rect x="24" y="182" width="20" height="34" rx="4" fill="#e9ecf5" stroke="#8a93ad"/>
+    <rect x="46" y="182" width="120" height="34" rx="4" fill="#e0f5ec" stroke="#1e9e6a"/>
+    <rect x="168" y="182" width="20" height="34" rx="4" fill="#e9ecf5" stroke="#8a93ad"/>
+    <rect x="192" y="182" width="20" height="34" rx="4" fill="#e9ecf5" stroke="#8a93ad"/>
+    <rect x="214" y="182" width="120" height="34" rx="4" fill="#e5eafc" stroke="#3556d4"/>
+    <rect x="336" y="182" width="20" height="34" rx="4" fill="#e9ecf5" stroke="#8a93ad"/>
+    <rect x="360" y="182" width="150" height="34" rx="4" fill="#f2f4fa" stroke="#8a93ad"/>
+    <rect x="514" y="182" width="20" height="34" rx="4" fill="#e9ecf5" stroke="#8a93ad"/>
+    <rect x="536" y="182" width="150" height="34" rx="4" fill="#fbe4e8" stroke="#d43d51" stroke-dasharray="4 2"/>
+    <rect x="688" y="182" width="20" height="34" rx="4" fill="#e9ecf5" stroke="#8a93ad"/>
+
+    <text x="106" y="204" font-size="10.5" text-anchor="middle" fill="#1e9e6a">clean VAE トークン列</text>
+    <text x="274" y="204" font-size="10.5" text-anchor="middle" fill="#3556d4">ViT トークン列</text>
+    <text x="435" y="204" font-size="10.5" text-anchor="middle" fill="#5b6478">指示テキスト</text>
+    <text x="611" y="204" font-size="10.5" text-anchor="middle" fill="#d43d51">noised VAE(x_t)</text>
+
+    <text x="34" y="236" font-size="9" fill="#8a93ad">&lt;vs&gt;</text>
+    <text x="172" y="236" font-size="9" fill="#8a93ad">&lt;ve&gt;</text>
+    <text x="196" y="236" font-size="9" fill="#8a93ad">&lt;vs&gt;</text>
+    <text x="340" y="236" font-size="9" fill="#8a93ad">&lt;ve&gt;</text>
+    <text x="518" y="236" font-size="9" fill="#8a93ad">&lt;vs&gt;</text>
+    <text x="692" y="236" font-size="9" fill="#8a93ad">&lt;ve&gt;</text>
+    <text x="716" y="204" font-size="10" fill="#5b6478">&lt;vs&gt;=&lt;|vision_start|&gt;</text>
+
+    <text x="24" y="266" font-size="11" fill="#5b6478">split_lens = [長さ①, 長さ②, 長さ③, 長さ④]</text>
+    <text x="24" y="286" font-size="11" class="mono" fill="#5b6478">attn_modes = ['full', 'full', 'causal', 'noise']</text>
+    <text x="24" y="310" font-size="11" fill="#d43d51">mse_loss_indexes = ④ の位置だけ / ce_loss_indexes = (このサンプルでは)空</text>
+  </g>
+
+  <text x="24" y="348" font-size="11.5" fill="#5b6478">同じ元画像が ① と ② で<tspan font-weight="bold">2 回</tspan>登場している点に注意。「画素として」と「意味として」の二重掲載であり、</text>
+  <text x="24" y="368" font-size="11.5" fill="#5b6478">これが編集タスクでの性能に効くというのが論文のアブレーションの主張。</text>
+  <text x="24" y="394" font-size="11.5" fill="#1e9e6a">中間画像(複数ステップの編集)では、同じ画像が「④ 生成対象」でありながら</text>
+  <text x="24" y="412" font-size="11.5" fill="#1e9e6a">同時に「① 次ステップの条件」としても置かれる —— need_loss と need_vae を両方立てるのがそれ。</text>
+</svg>
+<figcaption>
+編集サンプルの組み立て。<strong>1 枚のシーケンスの中に、読むための画像と描くための画像が同居</strong>し、
+それを可視性の違い(<code>attn_modes</code>)だけで区別しています。
+</figcaption>
+</figure>
+
+<h3>パッカーが実際に書き込むもの</h3>
+<p>
+<code>pack_sequence</code> の <code>vae_image</code> 分岐が、本解説でいちばん重要なコードです。
+<strong>損失インデックス・時刻・attention モードが、ここで一度に決まります</strong>。
+</p>
+
+<div class="codeblock">
+<div class="codehead"><span class="path">data/dataset_base.py</span> L397–458(抜粋)
+<a href="https://github.com/ByteDance-Seed/Bagel/blob/a2fa77dd8caeefc41e6607ae0ec17408d3f4ee9f/data/dataset_base.py#L397-L458" target="_blank" rel="noopener">GitHub ↗</a></div>
+<pre><code class="language-python">            elif item['type'] == 'vae_image':
+                image_tensor = image_tensor_list.pop(0)
+                if item['enable_cfg'] == 1 and random.random() &lt; self.data_config.vae_cond_dropout_prob:
+                    curr_rope_id += 1        # ← CFG 用のドロップアウト(条件画像を丸ごと落とす)
+                    continue
+                ...
+                num_img_tokens = w * h
+                sequence_status['packed_vae_token_indexes'].extend(range(curr, curr + num_img_tokens))
+                if item['loss'] == 1:
+                    sequence_status['mse_loss_indexes'].extend(range(curr, curr + num_img_tokens))
+                    if split_start:
+                        timestep = np.random.randn()      # ★ 時刻は標準正規から引く
+                else:
+                    timestep = float('-inf')              # ★ 条件画像は「時刻 −∞」
+
+                sequence_status['packed_timesteps'].extend([timestep] * num_img_tokens)
+                ...
+                # update sequence status
+                if split_start:
+                    if item['loss'] == 1 and 'frame_delta' not in item.keys():
+                        attn_modes.append("noise")        # ★ 生成対象だけ 'noise'
+                    else:
+                        attn_modes.append("full")
+                sequence_status['packed_position_ids'].extend([curr_rope_id] * (num_img_tokens + 2))</code></pre>
+</div>
+
+<div class="callout point">
+<span class="callout-title"><code>float('-inf')</code> という書き方が効いている</span>
+条件画像の時刻に <code>-inf</code> を入れておくと、モデル側で <code>torch.sigmoid(-inf) = 0</code>、
+すなわち<strong>ノイズ混合率 0 = 完全にきれいな潜在</strong>になります。
+「ノイズを載せない」を別フラグではなく<strong>時刻の値として</strong>表現しているので、
+コード上は条件画像も生成対象も同じ 1 本の式を通ります。
+</div>
+
+<h2 id="flow">損失 ① — Rectified Flow の MSE</h2>
+<p>
+モデルの <code>forward</code> に入ると、時刻からノイズ混合、そして速度場の教師まで一気に計算されます。
+</p>
+
+<div class="codeblock">
+<div class="codehead"><span class="path">modeling/bagel/bagel.py</span> L181–197 — ノイズを載せる
+<a href="https://github.com/ByteDance-Seed/Bagel/blob/a2fa77dd8caeefc41e6607ae0ec17408d3f4ee9f/modeling/bagel/bagel.py#L181-L197" target="_blank" rel="noopener">GitHub ↗</a></div>
+<pre><code class="language-python">        if self.config.visual_gen:
+            p = self.latent_patch_size
+            packed_latent = []
+            for latent, (h, w) in zip(padded_latent, patchified_vae_latent_shapes):
+                latent = latent[:, :h * p, :w * p].reshape(self.latent_channel, h, p, w, p)
+                latent = torch.einsum("chpwq-&gt;hwpqc", latent).reshape(-1, p * p * self.latent_channel)
+                packed_latent.append(latent)
+            packed_latent_clean = torch.cat(packed_latent, dim=0)          # x_0(きれいな潜在)
+
+            noise = torch.randn_like(packed_latent_clean)                  # x_1(純ノイズ)
+            packed_timesteps = torch.sigmoid(packed_timesteps)             # ★ logit-normal な t
+            packed_timesteps = self.timestep_shift * packed_timesteps / (1 + (self.timestep_shift - 1) * packed_timesteps)
+            packed_latent = (1 - packed_timesteps[:, None]) * packed_latent_clean + packed_timesteps[:, None] * noise
+            packed_timestep_embeds = self.time_embedder(packed_timesteps)
+            latent_token_pos_emb = self.latent_pos_embed(packed_latent_position_ids)
+            packed_latent = self.vae2llm(packed_latent) + packed_timestep_embeds + latent_token_pos_emb
+            packed_sequence[packed_vae_token_indexes] = packed_latent</code></pre>
+</div>
+
+<div class="codeblock">
+<div class="codehead"><span class="path">modeling/bagel/bagel.py</span> L217–229 — 損失を取る
+<a href="https://github.com/ByteDance-Seed/Bagel/blob/a2fa77dd8caeefc41e6607ae0ec17408d3f4ee9f/modeling/bagel/bagel.py#L217-L229" target="_blank" rel="noopener">GitHub ↗</a></div>
+<pre><code class="language-python">        mse = None
+        if self.config.visual_gen:
+            packed_mse_preds = self.llm2vae(last_hidden_state[mse_loss_indexes])
+            target = noise - packed_latent_clean  # NOTE: v_t=dx_t/dt=x_1-x_0, pointing from data to noise
+            has_mse = packed_timesteps &gt; 0
+            mse = (packed_mse_preds - target[has_mse]) ** 2
+
+        ce = None
+        if ce_loss_indexes is not None:
+            packed_ce_preds = self.language_model.lm_head(last_hidden_state[ce_loss_indexes])
+            ce = F.cross_entropy(packed_ce_preds, packed_label_ids, reduction="none")
+
+        return dict(mse=mse, ce=ce)</code></pre>
+</div>
+
+<div class="callout math">
+<span class="callout-title">数式に直すと</span>
+きれいな潜在を \(x_0\)、標準正規ノイズを \(x_1\) とし、時刻 \(t\in[0,1]\) で直線補間します。
+$$x_t \;=\; (1-t)\,x_0 \;+\; t\,x_1$$
+この直線を時刻で微分すれば、速度場は定数 \(x_1 - x_0\) になります。
+$$v_t \;=\; \frac{dx_t}{dt} \;=\; x_1 - x_0$$
+モデルはこれを当てにいきます。
+$$\mathcal{L}_{\text{MSE}} \;=\; \mathbb{E}_{t,\,x_1}\Big[\big\|\,v_\theta(x_t,\,t,\,c)\;-\;(x_1 - x_0)\,\big\|^2\Big]$$
+ここで \(c\) は<strong>同じシーケンス上の全ての先行トークン</strong>(テキスト・ViT・clean VAE)です。
+拡散モデルのように「cross-attention で注入される条件」ではなく、
+<strong>self-attention の相手として直接そこに居る</strong>、という点が BAGEL の本質です。
+<br><br>
+時刻は \(t' \sim \mathcal{N}(0,1)\) を引いて \(t = \sigma(t')\) とする
+<strong>logit-normal サンプリング</strong>(SD3 などと同じ流儀)。
+\(t\approx 0.5\) 付近が厚くサンプルされ、両端は薄くなります。
+</div>
+
+<figure class="diagram" id="flowtrain" data-cycle-ms="12000" data-step-count="4">
+<svg viewBox="0 0 900 400" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Rectified Flow の学習: 直線補間と速度場の教師">
+  <defs>
+    <marker id="arrf" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#d43d51"/>
+    </marker>
+  </defs>
+
+  <!-- step 1: the segment -->
+  <g class="f1">
+    <text x="24" y="30" font-size="12.5" font-weight="bold" fill="#5b6478">① データとノイズを直線で結ぶ</text>
+    <circle cx="120" cy="110" r="26" fill="#e0f5ec" stroke="#1e9e6a" stroke-width="2.5"/>
+    <text x="120" y="116" font-size="14" text-anchor="middle" fill="#1e9e6a" font-weight="bold">x₀</text>
+    <text x="120" y="156" font-size="10.5" text-anchor="middle" fill="#1e9e6a">VAE のきれいな潜在</text>
+    <text x="120" y="172" font-size="10.5" text-anchor="middle" class="mono" fill="#5b6478">t = 0</text>
+    <circle cx="480" cy="110" r="26" fill="#f2f4fa" stroke="#8a93ad" stroke-width="2.5"/>
+    <text x="480" y="116" font-size="14" text-anchor="middle" fill="#5b6478" font-weight="bold">x₁</text>
+    <text x="480" y="156" font-size="10.5" text-anchor="middle" fill="#5b6478">標準正規ノイズ</text>
+    <text x="480" y="172" font-size="10.5" text-anchor="middle" class="mono" fill="#5b6478">t = 1</text>
+    <line x1="148" y1="110" x2="452" y2="110" stroke="#c2c9db" stroke-width="6" stroke-linecap="round"/>
+  </g>
+
+  <!-- step 2: sampling t -->
+  <g class="f2">
+    <text x="24" y="212" font-size="12.5" font-weight="bold" fill="#7b46c9">② 時刻 t を logit-normal から引く</text>
+    <rect x="24" y="224" width="230" height="60" rx="9" fill="#efe6fb" stroke="#7b46c9" stroke-width="2"/>
+    <text x="139" y="246" font-size="11" text-anchor="middle" class="mono" fill="#7b46c9">t' = np.random.randn()</text>
+    <text x="139" y="266" font-size="11" text-anchor="middle" class="mono" fill="#7b46c9">t = sigmoid(t')</text>
+    <text x="270" y="248" font-size="10.5" fill="#5b6478">→ 中央付近(t≈0.5)が厚い</text>
+    <text x="270" y="266" font-size="10.5" fill="#5b6478">条件画像は t' = −∞ なので t = 0(ノイズ無し)</text>
+  </g>
+
+  <!-- step 3: interpolate -->
+  <g class="f3">
+    <g class="xdot">
+      <circle cx="160" cy="110" r="19" fill="#fbe4e8" stroke="#d43d51" stroke-width="2.5"/>
+      <text x="160" y="116" font-size="12" text-anchor="middle" fill="#d43d51" font-weight="bold">x_t</text>
+    </g>
+    <text x="24" y="330" font-size="12.5" font-weight="bold" fill="#d43d51">③ x_t を作って列に差し込み、モデルに速度場を答えさせる</text>
+    <rect x="24" y="342" width="380" height="46" rx="9" fill="#fbe4e8" stroke="#d43d51" stroke-width="2"/>
+    <text x="214" y="362" font-size="11" text-anchor="middle" class="mono" fill="#d43d51">x_t = (1−t)·x₀ + t·x₁</text>
+    <text x="214" y="380" font-size="10.5" text-anchor="middle" fill="#5b6478">vae2llm した上で時刻埋め込みと位置埋め込みを足す</text>
+  </g>
+
+  <!-- step 4: target -->
+  <g class="f4">
+    <path d="M 560 110 L 700 110" stroke="#d43d51" stroke-width="3" marker-end="url(#arrf)"/>
+    <text x="630" y="98" font-size="11.5" text-anchor="middle" fill="#d43d51" font-weight="bold">v = x₁ − x₀</text>
+    <text x="630" y="132" font-size="10.5" text-anchor="middle" fill="#5b6478">直線なので、速度は t によらず一定</text>
+    <rect x="524" y="176" width="352" height="112" rx="10" fill="#fff" stroke="#d43d51" stroke-width="2"/>
+    <text x="700" y="200" font-size="12" text-anchor="middle" fill="#d43d51" font-weight="bold">④ 教師は「向き」そのもの</text>
+    <text x="540" y="224" font-size="10.5" fill="#5b6478">ノイズ ε を当てるのでも、x₀ を当てるのでもなく、</text>
+    <text x="540" y="242" font-size="10.5" fill="#5b6478">「データからノイズへ向かうベクトル」を当てる。</text>
+    <text x="540" y="266" font-size="10.5" fill="#1e9e6a">生成時は符号を逆に辿ればよい(x ← x − v·Δt)ので、</text>
+    <text x="540" y="284" font-size="10.5" fill="#1e9e6a">スケジュール係数の掛け算が要らず、実装が短くなる。</text>
+  </g>
+
+  <text x="524" y="330" font-size="11" fill="#5b6478">llm2vae がゼロ初期化されているので、学習開始時の予測は v = 0。</text>
+  <text x="524" y="348" font-size="11" fill="#5b6478">= 「まだ何も動かさない」状態から出発する。</text>
+</svg>
+<figcaption>
+Rectified Flow の学習。拡散モデルの複雑なノイズスケジュールが、<strong>ただの直線補間</strong>に置き換わっています。
+</figcaption>
+</figure>
+
+<div class="callout warn">
+<span class="callout-title">⚠️ <code>has_mse</code> の非対称性に注意</span>
+<code>packed_mse_preds</code> は <code>mse_loss_indexes</code>(データ側が決めた損失位置)で切り出され、
+<code>target</code> は <code>has_mse = packed_timesteps &gt; 0</code>(時刻が正のトークン)で切り出されます。
+<strong>切り出し方が違う 2 つのテンソルを引き算している</strong>わけです。
+両者が一致するのは「損失位置 ⟺ 時刻が正」がデータ生成側で保証されているからで、
+<code>pack_sequence</code> が <code>loss == 1</code> のときだけ <code>np.random.randn()</code> を、
+そうでなければ <code>-inf</code>(→ sigmoid で 0)を入れているという不変条件に依存しています。
+ここを崩すデータセットを自作すると静かにずれます。
+</div>
+
+<h2 id="ce">損失 ② — テキストの CE</h2>
+<p>
+テキスト側は拍子抜けするほど普通です。
+<code>lm_head</code> に通して <code>F.cross_entropy</code>、それだけ。
+ただし<strong>ラベルの置き方</strong>に一工夫あります。
+</p>
+
+<div class="codeblock">
+<div class="codehead"><span class="path">data/dataset_base.py</span> L321–346 — text 分岐
+<a href="https://github.com/ByteDance-Seed/Bagel/blob/a2fa77dd8caeefc41e6607ae0ec17408d3f4ee9f/data/dataset_base.py#L321-L346" target="_blank" rel="noopener">GitHub ↗</a></div>
+<pre><code class="language-python">            if item['type'] == 'text':
+                text_ids = text_ids_list.pop(0)
+                if item['enable_cfg'] == 1 and random.random() &lt; self.data_config.text_cond_dropout_prob:
+                    continue                         # ← テキスト条件のドロップアウト
+
+                shifted_text_ids = [self.bos_token_id] + text_ids     # 先頭に &lt;|im_start|&gt;
+                sequence_status['packed_text_ids'].extend(shifted_text_ids)
+                sequence_status['packed_text_indexes'].extend(range(curr, curr + len(shifted_text_ids)))
+                if item['loss'] == 1:
+                    sequence_status['ce_loss_indexes'].extend(range(curr, curr + len(shifted_text_ids)))
+                    sequence_status['ce_loss_weights'].extend(
+                        [len2weight(len(shifted_text_ids))] * len(shifted_text_ids)
+                    )
+                    sequence_status['packed_label_ids'].extend(text_ids + [self.eos_token_id])
+                ...
+                attn_modes.append("causal")</code></pre>
+</div>
+
+<p>
+入力を <code>[BOS] + text_ids</code>、ラベルを <code>text_ids + [EOS]</code> と置くことで、
+<strong>1 個ずらした次トークン予測</strong>がインデックスの操作だけで表現されています
+(モデル側で <code>logits[:-1]</code> と <code>labels[1:]</code> をずらす処理は要りません)。
+</p>
+
+<div class="codeblock">
+<div class="codehead"><span class="path">data/data_utils.py</span> L168–177 — サンプル長による重み
+<a href="https://github.com/ByteDance-Seed/Bagel/blob/a2fa77dd8caeefc41e6607ae0ec17408d3f4ee9f/data/data_utils.py#L168-L177" target="_blank" rel="noopener">GitHub ↗</a></div>
+<pre><code class="language-python">def len2weight(x, loss_reduction='square'):
+    if x == 0:
+        return x
+    if loss_reduction == 'token':
+        return 1                    # トークン平均(長い応答が支配的になる)
+    if loss_reduction == 'sample':
+        return 1 / x                # サンプル平均(短い応答が支配的になる)
+    if loss_reduction == 'square':
+        return 1 / (x ** 0.5)       # ★ 既定: その中間
+    raise NotImplementedError(loss_reduction)</code></pre>
+</div>
+<p>
+長い応答も短い応答も公平に扱うため、\(1/\sqrt{L}\) で重み付けします
+(<code>ce_loss_reweighting=True</code> のときだけ有効。既定は <code>False</code>)。
+</p>
+
+<h2 id="losses">損失の合成 — 数式とコードの対応</h2>
+<p>
+学習ループでの合成は、これ以上ないほど単純です。
+</p>
+
+<div class="codeblock">
+<div class="codehead"><span class="path">train/pretrain_unified_navit.py</span> L695–727
+<a href="https://github.com/ByteDance-Seed/Bagel/blob/a2fa77dd8caeefc41e6607ae0ec17408d3f4ee9f/train/pretrain_unified_navit.py#L695-L727" target="_blank" rel="noopener">GitHub ↗</a></div>
+<pre><code class="language-python">        loss = 0
+        ce = loss_dict["ce"]
+        if ce is not None:
+            total_ce_tokens = torch.tensor(len(data['ce_loss_indexes']), device=device)
+            dist.all_reduce(total_ce_tokens, op=dist.ReduceOp.SUM)     # ← 全 GPU で正規化を揃える
+            if training_args.ce_loss_reweighting:
+                ce = ce * ce_loss_weights
+                total_ce_loss_weights = ce_loss_weights.sum()
+                dist.all_reduce(total_ce_loss_weights, op=dist.ReduceOp.SUM)
+                ce = ce.sum() * dist.get_world_size() / total_ce_loss_weights
+            else:
+                ce = ce.sum() * dist.get_world_size() / total_ce_tokens
+            loss = loss + ce * training_args.ce_weight                 # 既定 1.0
+        ...
+        if training_args.visual_gen:
+            mse = loss_dict["mse"]
+            total_mse_tokens = torch.tensor(len(data['mse_loss_indexes']), device=device)
+            dist.all_reduce(total_mse_tokens, op=dist.ReduceOp.SUM)
+            mse = mse.mean(dim=-1).sum() * dist.get_world_size() / total_mse_tokens
+            loss = loss + mse * training_args.mse_weight               # 既定 1.0
+
+        loss = loss / training_args.gradient_accumulation_steps
+        loss.backward()</code></pre>
+</div>
+
+<table>
+  <tr><th>数式</th><th>コード</th><th>備考</th></tr>
+  <tr>
+    <td>\(\mathcal{L}_{\text{CE}}\)</td>
+    <td><code>F.cross_entropy(lm_head(h[ce_idx]), labels)</code></td>
+    <td>テキストと(理屈上は)特殊トークンの予測</td>
+  </tr>
+  <tr>
+    <td>\(\mathcal{L}_{\text{MSE}}\)</td>
+    <td><code>(llm2vae(h[mse_idx]) - (noise - clean))**2</code></td>
+    <td>チャネル方向に平均 → トークン方向に平均</td>
+  </tr>
+  <tr>
+    <td>\(\lambda_{\text{ce}},\ \lambda_{\text{mse}}\)</td>
+    <td><code>ce_weight</code>, <code>mse_weight</code></td>
+    <td>コードの既定はどちらも <strong>1.0</strong>。<span style="color:#e07b1f">⚠️</span> ただし論文 Table 3 の学習レシピは <strong>0.25 : 1</strong></td>
+  </tr>
+  <tr>
+    <td>正規化</td>
+    <td><code>* world_size / total_*_tokens</code></td>
+    <td>GPU 間でトークン数が不均一でも、全体を 1 バッチとみなして平均が取れる</td>
+  </tr>
+</table>
+
+<div class="callout point">
+<span class="callout-title">「整合損失」が要らない</span>
+NExT-GPT は \(\|h_{\text{LLM}} - E_{\text{text}}(c)\|^2\)、CoDi-2 は
+\(\alpha\,\mathrm{MSE}(c_{\text{MLLM}}, C_x(x))\) という<strong>接着のための損失</strong>を持っていました。
+外部の生成器が期待する空間に、LLM の出力を「合わせにいく」項です。
+<br>
+BAGEL にはこれが<strong>1 つもありません</strong>。合わせるべき相手が居ないからです。
+MSE 損失は「生成器への入力を模倣する」ためではなく、
+<strong>生成そのもの</strong>のための損失になっています。
+</div>
+
+<h2 id="cfgdrop">CFG のためのドロップアウト</h2>
+<p>
+推論時に classifier-free guidance を使うには、
+<strong>学習時に「条件が無い状態」を経験させておく</strong>必要があります。
+BAGEL は条件の種類ごとに独立した確率を持ちます。
+</p>
+<table>
+  <tr><th>引数</th><th>コードの既定値</th><th>論文 §2.3</th><th>落とすもの</th><th>推論時の対応物</th></tr>
+  <tr><td><code>text_cond_dropout_prob</code></td><td>0.1</td><td>0.1</td><td>テキストブロックを丸ごとスキップ</td><td><code>cfg_text_scale</code></td></tr>
+  <tr><td><code>vit_cond_dropout_prob</code></td><td>0.3</td><td><strong>0.5</strong></td><td>ViT ブロックをスキップ</td><td rowspan="2"><code>cfg_img_scale</code></td></tr>
+  <tr><td><code>vae_cond_dropout_prob</code></td><td>0.3</td><td><strong>0.1</strong></td><td>条件用 clean VAE ブロックをスキップ</td></tr>
+</table>
+
+<div class="callout warn">
+<span class="callout-title">⚠️ 論文とコードで数字が食い違う</span>
+論文 §2.3 は
+“we randomly drop <strong>text, ViT, and clean VAE tokens</strong> with probabilities
+<strong>0.1, 0.5, and 0.1</strong>, respectively”
+と明記していますが、公開コードの既定値は ViT / VAE ともに <code>0.3</code> です。
+<br><br>
+差の意味は小さくありません。論文の設定では
+<strong>ViT(意味)を落とす確率が VAE(画素)の 5 倍</strong>で、
+「元画像の意味は無視するが画素は保つ」状況を重点的に経験させることになります。
+コードの 0.3 / 0.3 は両者を対等に扱う設定です。
+公開コードは学習レシピそのものではなく雛形として提供されているので、
+論文の再現を狙うなら <code>--vit-cond-dropout-prob 0.5 --vae-cond-dropout-prob 0.1</code> を明示するのが安全です。
+</div>
+
+<p>
+実装では単に <code>continue</code> でブロックを列から外すだけですが、
+<code>curr_rope_id += 1</code> だけは実行して<strong>位置 ID は進めます</strong> ——
+落としても後続の位置がずれない、という配慮です。
+</p>
+
+<h2 id="video">動画と Diffusion Forcing</h2>
+<p>
+複数フレームを扱う場合、<code>_add_video</code> がフレームごとに項目を作りますが、
+<strong>1 つの split にまとめられます</strong>(先頭が <code>split_start</code>、末尾が <code>split_end</code>)。
+</p>
+<div class="codeblock">
+<div class="codehead"><span class="path">data/interleave_datasets/interleave_t2i_dataset.py</span> L88–103(抜粋)
+<a href="https://github.com/ByteDance-Seed/Bagel/blob/a2fa77dd8caeefc41e6607ae0ec17408d3f4ee9f/data/interleave_datasets/interleave_t2i_dataset.py#L88-L103" target="_blank" rel="noopener">GitHub ↗</a></div>
+<pre><code class="language-python">    def _add_video(self, data, frames, frame_indexes, need_loss, need_vae, enable_cfg=True):
+        assert int(need_loss) + int(need_vae) == 1
+        if need_loss:
+            for idx, (image, frame_idx) in enumerate(zip(frames, frame_indexes)):
+                current_sequence_plan = {
+                    'type': 'vae_image', 'enable_cfg': 0, 'loss': 1, ...
+                    'split_start': idx == 0,
+                    'split_end': idx == len(frames) - 1,
+                }
+                if idx &lt; len(frame_indexes) - 1:
+                    current_sequence_plan['frame_delta'] = frame_indexes[idx + 1] - frame_idx</code></pre>
+</div>
+
+<div class="callout point">
+<span class="callout-title">論文 §2.3 が定める diffusion forcing</span>
+“For interleaved multi-image generation, we adopt the <strong>diffusion forcing</strong> strategy,
+which adds <strong>independent noise levels to different images</strong> and
+<strong>conditions each image on noisy representations of preceding images</strong>.
+Additionally, to enhance generation consistency, we randomly <strong>group</strong> consecutive images
+and apply <strong>full attention within each group</strong>.
+<strong>The noise level is the same inside each group.</strong>”
+</div>
+
+<p>
+この一段落を読んでからコードに戻ると、一見不可解だった 2 つの挙動がぴたりと説明できます。
+<strong>コードの「split」は、論文でいう「group」そのもの</strong>です。
+</p>
+
+<table>
+  <tr><th>コードの挙動</th><th>なぜそうなるか</th><th>論文での対応</th></tr>
+  <tr>
+    <td>動画 split の attn モードが <code>'noise'</code> ではなく <code>'full'</code> になる</td>
+    <td><code>attn_modes.append</code> は <code>split_start</code> のときだけ実行され、
+    先頭フレームには <code>frame_delta</code> が付くので
+    <code>'frame_delta' not in item.keys()</code> の条件を外れる</td>
+    <td>“apply <strong>full attention</strong> within each group”/
+    後続は<strong>ノイジーな表現を条件にする</strong>ので、隠してはいけない</td>
+  </tr>
+  <tr>
+    <td>同じ split 内のフレームが<strong>同じ時刻 \(t\)</strong> を共有する</td>
+    <td><code>timestep = np.random.randn()</code> が <code>split_start</code> のときだけ実行され、
+    2 フレーム目以降は直前の値を使い回す</td>
+    <td>“The noise level is <strong>the same inside each group</strong>”</td>
+  </tr>
+</table>
+
+<div class="callout point">
+<span class="callout-title">「独立なノイズレベル」はどの単位か</span>
+論文の “independent noise levels to different images” と
+“the noise level is the same inside each group” は一見矛盾して読めますが、
+<strong>独立なのは group 間、共有されるのは group 内</strong>と読むと整合します。
+コードもまさにそうなっており、<code>split_start</code> ごとに新しい \(t\) が引かれます。
+<br><br>
+つまり「1 枚ずつ違うノイズを載せる」のが極端側、「全部同じ」がもう一方の極端側で、
+<strong>group のサイズがその中間を連続的に調整するつまみ</strong>になっている、という設計です。
+論文が “randomly group” と書いているとおり、この分割はランダムに決まります
+(公開されている <code>_add_video</code> は 1 クリップを丸ごと 1 group にするので、
+ランダムなグループ分割そのものはリリースされたデータコードには含まれていません)。
+</div>
+
+<p>
+なお <code>frame_delta</code> は RoPE の位置 ID を<strong>実際のフレーム間隔だけ進める</strong>のに使われます
+(<code>curr_rope_id += item['frame_delta']</code>)。
+飛ばしてサンプリングしたフレーム列でも、時間的な距離が位置符号に反映されます。
+</p>
+
+<h2 id="reasoning">Think モードを支える推論拡張データ</h2>
+<p>
+<a href="inference.html#think">生成編</a>で見る「まず考えてから描く」モードは、
+専用に作られた <strong>50 万件の推論拡張データ</strong>によって学習されます(論文 §3.3.4)。
+著者の仮説は明快で、
+<strong>「画像生成の前に言語で推論させると、視覚的な目標が明確になり計画が改善するのではないか」</strong>。
+</p>
+<table>
+  <tr><th>カテゴリ</th><th>作り方</th></tr>
+  <tr>
+    <td><strong>Text-to-Image</strong></td>
+    <td>まず<strong>曖昧で短い</strong>クエリを人手で用意し、in-context learning で Qwen2.5-72B に
+    「クエリ・生成指針・詳細プロンプト」の組を量産させる。詳細プロンプトを FLUX.1-dev に渡して目標画像を作り、
+    <em>(クエリ, 推論トレース, 画像)</em> の三つ組にする</td>
+  </tr>
+  <tr>
+    <td><strong>Free-form image manipulation</strong></td>
+    <td>元画像・目標画像・ユーザクエリを VLM に与え、DeepSeek-R1 が書いた推論トレースを手本として
+    推論文を生成させる。素材は OmniEdit などの編集データと、
+    <strong>動画 interleaved データ</strong>(大きな動き・視点変化・人物の相互作用が自然に含まれる)から取る</td>
+  </tr>
+  <tr>
+    <td><strong>Conceptual edits</strong></td>
+    <td>「物体をデザインスケッチに変換する」のような、画素の局所変更では済まない高次の変換。
+    web interleaved データから画像対を選び、VLM の 3 段パイプライン
+    (①もっともらしい入出力対を選ぶ → ②対応する質問文を作る → ③品質と整合性を審査して捨てる)で QA を構築する</td>
+  </tr>
+</table>
+<p>
+推論トレースの長さには上限が課されていて、free-form manipulation では
+<strong>「60 トークン程度かそれ以下」</strong>、conceptual edits では
+<strong>「200 トークン程度かそれ以下」</strong>と、生成用プロンプトの中で明示的に指示されています
+(論文 Table 11–13)。長く語らせるのではなく、
+<strong>「何を変え、何を保つか」を短く言い切らせる</strong>のが狙いだと読めます。
+</p>
+<div class="callout point">
+<span class="callout-title">推論トレースの中身は「差分の言語化」</span>
+論文が例示するプロンプトは、VLM に対してこう指示しています ——
+“The reasoning/analysis should include <strong>what should be changed</strong> in the answer image
+compared to the question image and <strong>what should be kept the same</strong>.
+The reasoning should highlight that <strong>the input image structure and layout should be kept the same</strong>.”
+<br><br>
+つまり教えているのは推論一般ではなく、<strong>編集タスク特有の「差分の記述」</strong>です。
+これが <a href="inference.html#think">think モード</a>で
+「文脈に足される計画」の正体になります。
+</div>
+
+<h2 id="packing">シーケンスパッキング — バッチの正体</h2>
+<p>
+BAGEL の「バッチ」は、いわゆる <code>(B, L, D)</code> のテンソルではありません。
+<strong>複数サンプルを 1 本に連結した長い列 1 本</strong>で、
+サンプル境界は <code>sample_lens</code> と attention マスクの <code>sample_mask</code> が守ります。
+</p>
+
+<div class="codeblock">
+<div class="codehead"><span class="path">data/dataset_base.py</span> L284–304(抜粋)— 詰め方
+<a href="https://github.com/ByteDance-Seed/Bagel/blob/a2fa77dd8caeefc41e6607ae0ec17408d3f4ee9f/data/dataset_base.py#L284-L304" target="_blank" rel="noopener">GitHub ↗</a></div>
+<pre><code class="language-python">            if sequence_status['curr'] + num_tokens &gt; self.max_num_tokens:
+                if len(buffer) &lt; self.max_buffer_size and not sample_from_buffer:
+                    buffer.append(sample)          # 入りきらないサンプルは持ち越す
+                else:
+                    ...
+                    yield data
+                    sequence_status = self.set_sequence_status()
+                continue
+
+            sequence_status = self.pack_sequence(sample, sequence_status)
+            ...
+            if sequence_status['curr'] &gt;= self.expected_num_tokens:
+                data = self.to_tensor(sequence_status)
+                yield data                          # 目標トークン数に達したら送り出す</code></pre>
+</div>
+<p>
+既定では <code>expected_num_tokens</code> に達したら送り出し、
+<code>max_num_tokens</code> を超えそうならバッファに退避します。
+可変解像度・可変長のマルチモーダルデータで GPU を遊ばせないための工夫で、
+<strong>「画像 4096 トークン + 短いキャプション」と「テキストだけ 200 トークン」が同じ列に同居</strong>します。
+</p>
+
+<div class="callout warn">
+<span class="callout-title">⚠️ 公開データコードでは使われていないフック</span>
+<code>sequence_plan</code> には <code>special_token_loss</code> / <code>special_token_label</code> という項目があり、
+パッカー側は<strong><code>&lt;|im_end|&gt;</code> や <code>&lt;|vision_end|&gt;</code> の位置にも CE 損失を置けるように書かれています</strong>。
+これは「いま画像を出すべきか、テキストを続けるべきか」をモデル自身に学ばせるための仕掛けに見えますが、
+公開されている 4 つのデータセット実装ではすべて <code>special_token_loss: 0</code> 固定で、
+<strong>実際には一度も有効になりません</strong>。
+公開コードの推論側も、画像を出すかどうかは呼び出し側が決める設計(<code>interleave_inference</code> の
+<code>understanding_output</code> フラグ)になっており、両者は整合しています。
+</div>
+
+<h2 id="infra">学習インフラまわり(参考)</h2>
+<ul>
+  <li><strong>FSDP</strong> — <code>HYBRID_SHARD</code> が既定。ノード内シャード + ノード間レプリカ</li>
+  <li><strong>EMA</strong> — 減衰 0.9999 のモデル平均を別途保持。fine-tuning では
+  <code>--finetune-from-ema True</code> で EMA 側から再開できる</li>
+  <li><strong>bf16 autocast</strong> — VAE のエンコードは <code>torch.no_grad()</code> の中で毎ステップ実行
+  (潜在をキャッシュせず、その場で計算する)</li>
+  <li><strong>FlexAttention</strong> — <code>use_flex=True</code> のとき、疎ブロックマスクを
+  <code>create_block_mask(..., BLOCK_SIZE=128, _compile=True)</code> でコンパイルして使う</li>
+  <li><strong>凍結フラグ</strong> — <code>freeze_llm</code> / <code>freeze_vit</code> / <code>freeze_vae</code> は
+  既定で <code>False / False / True</code>。さらに <code>freeze_und</code> を立てると、
+  MoT の理解側だけを <code>detach()</code> して<strong>生成側だけを学習する</strong>ことができる
+  (<code>PackedAttentionMoT.forward_train</code> の中に <code>if self.config.freeze_und</code> が散在している)</li>
+</ul>
+
+<nav class="pager">
+  <a href="architecture.html"><span class="dir">← 前へ</span><span class="title">1. アーキテクチャ詳解</span></a>
+  <a class="next" href="inference.html"><span class="dir">次へ →</span><span class="title">3. 生成プロセス</span></a>
+</nav>
+
+</main>
+
+<footer class="site-footer">
+  <p>引用コード: <a href="https://github.com/ByteDance-Seed/Bagel/tree/a2fa77dd8caeefc41e6607ae0ec17408d3f4ee9f" target="_blank" rel="noopener">ByteDance-Seed/Bagel</a>(Apache-2.0)/
+  論文: <a href="https://arxiv.org/abs/2505.14683" target="_blank" rel="noopener">Emerging Properties in Unified Multimodal Pretraining</a></p>
+</footer>
+
+<script>
+MathJax = { tex: { inlineMath: [['\\(', '\\)']], displayMath: [['$$', '$$']] } };
+</script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js" async></script>
+<script src="assets/diagram-controls.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-core.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-python.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-yaml.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-bash.min.js"></script>
+</body>
+</html>

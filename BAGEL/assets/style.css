@@ -1,0 +1,288 @@
+/* ===== BAGEL explanation pages — shared styles =====
+   (NExT-GPT / CoDi-2 トピックの assets/style.css と同一。トピックごとに自己完結させる方針) */
+:root {
+  --bg: #f7f8fb;
+  --fg: #1c2333;
+  --muted: #5b6478;
+  --accent: #3556d4;
+  --accent-soft: #e5eafc;
+  --green: #1e9e6a;
+  --green-soft: #e0f5ec;
+  --orange: #e07b1f;
+  --orange-soft: #fdeeda;
+  --red: #d43d51;
+  --red-soft: #fbe4e8;
+  --purple: #7b46c9;
+  --purple-soft: #efe6fb;
+  --card-bg: #ffffff;
+  --border: #dde2ee;
+  --code-bg: #20242f;
+  --radius: 12px;
+}
+
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; scroll-padding-top: 4.2rem; }
+
+body {
+  margin: 0;
+  font-family: "Hiragino Sans", "Noto Sans CJK JP", "Noto Sans JP", "Yu Gothic UI", "Meiryo", sans-serif;
+  background: var(--bg);
+  color: var(--fg);
+  line-height: 1.95;
+}
+
+/* ---------- top nav ---------- */
+.topnav {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  gap: 1.1rem;
+  padding: 0.55rem 1.2rem;
+  background: rgba(28, 35, 51, 0.97);
+  color: #e8ecfa;
+  font-size: 0.9rem;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+.topnav a { color: #c6d2f5; text-decoration: none; padding: 0.15rem 0.2rem; }
+.topnav a:hover { color: #fff; }
+.topnav a.current { color: #fff; font-weight: 700; border-bottom: 2px solid #7b96f0; }
+.topnav .home-link { font-weight: 700; color: #fff; }
+.topnav .sep { color: #55607e; }
+
+/* ---------- page header ---------- */
+.page-header {
+  background: linear-gradient(160deg, #1c2333 0%, #2a3a6e 60%, #3556d4 100%);
+  color: #fff;
+  padding: 3rem 1.5rem 2.6rem;
+  text-align: center;
+}
+.page-header h1 { margin: 0 0 0.5rem; font-size: 2rem; letter-spacing: 0.03em; }
+.page-header p { margin: 0 auto; max-width: 46em; color: #c6d2f5; font-size: 0.98rem; }
+
+/* ---------- article layout ---------- */
+.article {
+  max-width: 920px;
+  margin: 0 auto;
+  padding: 2.2rem 1.4rem 5rem;
+}
+.article h2 {
+  font-size: 1.45rem;
+  margin: 3rem 0 1rem;
+  border-left: 5px solid var(--accent);
+  padding-left: 0.6rem;
+}
+.article h2:first-of-type { margin-top: 1.4rem; }
+.article h3 {
+  font-size: 1.15rem;
+  margin: 2.2rem 0 0.8rem;
+  padding-bottom: 0.25rem;
+  border-bottom: 2px solid var(--accent-soft);
+}
+.article p { margin: 0.9rem 0; }
+.article ul, .article ol { padding-left: 1.6em; }
+.article li { margin: 0.35rem 0; }
+.article a { color: var(--accent); }
+code {
+  font-family: "SFMono-Regular", Consolas, "Cascadia Code", Menlo, monospace;
+  font-size: 0.88em;
+  background: #e9ecf5;
+  border-radius: 5px;
+  padding: 0.1em 0.35em;
+  overflow-wrap: anywhere; /* long paths/identifiers wrap instead of widening the page */
+}
+pre code { background: transparent; padding: 0; font-size: 0.83rem; line-height: 1.65; }
+
+/* ---------- code blocks ---------- */
+.codeblock {
+  margin: 1.4rem 0;
+  border-radius: var(--radius);
+  overflow: hidden;
+  box-shadow: 0 4px 18px rgba(28, 35, 51, 0.15);
+}
+.codeblock .codehead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem;
+  background: #2c3140;
+  color: #aab4d0;
+  font-size: 0.78rem;
+  padding: 0.45rem 1rem;
+  font-family: Consolas, Menlo, monospace;
+}
+.codeblock .codehead .path { color: #8fb5ff; font-weight: 700; }
+.codeblock .codehead a { color: #7fd0a5; text-decoration: none; margin-left: auto; }
+.codeblock .codehead a:hover { text-decoration: underline; }
+.codeblock pre {
+  margin: 0 !important;
+  border-radius: 0 !important;
+  background: var(--code-bg) !important;
+}
+.pseudo .codehead .path { color: #f0c674; }
+
+/* ---------- callouts ---------- */
+.callout {
+  border-radius: var(--radius);
+  padding: 1rem 1.2rem;
+  margin: 1.4rem 0;
+  border: 1px solid var(--border);
+  background: var(--card-bg);
+  font-size: 0.95rem;
+}
+/* 長い数式(MathJax の出力、および読み込み前の生 TeX)が
+   ページ全体を広げないよう、callout の中でスクロールさせる */
+.callout { overflow-x: auto; }
+.callout .callout-title { font-weight: 700; display: block; margin-bottom: 0.3rem; }
+.callout.point { border-left: 5px solid var(--accent); }
+.callout.point .callout-title { color: var(--accent); }
+.callout.math { border-left: 5px solid var(--purple); }
+.callout.math .callout-title { color: var(--purple); }
+.callout.warn { border-left: 5px solid var(--orange); }
+.callout.warn .callout-title { color: var(--orange); }
+
+/* ---------- figures ---------- */
+figure.diagram {
+  margin: 1.8rem 0;
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1.2rem 1rem 0.8rem;
+  overflow-x: auto;
+}
+figure.diagram svg { display: block; margin: 0 auto; max-width: 100%; height: auto; }
+/* keep diagram text readable on narrow viewports: the figure scrolls instead of shrinking */
+figure.diagram svg { min-width: 720px; }
+figure.diagram figcaption {
+  margin-top: 0.7rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+  text-align: center;
+  line-height: 1.7;
+}
+.diagram-controls {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin: 0 0 0.55rem;
+}
+.diagram-controls button {
+  border: 1px solid var(--border);
+  background: #fff;
+  color: var(--fg);
+  border-radius: 8px;
+  padding: 0.35rem 0.65rem;
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+.diagram-controls button:hover { box-shadow: 0 2px 7px rgba(28, 35, 51, 0.12); }
+.diagram-controls button:disabled { opacity: 0.55; cursor: not-allowed; box-shadow: none; }
+figure.diagram.is-paused svg * { animation-play-state: paused !important; }
+
+/* ---------- tables ---------- */
+.article table {
+  border-collapse: collapse;
+  margin: 1.2rem 0;
+  width: 100%;
+  font-size: 0.9rem;
+  background: var(--card-bg);
+  /* on narrow viewports the table scrolls inside itself instead of widening the page */
+  display: block;
+  overflow-x: auto;
+}
+.article th, .article td {
+  border: 1px solid var(--border);
+  padding: 0.5rem 0.8rem;
+  text-align: left;
+  vertical-align: top;
+}
+.article th { background: var(--accent-soft); }
+.article td code { white-space: nowrap; }
+
+/* ---------- prev/next pager ---------- */
+.pager {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-top: 4rem;
+  flex-wrap: wrap;
+}
+.pager a {
+  flex: 1 1 240px;
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.9rem 1.2rem;
+  text-decoration: none;
+  color: inherit;
+  transition: box-shadow 0.15s ease;
+}
+.pager a:hover { box-shadow: 0 6px 18px rgba(28,35,51,0.12); }
+.pager .dir { display: block; font-size: 0.78rem; color: var(--muted); }
+.pager .title { font-weight: 700; color: var(--accent); }
+.pager a.next { text-align: right; }
+
+/* ---------- chapter cards (overview page) ---------- */
+.chapter-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 1.1rem;
+  margin: 1.4rem 0;
+}
+.chapter-card {
+  display: block;
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1.1rem 1.2rem;
+  text-decoration: none;
+  color: inherit;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+.chapter-card:hover { transform: translateY(-3px); box-shadow: 0 8px 22px rgba(28,35,51,0.13); }
+.chapter-card .num { font-size: 0.75rem; font-weight: 700; color: var(--accent); }
+.chapter-card h3 { margin: 0.2rem 0 0.4rem; border: none; padding: 0; font-size: 1.05rem; }
+.chapter-card p { margin: 0; font-size: 0.85rem; color: var(--muted); }
+
+/* ---------- footer ---------- */
+.site-footer {
+  text-align: center;
+  padding: 2rem 1rem 3rem;
+  color: var(--muted);
+  font-size: 0.83rem;
+}
+.site-footer a { color: var(--accent); }
+
+/* ---------- SVG diagram shared parts ---------- */
+.diagram text { font-family: "Hiragino Sans", "Noto Sans CJK JP", "Noto Sans JP", sans-serif; }
+.diagram .mono { font-family: Consolas, Menlo, monospace; }
+
+/* flowing dash animation for "data flow" edges */
+.flow-edge {
+  stroke-dasharray: 7 5;
+  animation: flow-dash 1.1s linear infinite;
+}
+@keyframes flow-dash { to { stroke-dashoffset: -12; } }
+
+/* soft pulse for highlighted nodes */
+.pulse {
+  animation: pulse-glow 2.4s ease-in-out infinite;
+  transform-origin: center;
+  transform-box: fill-box;
+}
+@keyframes pulse-glow {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
+
+/* respect reduced-motion: disable animations entirely.
+   Elements whose base state is invisible get explicit static states
+   in each page's own stylesheet under the same media query. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}
