@@ -1,0 +1,631 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Navigation World Models 図解 — 行動で操れる映像生成器を「計画」に使う</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🧭</text></svg>">
+<link rel="stylesheet" href="assets/style.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/themes/prism-tomorrow.min.css">
+<style>
+/* ===== overview diagram: stage highlight cycle (14s) ===== */
+/* `backwards` is required: without it a delayed group keeps its base opacity (1)
+   until its delay elapses, so the whole first cycle shows every stage highlighted. */
+@keyframes ov-bright {
+  0%, 16%, 100% { opacity: 0.45; }
+  5%, 11% { opacity: 1; }
+}
+#ov-diagram .s1 { animation: ov-bright 14s ease-in-out infinite backwards; animation-delay: 0s; }
+#ov-diagram .s2 { animation: ov-bright 14s ease-in-out infinite backwards; animation-delay: 2s; }
+#ov-diagram .s3 { animation: ov-bright 14s ease-in-out infinite backwards; animation-delay: 4s; }
+#ov-diagram .s4 { animation: ov-bright 14s ease-in-out infinite backwards; animation-delay: 6s; }
+#ov-diagram .s5 { animation: ov-bright 14s ease-in-out infinite backwards; animation-delay: 8s; }
+#ov-diagram .s6 { animation: ov-bright 14s ease-in-out infinite backwards; animation-delay: 10s; }
+#ov-diagram .s7 { animation: ov-bright 14s ease-in-out infinite backwards; animation-delay: 12s; }
+
+/* ===== action diagram: the agent walks the trajectory (12s, 4 steps) ===== */
+#act-fig .a1 { animation: act-turn 12s ease-in-out infinite backwards; }
+#act-fig .a2 { animation: act-turn 12s ease-in-out infinite backwards; animation-delay: 3s; }
+#act-fig .a3 { animation: act-turn 12s ease-in-out infinite backwards; animation-delay: 6s; }
+#act-fig .a4 { animation: act-turn 12s ease-in-out infinite backwards; animation-delay: 9s; }
+@keyframes act-turn {
+  0%, 2% { opacity: 0.22; }
+  6%, 23% { opacity: 1; }
+  27%, 100% { opacity: 0.22; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #ov-diagram .s1, #ov-diagram .s2, #ov-diagram .s3, #ov-diagram .s4,
+  #ov-diagram .s5, #ov-diagram .s6, #ov-diagram .s7 { opacity: 1; }
+  #act-fig .a1, #act-fig .a2, #act-fig .a3, #act-fig .a4 { opacity: 1; }
+}
+</style>
+</head>
+<body>
+
+<nav class="topnav">
+  <a class="home-link" href="../index.html">Visual Explanation</a><span class="sep">/</span>
+  <a href="./index.html" class="current">NWM 概要</a>
+  <a href="architecture.html">1. アーキテクチャ</a>
+  <a href="training.html">2. 学習プロセス</a>
+  <a href="inference.html">3. 生成と計画</a>
+  <a href="evaluation.html">4. 評価と実験結果</a>
+</nav>
+
+<header class="page-header">
+  <h1>Navigation World Models 図解</h1>
+  <p>「もしこう動いたら、次に何が見えるか」を予測する行動条件付き映像生成モデル
+  (<em>Navigation World Models</em>, Bar+, CVPR 2025 Oral)。
+  <strong>方策(policy)を学習せずに、世界モデルの中で軌道を試し打ちして最良の一本を選ぶ</strong>という設計を、
+  実装コードの引用とアニメーション図解で読み解きます。</p>
+</header>
+
+<main class="article">
+
+<h2 id="what">NWM とは</h2>
+<p>
+<a href="https://github.com/facebookresearch/nwm/" target="_blank" rel="noopener">Navigation World Model(NWM)</a>
+(Bar, Zhou, Tran, Darrell, LeCun / FAIR at Meta・NYU・BAIR, CVPR 2025 Oral)は、
+<strong>過去の観測画像と移動コマンドを受け取り、その行動を取ったあとの見えを合成する映像生成モデル</strong>です。
+論文の要約はこう始まります。
+</p>
+<div class="callout point">
+<span class="callout-title">論文 Abstract より</span>
+“We introduce a <strong>Navigation World Model (NWM)</strong>, a controllable video generation model that
+predicts future visual observations based on past observations and navigation actions. …
+In familiar environments, NWM can <strong>plan navigation trajectories by simulating them and
+evaluating whether they achieve the desired goal</strong>.”
+</div>
+
+<p>
+ここで肝心なのは「映像生成モデルを作りました」ではなく、
+<strong>それを行動決定そのものに使う</strong>という点です。
+NWM は行動を出力しません。<em>行動を入力として受け取り、その結果を見せる</em>だけです。
+にもかかわらず、ナビゲーションのベンチマークで既存の方策(GNM・NoMaD)を上回ります。
+</p>
+
+<div class="callout point">
+<span class="callout-title">NWM の一行要約</span>
+NWM は<strong>方策(policy)ではなくシミュレータ</strong>です。
+「どう動くべきか」は学習していません。学習しているのは
+<strong>「こう動いたらこう見える」</strong>だけ。
+行動の決定は、<strong>推論時に軌道候補を大量に生成してモデルの中で試し、
+ゴール画像に一番近い結果になった一本を選ぶ</strong>という最適化に置き換えられます。
+</div>
+
+<h2 id="background">研究背景 — なぜ「方策を学ぶ」だけでは足りないのか</h2>
+<p>
+論文の Introduction は、既存の視覚ナビゲーション方策の限界を 2 点に絞って挙げています。
+どちらも「教師あり学習で方策そのものを固めてしまった」ことの帰結です。
+</p>
+
+<table>
+  <tr><th>既存方策の限界(論文 §1)</th><th>何が困るか</th><th>NWM ならどうなるか</th></tr>
+  <tr>
+    <td><strong>“hard-coded” である</strong><br>
+    学習後に新しい制約を入れられない</td>
+    <td>「左折禁止」「崖のそばを通るな」のような要求が後から出てきても、
+    再学習しない限り反映できない</td>
+    <td>制約は<strong>探索する行動集合を絞るだけ</strong>で表現できる。
+    モデルは触らない(<a href="inference.html#constraint">生成と計画編</a>)</td>
+  </tr>
+  <tr>
+    <td><strong>計算資源を動的に配分できない</strong><br>
+    難しい問題でも 1 回の順伝播で終わる</td>
+    <td>簡単な直進も、複雑な迂回も、同じ計算量で答えを出してしまう</td>
+    <td>探索するサンプル数・最適化の反復回数を<strong>その場で増やせる</strong>。
+    実際に候補 16 本より 32 本のほうが良い結果になる(<a href="evaluation.html#nav">評価編 Table 2</a>)</td>
+  </tr>
+</table>
+
+<p>
+そして論文は、人間が計画するときの姿を引き合いに出します ——
+“When human agents plan, they often <strong>imagine their future trajectories</strong>
+considering constraints and counterfactuals.”
+想像してから動く。この「想像」の部分を担うのが世界モデルです。
+</p>
+
+<div class="callout math">
+<span class="callout-title">世界モデル(world model)という枠組み</span>
+方策 \(\pi(a \mid s)\) が「状態から行動」を写すのに対し、
+世界モデル \(F(s_{\tau+1} \mid s_\tau, a_\tau)\) は<strong>「状態と行動から次の状態」</strong>を写します。
+方向が違うだけに見えますが、決定的な違いがあります ——
+<strong>世界モデルは行動を選びません</strong>。
+だから「どの行動を選ぶか」の基準を<strong>推論時に自由に差し替えられる</strong>。
+NWM の制約付き計画も、外部方策のランキングも、すべてこの性質から出ています。
+</div>
+
+<h2 id="related">関連研究 — NWM がどこに立っているか</h2>
+<p>
+論文 §2 は 4 つの系譜に触れます。NWM は<strong>そのすべての交差点</strong>に置かれています。
+</p>
+
+<table>
+  <tr><th>系譜</th><th>代表的な仕事(論文の引用)</th><th>NWM との関係</th></tr>
+  <tr>
+    <td><strong>ゴール条件付き視覚ナビゲーション</strong></td>
+    <td>GNM、NoMaD(拡散方策+時間距離目的関数)、Active Neural SLAM(ニューラル SLAM + 解析的プランナ)</td>
+    <td>比較対象であり、<strong>同時に協力相手</strong>。NoMaD が出した候補軌道を NWM が採点して選び直す使い方をする</td>
+  </tr>
+  <tr>
+    <td><strong>世界モデル / モデルベース RL</strong></td>
+    <td>Dreamer 系、DIAMOND、GameNGen(拡散でゲームエンジンを学ぶ)、Genie(潜在行動)</td>
+    <td>最も近い。ただし DIAMOND / GameNGen が<strong>1 つのゲーム環境</strong>を学ぶのに対し、
+    NWM は<strong>複数の環境・複数のロボット身体を 1 モデルで</strong>扱う。
+    タスク埋め込みや行動埋め込みで環境を切り替えたりはしない</td>
+  </tr>
+  <tr>
+    <td><strong>映像生成</strong></td>
+    <td>Sora、MovieGen、Lumiere、Stable Video Diffusion</td>
+    <td>技術基盤(潜在拡散 + Transformer)は共有。
+    違いは条件が<strong>テキストではなく数値の移動コマンド</strong>である点</td>
+  </tr>
+  <tr>
+    <td><strong>新規視点合成(NVS)</strong></td>
+    <td>NeRF、Zero-1-2-3、GDC</td>
+    <td>「カメラを動かした先の見えを作る」という点で発想が近い。
+    ただし NWM は<strong>3D 表現や 3D 事前知識をいっさい使わない</strong>。
+    自然動画から時間的ダイナミクスごと学ぶ</td>
+  </tr>
+</table>
+
+<div class="callout point">
+<span class="callout-title">NWM を一言で位置づけるなら</span>
+<strong>「NVS を 3D 表現なしで、動画データから、複数身体・複数環境にまたがって学び、
+それを計画に使う」</strong> —— これが論文の主張する新規性です。
+実際、著者らは “unlike NVS approaches, our goal is to train a <strong>single model</strong> for navigation
+across diverse environments and model temporal dynamics from natural videos,
+<strong>without relying on 3D priors</strong>” と明記しています。
+</div>
+
+<h2 id="problem">問題設定 — 何を入力し、何を出力するのか</h2>
+<p>
+論文 §3.1 の定式化は驚くほど短いものです。
+</p>
+
+<div class="callout math">
+<span class="callout-title">論文 Eq. (1)</span>
+$$s_i = \mathrm{enc}_\theta(x_i) \qquad s_{\tau+1} \sim F_\theta(s_{\tau+1} \mid \mathbf{s}_\tau, a_\tau)$$
+\(x_i \in \mathbb{R}^{H \times W \times 3}\) は画像、\(\mathrm{enc}_\theta\) は<strong>事前学習済み VAE エンコーダ</strong>、
+\(\mathbf{s}_\tau = (s_\tau, \dots, s_{\tau-m})\) は<strong>直近 \(m\) フレーム分の潜在表現</strong>です。
+\(F_\theta\) が<strong>確率的</strong>な写像である(\(=\) ではなく \(\sim\))ことに注意 ——
+環境の不確実性をサンプリングで表現するために、拡散モデルが使われます。
+</div>
+
+<h3>行動 \(a\) は 3 つの数字 + 時間</h3>
+<p>
+行動 \(a_i = (u, \phi)\) は、\(u \in \mathbb{R}^2\)(前後・左右の移動)と
+\(\phi \in \mathbb{R}\)(ヨー回転角)です。
+論文はここに<strong>時間シフト \(k\)</strong> を足して \(a_\tau = (u, \phi, k)\) に拡張します。
+\(k\) は「何ステップ先(または前)を予測するか」を指定します。
+</p>
+<div class="callout math">
+<span class="callout-title">論文 Eq. (2) — 行動は「足し算」で合成できる</span>
+$$u_{\tau \to m} = \sum_{t=\tau}^{m} u_t \qquad \phi_{\tau \to m} = \sum_{t=\tau}^{m} \phi_t \bmod 2\pi$$
+時刻 \(\tau\) から \(m = \tau + k - 1\) までの行動は、<strong>単純な総和</strong>で 1 本の行動にまとめられます。
+これがあるおかげで、NWM は<strong>「1 フレーム先を 16 回」も「16 フレーム先を 1 回」も同じインタフェースで扱えます</strong>。
+実装では時間シフトを最大 <strong>±16 秒</strong>(4 FPS で ±64 フレーム)まで許しています。
+</div>
+
+<figure class="diagram" id="act-fig" data-cycle-ms="12000" data-step-count="4">
+<svg viewBox="0 0 900 412" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="行動の定義と時間シフトによる行動合成を示す図">
+  <defs>
+    <marker id="arrA" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#8a93ad"/>
+    </marker>
+  </defs>
+
+  <text x="20" y="26" font-size="13" font-weight="bold" fill="#5b6478">① 行動は「現在の向き」基準の相対量</text>
+  <g class="a1">
+    <line x1="110" y1="152" x2="110" y2="52" stroke="#c2c9db" stroke-width="1.5" stroke-dasharray="4 3"/>
+    <line x1="110" y1="152" x2="250" y2="152" stroke="#c2c9db" stroke-width="1.5" stroke-dasharray="4 3"/>
+    <text x="116" y="60" font-size="10" fill="#8a93ad">Δx(前後)</text>
+    <text x="196" y="168" font-size="10" fill="#8a93ad">Δy(左右)</text>
+    <circle cx="110" cy="152" r="9" fill="#3556d4"/>
+    <path d="M 110 152 L 110 122" stroke="#3556d4" stroke-width="2.5" marker-end="url(#arrA)"/>
+    <text x="100" y="140" font-size="10" text-anchor="end" fill="#3556d4">現在の向き</text>
+    <path d="M 110 152 L 216 106" stroke="#d43d51" stroke-width="2.5" marker-end="url(#arrA)"/>
+    <circle cx="222" cy="103" r="8" fill="#d43d51"/>
+    <text x="236" y="100" font-size="11" fill="#d43d51" font-weight="bold">目標の姿勢</text>
+    <text x="236" y="117" font-size="10" fill="#5b6478" class="mono">u = (Δx, Δy), φ = Δyaw</text>
+    <text x="20" y="200" font-size="10.5" fill="#5b6478">世界座標のまま渡すのではなく、</text>
+    <text x="20" y="217" font-size="10.5" fill="#5b6478">現在位置・現在ヨーで回した</text>
+    <text x="20" y="234" font-size="10.5" fill="#5b6478" font-weight="bold">局所座標に変換してから与える</text>
+    <text x="20" y="251" font-size="10" class="mono" fill="#7b46c9">misc.to_local_coords()</text>
+  </g>
+
+  <text x="360" y="26" font-size="13" font-weight="bold" fill="#5b6478">② 1 ステップずつの行動</text>
+  <g class="a2">
+    <circle cx="392" cy="150" r="7" fill="#8a93ad"/>
+    <circle cx="452" cy="132" r="7" fill="#8a93ad"/>
+    <circle cx="512" cy="128" r="7" fill="#8a93ad"/>
+    <circle cx="572" cy="100" r="7" fill="#8a93ad"/>
+    <path d="M 398 148 L 445 134" stroke="#8a93ad" stroke-width="2" marker-end="url(#arrA)"/>
+    <path d="M 459 131 L 505 129" stroke="#8a93ad" stroke-width="2" marker-end="url(#arrA)"/>
+    <path d="M 519 125 L 565 103" stroke="#8a93ad" stroke-width="2" marker-end="url(#arrA)"/>
+    <text x="404" y="176" font-size="10" class="mono" fill="#5b6478">a₀</text>
+    <text x="466" y="160" font-size="10" class="mono" fill="#5b6478">a₁</text>
+    <text x="528" y="152" font-size="10" class="mono" fill="#5b6478">a₂</text>
+    <text x="360" y="206" font-size="10.5" fill="#5b6478">映像としては 4 FPS で 1 フレームずつ進む</text>
+  </g>
+
+  <text x="360" y="240" font-size="13" font-weight="bold" fill="#d43d51">③ 総和すれば「まとめて 1 手」になる(Eq. 2)</text>
+  <g class="a3">
+    <circle cx="392" cy="300" r="7" fill="#d43d51"/>
+    <circle cx="572" cy="250" r="7" fill="#d43d51"/>
+    <path d="M 399 298 L 565 253" stroke="#d43d51" stroke-width="3" marker-end="url(#arrA)"/>
+    <text x="404" y="318" font-size="11" class="mono" fill="#d43d51" font-weight="bold">u = Σ uₜ, φ = Σ φₜ</text>
+    <text x="360" y="342" font-size="10.5" fill="#5b6478">3 手ぶんの行動を足して 1 本のベクトルにし、</text>
+    <text x="360" y="359" font-size="10.5" fill="#5b6478">時間シフト <tspan class="mono">k = 3</tspan> と一緒に渡すと</text>
+    <text x="360" y="376" font-size="10.5" fill="#d43d51" font-weight="bold">3 フレーム先の見えが 1 回の生成で出る</text>
+    <text x="360" y="396" font-size="10" class="mono" fill="#7b46c9">delta.unflatten(1,(-1,stride)).sum(2)</text>
+  </g>
+
+  <text x="646" y="240" font-size="13" font-weight="bold" fill="#1e9e6a">④ だから 2 通りの使い方ができる</text>
+  <g class="a4">
+    <rect x="646" y="252" width="234" height="60" rx="9" fill="#e0f5ec" stroke="#1e9e6a" stroke-width="1.8"/>
+    <text x="763" y="274" font-size="11.5" text-anchor="middle" fill="#1e9e6a" font-weight="bold">時間ジャンプ(1 発予測)</text>
+    <text x="763" y="294" font-size="10" text-anchor="middle" fill="#5b6478">k 秒ぶんを足して 1 回だけ生成</text>
+    <rect x="646" y="322" width="234" height="72" rx="9" fill="#fbe4e8" stroke="#d43d51" stroke-width="1.8"/>
+    <text x="763" y="344" font-size="11.5" text-anchor="middle" fill="#d43d51" font-weight="bold">自己回帰ロールアウト</text>
+    <text x="763" y="364" font-size="10" text-anchor="middle" fill="#5b6478">1 手ずつ生成し、出力を文脈に戻す</text>
+    <text x="763" y="382" font-size="10" text-anchor="middle" fill="#5b6478">= 計画に使えるシミュレータ</text>
+  </g>
+
+  <text x="646" y="60" font-size="11.5" fill="#5b6478">時間シフト <tspan class="mono">k</tspan> は</text>
+  <text x="646" y="78" font-size="11.5" fill="#5b6478">±64 フレーム(±16 秒)まで。</text>
+  <text x="646" y="96" font-size="11.5" fill="#5b6478">負の値も許されるので、</text>
+  <text x="646" y="114" font-size="11.5" fill="#d43d51" font-weight="bold">「過去に戻る」予測も学習される。</text>
+  <text x="646" y="142" font-size="11.5" fill="#5b6478">実装上は <tspan class="mono">goal_offset/128</tspan> に</text>
+  <text x="646" y="160" font-size="11.5" fill="#5b6478">正規化されて条件に入る</text>
+  <text x="646" y="178" font-size="11.5" fill="#5b6478">(<tspan class="mono">rel_t ∈ [-0.5, 0.5]</tspan>)。</text>
+</svg>
+<figcaption>
+行動の定義と、時間シフトによる行動合成。<strong>「行動は足し算で合成できる」</strong>という
+Eq. 2 の性質が、後段の 2 つの推論モード(<a href="inference.html">生成と計画編</a>)を丸ごと支えています。
+</figcaption>
+</figure>
+
+<div class="callout warn">
+<span class="callout-title">論文が自分で指摘する落とし穴 — 行動と時間の「もつれ」</span>
+時間 \(k\) と行動 \(a\) を両方与えると、<strong>片方だけを見て手を抜く</strong>危険があります ——
+“if reaching a specific location always occurs at a particular time, the model may learn to
+<strong>rely solely on time and ignore the subsequent actions</strong>, or vice versa”。
+<br><br>
+論文の対策は<strong>「1 つの状態に対して複数のゴールをサンプリングする」</strong>ことです。
+同じ出発点から、違う時刻・違う場所のゴールを 4 通り引くことで、
+「同じ場所に別の時刻に着く」という<strong>自然な反実仮想</strong>をバッチの中に作り出します。
+実際、ゴール数 1 → 4 で LPIPS が 0.312 → 0.296 に改善します
+(<a href="evaluation.html#ablation">評価編 Table 1</a>)。この仕組みは
+<a href="training.html#goals">学習編</a>でコードとともに追います。
+</div>
+
+<h2 id="overview">全体像 — 学習から計画まで</h2>
+<p>
+データの流れは
+「過去 4 フレームを VAE で潜在に落とす → CDiT が行動と時間で条件付けられながらノイズを除去する →
+VAE デコーダで画像に戻す → その出力を文脈に押し込んで次へ」
+です(図は自動でループ再生されます)。
+</p>
+
+<figure class="diagram" id="ov-diagram" data-cycle-ms="14000" data-step-count="7">
+<svg viewBox="0 0 960 560" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="NWM 全体のデータフローと計画ループの図">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#8a93ad"/>
+    </marker>
+  </defs>
+
+  <!-- ===== 1. inputs ===== -->
+  <g class="s1">
+    <text x="16" y="26" font-size="13" font-weight="bold" fill="#5b6478">入力: 過去 m フレーム</text>
+    <rect x="14" y="38" width="126" height="150" rx="10" fill="#f2f4fa" stroke="#c2c9db"/>
+    <rect x="24" y="50" width="106" height="28" rx="6" fill="#e9ecf5" stroke="#8a93ad"/>
+    <text x="77" y="69" font-size="11" text-anchor="middle">🖼️ x(τ−3)</text>
+    <rect x="24" y="84" width="106" height="28" rx="6" fill="#e9ecf5" stroke="#8a93ad"/>
+    <text x="77" y="103" font-size="11" text-anchor="middle">🖼️ x(τ−2)</text>
+    <rect x="24" y="118" width="106" height="28" rx="6" fill="#e9ecf5" stroke="#8a93ad"/>
+    <text x="77" y="137" font-size="11" text-anchor="middle">🖼️ x(τ−1)</text>
+    <rect x="24" y="152" width="106" height="28" rx="6" fill="#e5eafc" stroke="#3556d4" stroke-width="1.8"/>
+    <text x="77" y="171" font-size="11" text-anchor="middle" fill="#3556d4">🖼️ x(τ) 現在</text>
+    <text x="16" y="206" font-size="10.5" fill="#5b6478" class="mono">context_size = 4</text>
+  </g>
+
+  <!-- ===== 2. VAE encoder ===== -->
+  <g class="s2">
+    <rect x="160" y="72" width="120" height="80" rx="10" fill="#fff" stroke="#1e9e6a" stroke-width="2"/>
+    <text x="220" y="96" font-size="12.5" font-weight="bold" text-anchor="middle" fill="#1e9e6a">VAE encoder</text>
+    <text x="220" y="114" font-size="9.5" text-anchor="middle" class="mono" fill="#5b6478">sd-vae-ft-ema 🧊</text>
+    <text x="220" y="130" font-size="9.5" text-anchor="middle" fill="#5b6478">224² → 28×28×4</text>
+    <text x="220" y="145" font-size="9.5" text-anchor="middle" fill="#5b6478">×0.18215 でスケール</text>
+  </g>
+
+  <!-- ===== 3. tokens ===== -->
+  <g class="s3">
+    <text x="300" y="34" font-size="12.5" font-weight="bold" fill="#5b6478">パッチ化(patch=2)</text>
+    <rect x="300" y="44" width="24" height="24" rx="4" fill="#e9ecf5" stroke="#8a93ad"/>
+    <rect x="328" y="44" width="24" height="24" rx="4" fill="#e9ecf5" stroke="#8a93ad"/>
+    <rect x="356" y="44" width="24" height="24" rx="4" fill="#e9ecf5" stroke="#8a93ad"/>
+    <rect x="384" y="44" width="24" height="24" rx="4" fill="#e9ecf5" stroke="#8a93ad"/>
+    <text x="418" y="61" font-size="11" fill="#5b6478">…</text>
+    <text x="300" y="88" font-size="10" fill="#5b6478">文脈 4 フレーム × 196 = <tspan font-weight="bold">784 トークン</tspan></text>
+    <rect x="300" y="98" width="24" height="24" rx="4" fill="#fbe4e8" stroke="#d43d51" stroke-dasharray="3 2"/>
+    <rect x="328" y="98" width="24" height="24" rx="4" fill="#fbe4e8" stroke="#d43d51" stroke-dasharray="3 2"/>
+    <rect x="356" y="98" width="24" height="24" rx="4" fill="#fbe4e8" stroke="#d43d51" stroke-dasharray="3 2"/>
+    <text x="392" y="115" font-size="11" fill="#d43d51">…</text>
+    <text x="300" y="142" font-size="10" fill="#d43d51">生成対象 1 フレーム = <tspan font-weight="bold">196 トークン</tspan>(ノイズ入り)</text>
+  </g>
+
+  <!-- ===== 4. conditioning ===== -->
+  <g class="s4">
+    <rect x="14" y="248" width="270" height="122" rx="11" fill="#efe6fb" stroke="#7b46c9" stroke-width="2"/>
+    <text x="149" y="272" font-size="12.5" font-weight="bold" text-anchor="middle" fill="#7b46c9">条件ベクトル ξ = ψa + ψk + ψt</text>
+    <rect x="28" y="284" width="76" height="34" rx="7" fill="#fff" stroke="#7b46c9"/>
+    <text x="66" y="299" font-size="10" text-anchor="middle" fill="#7b46c9" font-weight="bold">ψa</text>
+    <text x="66" y="312" font-size="9" text-anchor="middle" fill="#5b6478">行動 (u, φ)</text>
+    <rect x="112" y="284" width="76" height="34" rx="7" fill="#fff" stroke="#7b46c9"/>
+    <text x="150" y="299" font-size="10" text-anchor="middle" fill="#7b46c9" font-weight="bold">ψk</text>
+    <text x="150" y="312" font-size="9" text-anchor="middle" fill="#5b6478">時間シフト k</text>
+    <rect x="196" y="284" width="76" height="34" rx="7" fill="#fff" stroke="#7b46c9"/>
+    <text x="234" y="299" font-size="10" text-anchor="middle" fill="#7b46c9" font-weight="bold">ψt</text>
+    <text x="234" y="312" font-size="9" text-anchor="middle" fill="#5b6478">拡散 timestep</text>
+    <text x="149" y="338" font-size="10" text-anchor="middle" fill="#5b6478">各スカラーを sin-cos 特徴 → 2 層 MLP</text>
+    <text x="149" y="356" font-size="10.5" text-anchor="middle" fill="#7b46c9" font-weight="bold">3 つを足すだけ。AdaLN に流す</text>
+  </g>
+
+  <!-- ===== 5. CDiT ===== -->
+  <g class="s5">
+    <rect x="322" y="168" width="286" height="204" rx="12" fill="#fff" stroke="#1c2333" stroke-width="2.5"/>
+    <text x="465" y="192" font-size="14.5" font-weight="bold" text-anchor="middle">CDiT ブロック × N</text>
+    <text x="465" y="209" font-size="10" text-anchor="middle" fill="#5b6478">XL: N=28, d=1152 → 約 10 億パラメータ</text>
+
+    <rect x="338" y="220" width="254" height="34" rx="7" fill="#e5eafc" stroke="#3556d4"/>
+    <text x="465" y="236" font-size="10.5" text-anchor="middle" fill="#3556d4" font-weight="bold">① self-attention(生成対象の 196 トークンだけ)</text>
+    <text x="465" y="249" font-size="9" text-anchor="middle" fill="#5b6478">文脈は入れない ← ここが DiT との最大の違い</text>
+
+    <rect x="338" y="262" width="254" height="42" rx="7" fill="#fdeeda" stroke="#e07b1f"/>
+    <text x="465" y="279" font-size="10.5" text-anchor="middle" fill="#e07b1f" font-weight="bold">② cross-attention</text>
+    <text x="465" y="294" font-size="9" text-anchor="middle" fill="#5b6478">query=生成対象 / key,value=文脈 784 トークン</text>
+
+    <rect x="338" y="312" width="254" height="30" rx="7" fill="#e0f5ec" stroke="#1e9e6a"/>
+    <text x="465" y="331" font-size="10.5" text-anchor="middle" fill="#1e9e6a" font-weight="bold">③ MLP</text>
+
+    <text x="465" y="360" font-size="9.5" text-anchor="middle" fill="#7b46c9">①②③ すべて AdaLN-Zero で ξ に変調される(11 個の係数)</text>
+  </g>
+
+  <!-- ===== 6. denoise loop + decode ===== -->
+  <g class="s6">
+    <rect x="644" y="168" width="188" height="86" rx="11" fill="#fbe4e8" stroke="#d43d51" stroke-width="2"/>
+    <text x="738" y="192" font-size="12.5" font-weight="bold" text-anchor="middle" fill="#d43d51">拡散のデノイズ反復</text>
+    <text x="738" y="212" font-size="10" text-anchor="middle" class="mono" fill="#5b6478">p_sample_loop</text>
+    <text x="738" y="229" font-size="10" text-anchor="middle" fill="#5b6478">学習 1000 / 推論 250 ステップ</text>
+    <text x="738" y="246" font-size="10" text-anchor="middle" fill="#5b6478">ε 予測 + 分散も学習</text>
+    <path d="M 832 210 C 866 210, 866 162, 832 162 L 800 162" fill="none" stroke="#d43d51" stroke-width="2" stroke-dasharray="5 4" marker-end="url(#arr)"/>
+    <text x="884" y="188" font-size="10" fill="#d43d51" text-anchor="middle">×250</text>
+
+    <rect x="644" y="276" width="188" height="58" rx="10" fill="#e0f5ec" stroke="#1e9e6a" stroke-width="2"/>
+    <text x="738" y="298" font-size="12" font-weight="bold" text-anchor="middle" fill="#1e9e6a">VAE decoder</text>
+    <text x="738" y="316" font-size="9.5" text-anchor="middle" fill="#5b6478">潜在 → ピクセル(凍結 🧊)</text>
+    <rect x="856" y="284" width="86" height="42" rx="8" fill="#e5eafc" stroke="#3556d4"/>
+    <text x="899" y="303" font-size="13" text-anchor="middle">🖼️</text>
+    <text x="899" y="318" font-size="9" text-anchor="middle" fill="#5b6478">次の観測</text>
+  </g>
+
+  <!-- ===== 7. autoregressive + planning ===== -->
+  <g class="s7">
+    <path d="M 899 330 C 899 398, 700 404, 460 404 L 8 404 L 8 112 L 12 112" fill="none" stroke="#3556d4" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#arr)"/>
+    <text x="600" y="392" font-size="11" text-anchor="middle" fill="#3556d4" font-weight="bold">自己回帰: 出力を文脈の末尾に足し、先頭を捨てる</text>
+
+    <rect x="322" y="418" width="510" height="118" rx="12" fill="#f2f4fa" stroke="#7b46c9" stroke-width="2"/>
+    <text x="577" y="442" font-size="13" font-weight="bold" text-anchor="middle" fill="#7b46c9">この上に「計画」が乗る</text>
+    <rect x="338" y="454" width="150" height="66" rx="8" fill="#fff" stroke="#7b46c9"/>
+    <text x="413" y="472" font-size="10.5" text-anchor="middle" fill="#7b46c9" font-weight="bold">行動列を大量に生成</text>
+    <text x="413" y="489" font-size="9.5" text-anchor="middle" fill="#5b6478">CEM で 120 本サンプル</text>
+    <text x="413" y="506" font-size="9.5" text-anchor="middle" fill="#5b6478">or 外部方策から 32 本</text>
+    <path d="M 490 487 L 514 487" stroke="#8a93ad" stroke-width="2" marker-end="url(#arr)"/>
+    <rect x="518" y="454" width="150" height="66" rx="8" fill="#fff" stroke="#7b46c9"/>
+    <text x="593" y="472" font-size="10.5" text-anchor="middle" fill="#7b46c9" font-weight="bold">NWM で全部シミュレート</text>
+    <text x="593" y="489" font-size="9.5" text-anchor="middle" fill="#5b6478">最終フレームを合成し</text>
+    <text x="593" y="506" font-size="9.5" text-anchor="middle" fill="#5b6478">ゴール画像と LPIPS 比較</text>
+    <path d="M 670 487 L 694 487" stroke="#8a93ad" stroke-width="2" marker-end="url(#arr)"/>
+    <rect x="698" y="454" width="118" height="66" rx="8" fill="#e0f5ec" stroke="#1e9e6a"/>
+    <text x="757" y="480" font-size="10.5" text-anchor="middle" fill="#1e9e6a" font-weight="bold">最小コストの</text>
+    <text x="757" y="497" font-size="10.5" text-anchor="middle" fill="#1e9e6a" font-weight="bold">1 本を採用</text>
+  </g>
+
+  <!-- ===== edges ===== -->
+  <g fill="none" stroke="#8a93ad" stroke-width="2" marker-end="url(#arr)">
+    <path class="flow-edge" d="M 140 112 L 158 112"/>
+    <path class="flow-edge" d="M 280 100 L 298 78"/>
+    <path class="flow-edge" d="M 430 148 L 430 166"/>
+    <path class="flow-edge" d="M 284 300 L 320 288"/>
+    <path class="flow-edge" d="M 608 226 L 642 216"/>
+    <path class="flow-edge" d="M 738 254 L 738 274"/>
+    <path class="flow-edge" d="M 832 304 L 854 304"/>
+  </g>
+
+  <text x="20" y="424" font-size="11.5" fill="#5b6478">🧊 = 凍結。学習されるのは</text>
+  <text x="20" y="442" font-size="11.5" fill="#5b6478">CDiT だけで、VAE は既製品を</text>
+  <text x="20" y="460" font-size="11.5" fill="#5b6478">そのまま使う。</text>
+  <text x="20" y="488" font-size="11.5" fill="#d43d51" font-weight="bold">方策は 1 つも学習していない。</text>
+  <text x="20" y="506" font-size="11.5" fill="#5b6478">「どう動くか」は推論時の</text>
+  <text x="20" y="524" font-size="11.5" fill="#5b6478">最適化に押し出されている。</text>
+</svg>
+<figcaption>
+NWM 全体のデータフロー。<strong>学習時は下段の紫のブロック(計画)は存在しません</strong> ——
+学習しているのは「行動を与えたら次の見えを作る」ことだけで、
+計画は推論時にその上へ後付けされます。テンソル形状を追った詳細は<a href="architecture.html">アーキテクチャ編</a>へ。
+</figcaption>
+</figure>
+
+<h2 id="series">本シリーズの他モデルとの対比</h2>
+<p>
+本シリーズでこれまで扱ってきた
+<a href="../NExT-GPT/index.html">NExT-GPT</a>・<a href="../CoDi-2/index.html">CoDi-2</a>・<a href="../BAGEL/index.html">BAGEL</a>
+は、いずれも<strong>「LLM が拡散モデルをどう操るか」</strong>を巡る話でした。
+NWM はそこから被写体を変えます —— <strong>操る側が言語モデルではなく、3 つの数字だからです</strong>。
+</p>
+
+<table>
+  <tr><th></th><th>NExT-GPT / CoDi-2 / BAGEL</th><th>NWM</th></tr>
+  <tr>
+    <th>生成の条件</th>
+    <td>言語または LLM の隠れ状態(数百〜数千次元)</td>
+    <td><strong>(Δx, Δy, Δyaw) と時間シフト —— たった 4 つのスカラー</strong></td>
+  </tr>
+  <tr>
+    <th>生成の目的</th>
+    <td>ユーザに見せるコンテンツを作る</td>
+    <td><strong>行動を選ぶために内部で使う</strong>(人に見せなくてもよい)</td>
+  </tr>
+  <tr>
+    <th>「良い出力」の基準</th>
+    <td>人間の主観品質 / 指示への忠実さ</td>
+    <td><strong>ゴール画像との知覚的距離</strong>。良さがスカラーで測れるので最適化に載る</td>
+  </tr>
+  <tr>
+    <th>文脈の与え方</th>
+    <td>1 本のトークン列に全部並べる(self-attention)</td>
+    <td><strong>cross-attention で分離</strong>。文脈を長くしても計算量が二乗で増えない</td>
+  </tr>
+  <tr>
+    <th>推論時の計算量</th>
+    <td>基本的に固定</td>
+    <td><strong>可変</strong>。難しい問題には多くサンプルを引ける</td>
+  </tr>
+</table>
+
+<div class="callout point">
+<span class="callout-title">面白い符合</span>
+BAGEL の章で見た “bottleneck-free context”(文脈を細いベクトルに圧縮しない)という問題意識と、
+NWM の cross-attention 設計は<strong>正反対の方向に進んでいます</strong>。
+BAGEL は「全部を 1 本の self-attention に混ぜる」ことで帯域を確保しました。
+NWM は逆に「生成対象と文脈を意図的に分離する」ことで、
+<strong>文脈の長さに対して線形</strong>という性質を買っています。
+どちらが正しいかではなく、<strong>何にコストを払いたいかが違う</strong>ということです ——
+NWM が欲しいのは「1 回の生成を何百回も繰り返せる速さ」なので、そちらに寄せた設計になっています。
+</div>
+
+<h2 id="code-structure">コードベースの構成</h2>
+<p>公開リポジトリのうち、本解説で読むファイルは次の通りです。</p>
+
+<div class="codeblock pseudo">
+<div class="codehead"><span class="path">facebookresearch/nwm — 主要部</span>
+<a href="https://github.com/facebookresearch/nwm/tree/3f6cd8e70d6f2d1e2b9684acff510710135f0f41" target="_blank" rel="noopener">GitHub ↗</a></div>
+<pre><code class="language-text">nwm/
+├── models.py             # ★★ CDiT 本体(324 行)。CDiTBlock / ActionEmbedder / CDiT
+├── train.py              # ★★ 学習ループ。VAE 符号化 → 複数ゴール展開 → 拡散損失
+├── datasets.py           # ★ 3 種のデータセット。行動の局所座標変換と正規化
+├── misc.py               # 座標変換・正規化・前処理 transform・可視化
+├── diffusion/            # DiT / ADM 由来の拡散ユーティリティ(ほぼ未改変)
+│   ├── __init__.py       # ★ create_diffusion。既定は ε 予測 + 分散学習
+│   └── gaussian_diffusion.py  # training_losses / p_sample_loop
+├── isolated_nwm_infer.py # ★★ 推論。model_forward_wrapper / rollout / time
+├── isolated_nwm_eval.py  # ★ LPIPS・DreamSim・FID の集計
+├── planning_eval.py      # ★★ CEM による計画と ATE / RPE 評価
+├── interactive_model.ipynb    # ブラウザ上で前進・左右回転を押して遊べるデモ
+└── config/
+    ├── nwm_cdit_xl.yaml       # ★ 本番の学習設定(CDiT-XL/2, lr 8e-5, 文脈 4)
+    ├── data_config.yaml       # ★ データセットごとの歩幅と行動正規化統計
+    ├── data_hyperparams_plan.yaml  # ★ CEM の初期分布(データセットごと)
+    └── eval_config.yaml       # 評価プロトコルの設定</code></pre>
+</div>
+<p>
+中心は <code>models.py</code>(324 行)と <code>planning_eval.py</code>(440 行)の 2 枚です。
+前者が「1 フレームをどう作るか」、後者が「その生成を何百回も回して行動を決める」を担当します。
+拡散まわり(<code>diffusion/</code>)は DiT / ADM 由来のコードがほぼそのまま使われており、
+<strong>NWM の独自性は拡散アルゴリズムではなく、条件付けの設計とその使い方にあります</strong>。
+</p>
+
+<div class="callout point">
+<span class="callout-title">本解説の依拠する一次資料</span>
+コードは <a href="https://github.com/facebookresearch/nwm/tree/3f6cd8e70d6f2d1e2b9684acff510710135f0f41" target="_blank" rel="noopener">コミット <code>3f6cd8e</code></a>(2025-08-13, CC BY-NC 4.0)を
+実際にクローンして読み、引用の行番号もすべてそこから転記しています。
+論文は <a href="https://arxiv.org/abs/2412.03572" target="_blank" rel="noopener">arXiv:2412.03572v2</a>(2025-04-11)本文および Supplementary Material を参照しました。
+<br><br>
+本シリーズの方針どおり、<strong>論文とコードで食い違う箇所はどちらかに寄せず両方を書いています</strong>。
+本トピックでは主に次の 3 件が該当します ——
+① <a href="training.html#loss">損失の予測対象</a>(論文 \(\mathcal{L}_{\text{simple}}\) は clean な状態を予測する式だが、
+コードの既定は \(\epsilon\) 予測)、
+② <a href="inference.html#cem">CEM のハイパーパラメータ</a>(論文 Appendix と README のコマンドは一致するが、
+<code>argparse</code> の既定値は別物)、
+③ <a href="training.html#data">Ego4D と NoMaD ランキング</a>(論文の実験にはあるが、公開コードには対応する経路が無い)。
+</div>
+
+<h2 id="digest">見どころダイジェスト</h2>
+
+<h3>アーキテクチャ: 「文脈を self-attention に入れない」という一手</h3>
+<p>
+標準的な DiT なら、文脈フレームも生成対象も全部 1 本の列にして self-attention に流します。
+CDiT はそれをやめ、<strong>self-attention は生成対象の 196 トークンだけ、
+文脈は cross-attention 経由でしか見えない</strong>という構造にしました。
+計算量が \(O(m^2n^2d)\) から \(O(mn^2d)\) に落ちる —— つまり<strong>文脈長に対して線形</strong>になります。
+結果として、同じ FLOPs 予算なら CDiT のほうが強く、
+<strong>同じパラメータ数(CDiT-L ≈ DiT-XL)なら 4 倍速い</strong>と報告されています。
+詳細は<a href="architecture.html">アーキテクチャ編</a>へ。
+</p>
+
+<h3>学習: 「1 観測につきゴール 4 つ」がバッチを 4 倍に膨らませる</h3>
+<p>
+データローダは 1 サンプルにつき<strong>文脈 4 枚 + ゴール 4 枚</strong>を返します。
+学習ループはこれを展開して、<strong>同じ文脈を 4 回複製し、それぞれ別のゴールとペアにします</strong>。
+バッチサイズ 1024 が実効 4096 になる仕掛けです。
+狙いは「行動と時間のもつれ」を壊すこと。詳細は<a href="training.html">学習編</a>へ。
+</p>
+
+<h3>計画: 探索空間はたったの 3 次元</h3>
+<p>
+CEM が最適化する変数は、<strong>8 ステップ分の行動列ではなく、3 つの数字だけ</strong>です ——
+軌道を<strong>直線と仮定して終点だけを最適化し</strong>、
+ヨー回転は最終ステップにまとめて適用します。
+それでも state-of-the-art の方策を上回る。詳細は<a href="inference.html">生成と計画編</a>へ。
+</p>
+
+<h2 id="chapters">章立て</h2>
+<div class="chapter-grid">
+  <a class="chapter-card" href="architecture.html">
+    <span class="num">CHAPTER 1</span>
+    <h3>アーキテクチャ詳解</h3>
+    <p>CDiT ブロックの 3 段構成、11 分割 AdaLN、行動・時間・拡散 timestep の埋め込み、DiT との計算量比較をテンソル形状ごと追う</p>
+  </a>
+  <a class="chapter-card" href="training.html">
+    <span class="num">CHAPTER 2</span>
+    <h3>学習プロセス</h3>
+    <p>データセットと行動の作り方、複数ゴールによる反実仮想、時間シフトの正規化、拡散損失、ハイパーパラメータ</p>
+  </a>
+  <a class="chapter-card" href="inference.html">
+    <span class="num">CHAPTER 3</span>
+    <h3>生成と計画</h3>
+    <p>2 つの推論モード、自己回帰ロールアウト、エネルギー関数と制約、CEM の実装、外部方策のランキング、高速化</p>
+  </a>
+  <a class="chapter-card" href="evaluation.html">
+    <span class="num">CHAPTER 4</span>
+    <h3>評価と実験結果</h3>
+    <p>6 つの指標と 3 つの評価プロトコル、アブレーション、CDiT vs DiT、ナビゲーション性能、未知環境への一般化、限界</p>
+  </a>
+</div>
+
+<nav class="pager">
+  <a href="../index.html"><span class="dir">← 戻る</span><span class="title">Visual Explanation トップ</span></a>
+  <a class="next" href="architecture.html"><span class="dir">次へ →</span><span class="title">1. アーキテクチャ詳解</span></a>
+</nav>
+
+</main>
+
+<footer class="site-footer">
+  <p>引用コード: <a href="https://github.com/facebookresearch/nwm/tree/3f6cd8e70d6f2d1e2b9684acff510710135f0f41" target="_blank" rel="noopener">facebookresearch/nwm</a>(CC BY-NC 4.0)/
+  論文: <a href="https://arxiv.org/abs/2412.03572" target="_blank" rel="noopener">Navigation World Models</a>(arXiv:2412.03572, CVPR 2025 Oral)/
+  <a href="https://www.amirbar.net/nwm/" target="_blank" rel="noopener">プロジェクトページ</a></p>
+</footer>
+
+<script>
+MathJax = { tex: { inlineMath: [['\\(', '\\)']], displayMath: [['$$', '$$']] } };
+</script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js" async></script>
+<script src="assets/diagram-controls.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-core.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-python.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-yaml.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-bash.min.js"></script>
+</body>
+</html>
