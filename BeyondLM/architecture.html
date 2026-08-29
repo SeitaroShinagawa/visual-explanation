@@ -1,0 +1,663 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BLM アーキテクチャ — 1 本の系列に文字と絵を混ぜる</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🔭</text></svg>">
+<link rel="stylesheet" href="assets/style.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/themes/prism-tomorrow.min.css">
+<style>
+/* ===== sequence + attention mask: 4 stages (14s) ===== */
+@keyframes seq-bright {
+  0%, 25%, 100% { opacity: 0.3; }
+  5%, 20% { opacity: 1; }
+}
+#seq-fig .q1 { animation: seq-bright 14s ease-in-out infinite backwards; }
+#seq-fig .q2 { animation: seq-bright 14s ease-in-out infinite backwards; animation-delay: 3.5s; }
+#seq-fig .q3 { animation: seq-bright 14s ease-in-out infinite backwards; animation-delay: 7s; }
+#seq-fig .q4 { animation: seq-bright 14s ease-in-out infinite backwards; animation-delay: 10.5s; }
+
+/* ===== capacity ladder: 4 rungs (14s) ===== */
+@keyframes lad-turn {
+  0%, 2% { opacity: 0.22; }
+  5%, 23% { opacity: 1; }
+  26%, 100% { opacity: 0.22; }
+}
+#lad-fig .r1 { animation: lad-turn 14s ease-in-out infinite backwards; }
+#lad-fig .r2 { animation: lad-turn 14s ease-in-out infinite backwards; animation-delay: 3.5s; }
+#lad-fig .r3 { animation: lad-turn 14s ease-in-out infinite backwards; animation-delay: 7s; }
+#lad-fig .r4 { animation: lad-turn 14s ease-in-out infinite backwards; animation-delay: 10.5s; }
+
+/* ===== MoE granularity: 3 settings (12s) ===== */
+@keyframes gran-turn {
+  0%, 2% { opacity: 0.24; }
+  6%, 30% { opacity: 1; }
+  34%, 100% { opacity: 0.24; }
+}
+#gran-fig .g1 { animation: gran-turn 12s ease-in-out infinite backwards; }
+#gran-fig .g2 { animation: gran-turn 12s ease-in-out infinite backwards; animation-delay: 4s; }
+#gran-fig .g3 { animation: gran-turn 12s ease-in-out infinite backwards; animation-delay: 8s; }
+
+/* ===== emergent specialization: 3 findings (12s) ===== */
+#spec-fig .e1 { animation: gran-turn 12s ease-in-out infinite backwards; }
+#spec-fig .e2 { animation: gran-turn 12s ease-in-out infinite backwards; animation-delay: 4s; }
+#spec-fig .e3 { animation: gran-turn 12s ease-in-out infinite backwards; animation-delay: 8s; }
+
+@media (prefers-reduced-motion: reduce) {
+  #seq-fig .q1, #seq-fig .q2, #seq-fig .q3, #seq-fig .q4,
+  #lad-fig .r1, #lad-fig .r2, #lad-fig .r3, #lad-fig .r4,
+  #gran-fig .g1, #gran-fig .g2, #gran-fig .g3,
+  #spec-fig .e1, #spec-fig .e2, #spec-fig .e3 { opacity: 1; }
+}
+</style>
+</head>
+<body>
+
+<nav class="topnav">
+  <a class="home-link" href="../index.html">Visual Explanation</a><span class="sep">/</span>
+  <a href="./index.html">BLM 概要</a>
+  <a href="architecture.html" class="current">1. アーキテクチャ</a>
+  <a href="training.html">2. 学習と生成</a>
+  <a href="experiments.html">3. 評価と実験</a>
+  <a href="scaling.html">4. スケーリング則</a>
+</nav>
+
+<header class="page-header">
+  <h1>1. アーキテクチャ</h1>
+  <p>統一モデルの設計は<strong>「どこを共有し、どこを分けるか」</strong>に尽きます。
+  本作は共有する部分(系列・注意機構)を最大化し、分ける部分(FFN)を
+  <strong>固定の 2 分割から、学習されたルーティングへ</strong>と進めていきます。</p>
+</header>
+
+<main class="article">
+
+<h2 id="backbone">土台 — Transfusion からの 2 つの差分</h2>
+<p>
+バックボーンはデコーダ専用 Transformer で、<strong>Transfusion</strong>(Zhou+, 2025)に倣っています。
+ただし論文は 2 点の変更を明記します。
+</p>
+<table>
+  <tr><th></th><th>Transfusion</th><th>本作</th><th>理由(論文の記述)</th></tr>
+  <tr>
+    <td>視覚の入出力射影</td>
+    <td>U-Net</td>
+    <td><strong>単純な線形射影層</strong></td>
+    <td>明示的な理由は書かれていないが、
+    <strong>エンコーダ非依存(encoder-agnostic)</strong>にするための簡素化と読める。
+    §3 でエンコーダを 7 種類差し替える実験があり、U-Net だと差し替えのたびに設計変更が要る</td>
+  </tr>
+  <tr>
+    <td>各層の FFN</td>
+    <td>共有 FFN</td>
+    <td><strong>モダリティ別 FFN</strong>(テキスト用・視覚用の 2 本)</td>
+    <td>Figure 15 で<strong>全指標が改善</strong>することを確認したうえで既定に採用。
+    詳細は<a href="#ffn">後述</a></td>
+  </tr>
+</table>
+<p>
+既定モデルは<strong>総パラメータ 2.3B / トークンあたりアクティブ 1.5B</strong>。
+「総 > アクティブ」になっているのは、モダリティ別 FFN のせいです ——
+2 本の FFN のうち<strong>トークンごとに 1 本しか動かない</strong>ため、
+パラメータは増えても FLOPs は増えません。
+</p>
+
+<h2 id="sequence">系列フォーマットとハイブリッド注意マスク</h2>
+<p>
+テキストと画像は<strong>1 本の系列</strong>に並べられます。
+ただし注意の張り方はモダリティごとに違い、そこが設計の要になります。
+</p>
+
+<div class="callout point">
+<span class="callout-title">論文 §C の記述(そのまま)</span>
+<strong>系列の作り方</strong>: “Text tokens are mapped to vectors via a standard <code>nn.Embedding</code> layer.
+Visual inputs are mapped to latent patches using a <strong>frozen</strong> visual encoder and flattened into 1D sequences.
+We enclose each image or video frame with beginning-of-image (<code>&lt;BOI&gt;</code>) and
+end-of-image (<code>&lt;EOI&gt;</code>) marker tokens. <strong>A video is processed as a series of individually bounded frames.</strong>”
+<br><br>
+<strong>注意マスク</strong>: “Text tokens apply a standard <strong>causal</strong> mask. For visual data, we apply a
+<strong>block-wise causal</strong> mask: patches within the same image attend <strong>bidirectionally</strong>,
+but can only attend <strong>causally</strong> to text or visual frames that appeared previously.”
+</div>
+
+<figure class="diagram" id="seq-fig" data-cycle-ms="14000" data-step-count="4">
+<svg viewBox="0 0 920 470" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="系列フォーマットとハイブリッド注意マスクの構造">
+  <defs>
+    <marker id="arrQ" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#8a93ad"/>
+    </marker>
+  </defs>
+
+  <!-- 1. the sequence -->
+  <g class="q1">
+    <text x="16" y="26" font-size="12.5" font-weight="bold" fill="#5b6478">① 1 本の系列に並べる</text>
+    <rect x="16" y="36" width="46" height="30" rx="5" fill="#e9ecf5" stroke="#8a93ad"/>
+    <text x="39" y="56" font-size="10" text-anchor="middle" fill="#5b6478">T1</text>
+    <rect x="66" y="36" width="46" height="30" rx="5" fill="#e9ecf5" stroke="#8a93ad"/>
+    <text x="89" y="56" font-size="10" text-anchor="middle" fill="#5b6478">T2</text>
+    <rect x="116" y="36" width="46" height="30" rx="5" fill="#efe6fb" stroke="#7b46c9" stroke-width="1.8"/>
+    <text x="139" y="56" font-size="9" text-anchor="middle" fill="#7b46c9">BOI</text>
+    <rect x="166" y="36" width="46" height="30" rx="5" fill="#e0f5ec" stroke="#1e9e6a"/>
+    <text x="189" y="56" font-size="10" text-anchor="middle" fill="#1e9e6a">I1</text>
+    <rect x="216" y="36" width="46" height="30" rx="5" fill="#e0f5ec" stroke="#1e9e6a"/>
+    <text x="239" y="56" font-size="10" text-anchor="middle" fill="#1e9e6a">I2</text>
+    <rect x="266" y="36" width="46" height="30" rx="5" fill="#e0f5ec" stroke="#1e9e6a"/>
+    <text x="289" y="56" font-size="10" text-anchor="middle" fill="#1e9e6a">I3</text>
+    <rect x="316" y="36" width="46" height="30" rx="5" fill="#efe6fb" stroke="#7b46c9" stroke-width="1.8"/>
+    <text x="339" y="56" font-size="9" text-anchor="middle" fill="#7b46c9">EOI</text>
+    <rect x="366" y="36" width="46" height="30" rx="5" fill="#e9ecf5" stroke="#8a93ad"/>
+    <text x="389" y="56" font-size="10" text-anchor="middle" fill="#5b6478">T3</text>
+    <text x="166" y="86" font-size="10" fill="#1e9e6a">1 枚の画像 = 256 パッチ(図では 3 個に簡略化)</text>
+    <text x="16" y="104" font-size="10" fill="#7b46c9">動画は「境界で囲まれたフレームの並び」として扱う —— フレームごとに BOI / EOI が付く</text>
+  </g>
+
+  <!-- 2. the mask -->
+  <g class="q2">
+    <text x="16" y="140" font-size="12.5" font-weight="bold" fill="#5b6478">② 注意マスク(行 = クエリ, 列 = キー。塗り = 見える)</text>
+    <!-- column labels -->
+    <text x="98" y="164" font-size="9" text-anchor="middle" fill="#8a93ad">T1</text>
+    <text x="124" y="164" font-size="9" text-anchor="middle" fill="#8a93ad">T2</text>
+    <text x="150" y="164" font-size="9" text-anchor="middle" fill="#7b46c9">BOI</text>
+    <text x="176" y="164" font-size="9" text-anchor="middle" fill="#1e9e6a">I1</text>
+    <text x="202" y="164" font-size="9" text-anchor="middle" fill="#1e9e6a">I2</text>
+    <text x="228" y="164" font-size="9" text-anchor="middle" fill="#1e9e6a">I3</text>
+    <text x="254" y="164" font-size="9" text-anchor="middle" fill="#7b46c9">EOI</text>
+    <text x="280" y="164" font-size="9" text-anchor="middle" fill="#8a93ad">T3</text>
+    <!-- grid 8x8 starting at x=85,y=170, cell 26 -->
+    <rect x="85" y="170" width="208" height="208" fill="#fff" stroke="#c2c9db"/>
+    <!-- row 0: T1 -->
+    <rect x="85" y="170" width="26" height="26" fill="#e9ecf5"/>
+    <!-- row 1: T2 -->
+    <rect x="85" y="196" width="52" height="26" fill="#e9ecf5"/>
+    <!-- row 2: BOI (treated with the image block) -->
+    <rect x="85" y="222" width="78" height="26" fill="#e9ecf5"/>
+    <!-- rows 3-5: image patches — causal prefix + bidirectional block -->
+    <rect x="85" y="248" width="78" height="78" fill="#e9ecf5"/>
+    <rect x="163" y="248" width="78" height="78" fill="#c9ecdb"/>
+    <!-- row 6: EOI -->
+    <rect x="85" y="326" width="182" height="26" fill="#e9ecf5"/>
+    <!-- row 7: T3 -->
+    <rect x="85" y="352" width="208" height="26" fill="#e9ecf5"/>
+    <!-- grid lines -->
+    <g stroke="#dde2ee" stroke-width="0.8">
+      <line x1="111" y1="170" x2="111" y2="378"/><line x1="137" y1="170" x2="137" y2="378"/>
+      <line x1="163" y1="170" x2="163" y2="378"/><line x1="189" y1="170" x2="189" y2="378"/>
+      <line x1="215" y1="170" x2="215" y2="378"/><line x1="241" y1="170" x2="241" y2="378"/>
+      <line x1="267" y1="170" x2="267" y2="378"/>
+      <line x1="85" y1="196" x2="293" y2="196"/><line x1="85" y1="222" x2="293" y2="222"/>
+      <line x1="85" y1="248" x2="293" y2="248"/><line x1="85" y1="274" x2="293" y2="274"/>
+      <line x1="85" y1="300" x2="293" y2="300"/><line x1="85" y1="326" x2="293" y2="326"/>
+      <line x1="85" y1="352" x2="293" y2="352"/>
+    </g>
+    <rect x="163" y="248" width="78" height="78" fill="none" stroke="#1e9e6a" stroke-width="2.5"/>
+    <!-- row labels -->
+    <text x="78" y="188" font-size="9" text-anchor="end" fill="#8a93ad">T1</text>
+    <text x="78" y="214" font-size="9" text-anchor="end" fill="#8a93ad">T2</text>
+    <text x="78" y="240" font-size="9" text-anchor="end" fill="#7b46c9">BOI</text>
+    <text x="78" y="266" font-size="9" text-anchor="end" fill="#1e9e6a">I1</text>
+    <text x="78" y="292" font-size="9" text-anchor="end" fill="#1e9e6a">I2</text>
+    <text x="78" y="318" font-size="9" text-anchor="end" fill="#1e9e6a">I3</text>
+    <text x="78" y="344" font-size="9" text-anchor="end" fill="#7b46c9">EOI</text>
+    <text x="78" y="370" font-size="9" text-anchor="end" fill="#8a93ad">T3</text>
+    <text x="85" y="398" font-size="10" fill="#5b6478">灰 = causal(過去のみ)</text>
+    <text x="85" y="414" font-size="10" fill="#1e9e6a" font-weight="bold">緑 = 画像内は双方向(未来のパッチも見える)</text>
+  </g>
+
+  <!-- 3. why -->
+  <g class="q3">
+    <rect x="326" y="140" width="272" height="240" rx="10" fill="#e0f5ec" stroke="#1e9e6a" stroke-width="2"/>
+    <text x="462" y="164" font-size="12.5" font-weight="bold" text-anchor="middle" fill="#1e9e6a">③ なぜ画像内だけ双方向なのか</text>
+    <text x="342" y="190" font-size="10.5" fill="#5b6478">画像は<tspan font-weight="bold">1 枚まるごと同時に</tspan>デノイズされる。</text>
+    <text x="342" y="208" font-size="10.5" fill="#5b6478">「左上のパッチを見てから右下を作る」</text>
+    <text x="342" y="226" font-size="10.5" fill="#5b6478">という順序が存在しないので、</text>
+    <text x="342" y="244" font-size="10.5" fill="#1e9e6a" font-weight="bold">パッチ間に因果律を課す理由がない。</text>
+    <text x="342" y="272" font-size="10.5" fill="#5b6478">一方フレーム<tspan font-weight="bold">間</tspan>は causal。</text>
+    <text x="342" y="290" font-size="10.5" fill="#5b6478">「過去のフレームから未来を作る」</text>
+    <text x="342" y="308" font-size="10.5" fill="#5b6478">という順序は本物なので残す。</text>
+    <text x="342" y="336" font-size="10.5" fill="#d43d51">= block-wise causal。</text>
+    <text x="342" y="354" font-size="10.5" fill="#5b6478">実装は <tspan class="mono">FlexAttention</tspan>(PyTorch)。</text>
+    <text x="342" y="372" font-size="9.5" fill="#5b6478">任意のマスクを効率的に書ける仕組み</text>
+  </g>
+
+  <!-- 4. comparison with BAGEL -->
+  <g class="q4">
+    <rect x="618" y="140" width="286" height="240" rx="10" fill="#f2f4fa" stroke="#7b46c9" stroke-width="2"/>
+    <text x="761" y="164" font-size="12.5" font-weight="bold" text-anchor="middle" fill="#7b46c9">④ BAGEL のマスクとの違い</text>
+    <text x="632" y="192" font-size="10.5" fill="#5b6478">BAGEL は 3 種類の可視性を持っていた:</text>
+    <text x="644" y="212" font-size="10" fill="#5b6478">・テキスト = causal</text>
+    <text x="644" y="230" font-size="10" fill="#5b6478">・clean な画像 = 双方向</text>
+    <text x="644" y="248" font-size="10" fill="#d43d51">・<tspan font-weight="bold">ノイズを載せた生成対象 = 他から不可視</tspan></text>
+    <text x="632" y="276" font-size="10.5" fill="#5b6478">本作には 3 つ目がない —— 生成対象を</text>
+    <text x="632" y="294" font-size="10.5" fill="#5b6478">隠すのではなく、<tspan font-weight="bold">フレーム単位の</tspan></text>
+    <text x="632" y="312" font-size="10.5" fill="#7b46c9" font-weight="bold">block-wise causal だけで済ませている。</text>
+    <text x="632" y="340" font-size="10" fill="#5b6478">論文は理由を明記していないが、</text>
+    <text x="632" y="357" font-size="10" fill="#5b6478">1 系列に 1 つの生成対象しか置かない</text>
+    <text x="632" y="373" font-size="10" fill="#5b6478">設計なら 3 つ目は不要になる。</text>
+  </g>
+
+  <text x="326" y="400" font-size="11" fill="#5b6478">※ 図では BOI を画像ブロックの外(causal 行)として描いています。論文はマーカートークンの</text>
+  <text x="326" y="418" font-size="11" fill="#5b6478">   可視性を明示していないため、ここは「画像パッチが双方向」という記述のみを図示したものです。</text>
+  <text x="16" y="446" font-size="11.5" fill="#d43d51" font-weight="bold">押さえどころ: 系列も注意機構も 1 つ。分かれるのは「どのキーが見えるか」だけ。</text>
+</svg>
+<figcaption>
+系列フォーマットと注意マスク。<strong>階段状の causal マスクの中に、
+画像のところだけ四角い「双方向の島」が浮かぶ</strong>形になります。
+</figcaption>
+</figure>
+
+<h2 id="repr">視覚表現 — 何をトークンにするか</h2>
+<p>
+本作のアーキテクチャは<strong>エンコーダ非依存</strong>で、凍結した任意のエンコーダを受け付けます。
+§3 の実験では 3 つのファミリを比較します(結果は<a href="experiments.html#repr">実験編</a>)。
+</p>
+
+<table>
+  <tr><th>ファミリ</th><th>具体例</th><th>解像度 / パッチ</th><th>グリッド</th><th>アダプタ</th><th>トークン数</th></tr>
+  <tr><td><strong>生ピクセル</strong></td><td>Raw Pixel</td><td>224² / 14×14</td><td>16×16</td><td>—</td><td>256</td></tr>
+  <tr><td rowspan="3"><strong>RAE(意味エンコーダ)</strong></td><td>SigLIP 2 <em>(既定)</em></td><td>224² / 14×14</td><td>16×16</td><td>—</td><td>256</td></tr>
+  <tr><td>DINOv2-L</td><td>224² / 14×14</td><td>16×16</td><td>—</td><td>256</td></tr>
+  <tr><td>WebSSL-L</td><td>224² / 14×14</td><td>16×16</td><td>—</td><td>256</td></tr>
+  <tr><td rowspan="2"><strong>VAE</strong></td><td>SD-VAE</td><td>256² / 8×8</td><td>32×32</td><td>Pix[Un]shuf(2)</td><td>256</td></tr>
+  <tr><td>FLUX.1</td><td>256² / 8×8</td><td>32×32</td><td>Pix[Un]shuf(2)</td><td>256</td></tr>
+</table>
+<p>
+<strong>すべて 256 トークンに揃えてある</strong>のが統制実験としての要点です
+(論文 Table 5: “All encoders produce 256 tokens (16×16 grid) per image”)。
+VAE 系だけ 32×32 の潜在が出るので、<strong>Pixel[Un]shuffle で 2 倍に畳んで</strong>256 に合わせています。
+トークン数が揃っていなければ、比較しているのが「表現の質」なのか「計算量」なのか分からなくなります。
+</p>
+
+<div class="callout math">
+<span class="callout-title">RAE(Representation Autoencoder)とは何か</span>
+名前は「オートエンコーダ」ですが、学習するわけではありません。
+<strong>意味エンコーダ(SigLIP 2 など)の潜在空間を、そのまま拡散の作業場として使う</strong>という考え方です。
+<br><br>
+従来の常識では、生成には VAE 潜在が必要でした —— 低次元で、画素に戻せるからです。
+意味エンコーダの潜在は<strong>高次元</strong>で、しかも画素に戻す復号器がない。
+RAE(Zheng+, 2026 / Tong+, 2026)は、その潜在空間に対する<strong>既製の復号器</strong>を用意することで、
+「意味エンコーダの潜在の上で拡散を回し、最後に画素へ戻す」を可能にしました。
+本作はその成果を借りて、<strong>理解と生成で同じ 1 つのエンコーダを使う</strong>という簡素化に踏み切ります。
+<br><br>
+論文の言い方: “we simplify our design by using a <strong>single</strong> visual encoder
+for both understanding and generation.”
+BAGEL の二重エンコーダとは正反対の判断です。
+</div>
+
+<h2 id="ffn">容量をどう分けるか — 4 段のはしご</h2>
+<p>
+統一モデルの設計論争の核心は<strong>「テキストと画像で、モデルの容量をどう分け合うか」</strong>です。
+本作はこれを 4 段階のはしごとして整理し、実際に全段を学習して比較します(§6.3)。
+</p>
+
+<figure class="diagram" id="lad-fig" data-cycle-ms="14000" data-step-count="4">
+<svg viewBox="0 0 920 460" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="容量分離の 4 段階: 共有 FFN, モダリティ別 FFN, MoT, MoE">
+  <defs>
+    <marker id="arrL" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#8a93ad"/>
+    </marker>
+  </defs>
+
+  <text x="16" y="26" font-size="13" font-weight="bold" fill="#5b6478">分離をどこまで進めるか —— 左ほど共有、右ほど分離</text>
+
+  <g class="r1">
+    <rect x="16" y="40" width="208" height="200" rx="10" fill="#f2f4fa" stroke="#8a93ad" stroke-width="2"/>
+    <text x="120" y="64" font-size="12" font-weight="bold" text-anchor="middle" fill="#5b6478">① 共有 FFN</text>
+    <text x="120" y="80" font-size="9" text-anchor="middle" fill="#8a93ad">(素の Transfusion)</text>
+    <rect x="34" y="92" width="172" height="26" rx="6" fill="#e5eafc" stroke="#3556d4"/>
+    <text x="120" y="110" font-size="9.5" text-anchor="middle" fill="#3556d4">共有 self-attention</text>
+    <rect x="34" y="126" width="172" height="40" rx="6" fill="#e9ecf5" stroke="#8a93ad"/>
+    <text x="120" y="151" font-size="10.5" text-anchor="middle" fill="#5b6478">1 本の FFN(全部ここ)</text>
+    <text x="34" y="192" font-size="10" fill="#d43d51">両モダリティが同じ重みを取り合う</text>
+    <text x="34" y="212" font-size="10" fill="#5b6478">PPL <tspan font-weight="bold">15.93</tspan> / DPG <tspan font-weight="bold">0.45</tspan></text>
+  </g>
+
+  <g class="r2">
+    <rect x="240" y="40" width="208" height="200" rx="10" fill="#e0f5ec" stroke="#1e9e6a" stroke-width="2"/>
+    <text x="344" y="64" font-size="12" font-weight="bold" text-anchor="middle" fill="#1e9e6a">② モダリティ別 FFN</text>
+    <text x="344" y="80" font-size="9" text-anchor="middle" fill="#8a93ad">(本作の既定)</text>
+    <rect x="258" y="92" width="172" height="26" rx="6" fill="#e5eafc" stroke="#3556d4"/>
+    <text x="344" y="110" font-size="9.5" text-anchor="middle" fill="#3556d4">共有 self-attention</text>
+    <rect x="258" y="126" width="82" height="40" rx="6" fill="#e9ecf5" stroke="#8a93ad"/>
+    <text x="299" y="151" font-size="9.5" text-anchor="middle" fill="#5b6478">📝 用 FFN</text>
+    <rect x="348" y="126" width="82" height="40" rx="6" fill="#c9ecdb" stroke="#1e9e6a"/>
+    <text x="389" y="151" font-size="9.5" text-anchor="middle" fill="#1e9e6a">🖼️ 用 FFN</text>
+    <text x="258" y="192" font-size="10" fill="#1e9e6a">分離は最小限。<tspan font-weight="bold">FLOPs は増えない</tspan></text>
+    <text x="258" y="212" font-size="10" fill="#5b6478">PPL <tspan font-weight="bold">15.13</tspan> / DPG <tspan font-weight="bold">0.47</tspan></text>
+    <text x="258" y="230" font-size="9.5" fill="#5b6478">(トークンごとに 1 本しか動かない)</text>
+  </g>
+
+  <g class="r3">
+    <rect x="464" y="40" width="208" height="200" rx="10" fill="#fdeeda" stroke="#e07b1f" stroke-width="2"/>
+    <text x="568" y="64" font-size="12" font-weight="bold" text-anchor="middle" fill="#e07b1f">③ MoT(深い分離)</text>
+    <text x="568" y="80" font-size="9" text-anchor="middle" fill="#8a93ad">(BAGEL が採用した方式)</text>
+    <rect x="482" y="92" width="172" height="26" rx="6" fill="#e5eafc" stroke="#3556d4"/>
+    <text x="568" y="110" font-size="9.5" text-anchor="middle" fill="#3556d4">共有 self-attention のみ</text>
+    <rect x="482" y="126" width="82" height="40" rx="6" fill="#e9ecf5" stroke="#8a93ad"/>
+    <text x="523" y="145" font-size="9" text-anchor="middle" fill="#5b6478">📝 q/k/v/o</text>
+    <text x="523" y="159" font-size="9" text-anchor="middle" fill="#5b6478">+ FFN</text>
+    <rect x="572" y="126" width="82" height="40" rx="6" fill="#fbe4e8" stroke="#d43d51"/>
+    <text x="613" y="145" font-size="9" text-anchor="middle" fill="#d43d51">🖼️ q/k/v/o</text>
+    <text x="613" y="159" font-size="9" text-anchor="middle" fill="#d43d51">+ FFN</text>
+    <text x="482" y="192" font-size="10" fill="#5b6478">注意の射影まで丸ごと分ける</text>
+    <text x="482" y="212" font-size="10" fill="#d43d51">分け方は<tspan font-weight="bold">人が決め打ち</tspan>で固定</text>
+  </g>
+
+  <g class="r4">
+    <rect x="688" y="40" width="216" height="200" rx="10" fill="#efe6fb" stroke="#7b46c9" stroke-width="2.5"/>
+    <text x="796" y="64" font-size="12" font-weight="bold" text-anchor="middle" fill="#7b46c9">④ MoE(学習された分離)</text>
+    <text x="796" y="80" font-size="9" text-anchor="middle" fill="#7b46c9">← 本作の結論</text>
+    <rect x="706" y="92" width="180" height="26" rx="6" fill="#e5eafc" stroke="#3556d4"/>
+    <text x="796" y="110" font-size="9.5" text-anchor="middle" fill="#3556d4">共有 self-attention</text>
+    <rect x="706" y="126" width="180" height="16" rx="4" fill="#fff" stroke="#7b46c9"/>
+    <text x="796" y="138" font-size="8.5" text-anchor="middle" fill="#7b46c9">ルータ(トークンごとに行き先を決める)</text>
+    <g fill="#efe6fb" stroke="#7b46c9">
+      <rect x="706" y="148" width="20" height="24" rx="3"/><rect x="730" y="148" width="20" height="24" rx="3"/>
+      <rect x="754" y="148" width="20" height="24" rx="3"/><rect x="778" y="148" width="20" height="24" rx="3"/>
+      <rect x="802" y="148" width="20" height="24" rx="3"/><rect x="826" y="148" width="20" height="24" rx="3"/>
+      <rect x="850" y="148" width="20" height="24" rx="3"/>
+    </g>
+    <text x="796" y="188" font-size="10" text-anchor="middle" fill="#5b6478">小さなエキスパートから <tspan class="mono">top-k</tspan> を選ぶ</text>
+    <text x="706" y="212" font-size="10" fill="#7b46c9" font-weight="bold">PPL 12.49 / DPG 0.63 —— 全段で最良</text>
+    <text x="706" y="230" font-size="9.5" fill="#5b6478">配分をモデル自身が決める</text>
+  </g>
+
+  <g fill="none" stroke="#8a93ad" stroke-width="2" marker-end="url(#arrL)">
+    <path class="flow-edge" d="M 226 140 L 238 140"/>
+    <path class="flow-edge" d="M 450 140 L 462 140"/>
+    <path class="flow-edge" d="M 674 140 L 686 140"/>
+  </g>
+
+  <rect x="16" y="266" width="888" height="106" rx="10" fill="#f2f4fa" stroke="#7b46c9" stroke-width="2"/>
+  <text x="460" y="290" font-size="12.5" font-weight="bold" text-anchor="middle" fill="#7b46c9">論文が MoE を選ぶ理由 —— 性能だけではない</text>
+  <text x="460" y="314" font-size="11" text-anchor="middle" fill="#5b6478">“MoE also has a <tspan font-weight="bold">structural advantage</tspan>: learned routing <tspan font-weight="bold">adapts capacity per token</tspan>,</text>
+  <text x="460" y="334" font-size="11" text-anchor="middle" fill="#5b6478">whereas fixed separation cannot.”</text>
+  <text x="460" y="358" font-size="11" text-anchor="middle" fill="#d43d51">= 「人が決めた分け方」より「データに決めさせる分け方」のほうが良い、という The Bitter Lesson 的な議論。</text>
+
+  <text x="16" y="398" font-size="11" fill="#5b6478">なお論文は MoT を否定しきってはいません ——「MoT は<tspan font-weight="bold">事前学習済みの dense な LLM を fine-tune するとき</tspan>には有効だと</text>
+  <text x="16" y="418" font-size="11" fill="#5b6478">実証されている」と認めたうえで、「言語モデル自体が native MoE に移行しつつある以上、そのルーティングを視覚エキスパートへ</text>
+  <text x="16" y="438" font-size="11" fill="#5b6478">拡張するのが自然な次の一手だ」と述べています。BAGEL(Qwen2.5 から初期化)は前者、本作(ゼロから)は後者の状況です。</text>
+</svg>
+<figcaption>
+容量分離の 4 段階。数値は論文 §6.3 / Figure 26 の積み上げ実験(同一ハイパーパラメータ・同一データ・同一 FLOPs)からのものです。
+<strong>①→② の改善(PPL 15.93→15.13)だけは追加の推論コストがゼロ</strong>で得られます。
+</figcaption>
+</figure>
+
+<h2 id="moe">MoE の設計空間 — 3 つのつまみ</h2>
+<p>
+MoE を採用すると決めた後、設計者には 3 つのつまみが残ります。
+§6.1 はそれぞれを独立に振って最良点を探します
+(特記なき限り、DCLM テキスト 50% / Shutterstock 画像 50% で 57B トークン学習)。
+</p>
+
+<h3 id="granularity">つまみ 1: 粒度(granularity)</h3>
+<div class="callout math">
+<span class="callout-title">粒度 G の定義(論文 §6.1)</span>
+$$G = \frac{4\, d_{\text{model}}}{d_{\text{expert}}}$$
+<strong>アクティブな計算量を固定したまま</strong>、\(G\) を上げるとエキスパートは小さく・数は多くなります。
+</div>
+
+<figure class="diagram" id="gran-fig" data-cycle-ms="12000" data-step-count="3">
+<svg viewBox="0 0 900 380" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="MoE の粒度 G を変えたときのエキスパート構成">
+  <text x="16" y="26" font-size="13" font-weight="bold" fill="#5b6478">アクティブ計算量は 3 つとも同じ。エキスパートの「粒の大きさ」だけが違う</text>
+
+  <g class="g1">
+    <text x="16" y="60" font-size="12" font-weight="bold" fill="#d43d51">G = 1</text>
+    <rect x="90" y="42" width="96" height="46" rx="6" fill="#fbe4e8" stroke="#d43d51" stroke-width="2"/>
+    <rect x="192" y="42" width="96" height="46" rx="6" fill="#f7f8fb" stroke="#c2c9db"/>
+    <rect x="294" y="42" width="96" height="46" rx="6" fill="#f7f8fb" stroke="#c2c9db"/>
+    <rect x="396" y="42" width="96" height="46" rx="6" fill="#f7f8fb" stroke="#c2c9db"/>
+    <text x="506" y="60" font-size="10.5" fill="#5b6478">…全 16 個</text>
+    <text x="138" y="70" font-size="9.5" text-anchor="middle" fill="#d43d51">d = 8192</text>
+    <text x="596" y="60" font-size="10.5" fill="#5b6478">大きなエキスパート 16 個 / <tspan class="mono">Top-1</tspan></text>
+    <text x="596" y="78" font-size="10.5" fill="#d43d51">粗すぎる。容量配分の自由度が低い</text>
+    <text x="90" y="104" font-size="9.5" fill="#8a93ad">■ = 選ばれるエキスパート</text>
+  </g>
+
+  <g class="g2">
+    <text x="16" y="150" font-size="12" font-weight="bold" fill="#1e9e6a">G = 16</text>
+    <g fill="#e0f5ec" stroke="#1e9e6a" stroke-width="1.5">
+      <rect x="90" y="134" width="22" height="30" rx="3"/><rect x="116" y="134" width="22" height="30" rx="3"/>
+      <rect x="142" y="134" width="22" height="30" rx="3"/><rect x="168" y="134" width="22" height="30" rx="3"/>
+      <rect x="194" y="134" width="22" height="30" rx="3"/><rect x="220" y="134" width="22" height="30" rx="3"/>
+      <rect x="246" y="134" width="22" height="30" rx="3"/><rect x="272" y="134" width="22" height="30" rx="3"/>
+    </g>
+    <g fill="#f7f8fb" stroke="#c2c9db">
+      <rect x="298" y="134" width="22" height="30" rx="3"/><rect x="324" y="134" width="22" height="30" rx="3"/>
+      <rect x="350" y="134" width="22" height="30" rx="3"/><rect x="376" y="134" width="22" height="30" rx="3"/>
+      <rect x="402" y="134" width="22" height="30" rx="3"/><rect x="428" y="134" width="22" height="30" rx="3"/>
+      <rect x="454" y="134" width="22" height="30" rx="3"/><rect x="480" y="134" width="22" height="30" rx="3"/>
+    </g>
+    <text x="506" y="152" font-size="10.5" fill="#5b6478">…</text>
+    <text x="596" y="146" font-size="10.5" fill="#5b6478">小さなエキスパート 256 個 / <tspan class="mono">Top-16</tspan></text>
+    <text x="596" y="164" font-size="10.5" fill="#1e9e6a" font-weight="bold">← 本作の採用値</text>
+    <text x="596" y="182" font-size="10" fill="#5b6478">d_expert = 512</text>
+    <text x="90" y="188" font-size="9.5" fill="#1e9e6a">同じ計算量で 16 個を組み合わせられる</text>
+  </g>
+
+  <g class="g3">
+    <text x="16" y="240" font-size="12" font-weight="bold" fill="#7b46c9">G = 64</text>
+    <g fill="#efe6fb" stroke="#7b46c9" stroke-width="0.8">
+      <rect x="90" y="226" width="9" height="26" rx="2"/><rect x="102" y="226" width="9" height="26" rx="2"/>
+      <rect x="114" y="226" width="9" height="26" rx="2"/><rect x="126" y="226" width="9" height="26" rx="2"/>
+      <rect x="138" y="226" width="9" height="26" rx="2"/><rect x="150" y="226" width="9" height="26" rx="2"/>
+      <rect x="162" y="226" width="9" height="26" rx="2"/><rect x="174" y="226" width="9" height="26" rx="2"/>
+      <rect x="186" y="226" width="9" height="26" rx="2"/><rect x="198" y="226" width="9" height="26" rx="2"/>
+      <rect x="210" y="226" width="9" height="26" rx="2"/><rect x="222" y="226" width="9" height="26" rx="2"/>
+    </g>
+    <g fill="#f7f8fb" stroke="#c2c9db" stroke-width="0.8">
+      <rect x="234" y="226" width="9" height="26" rx="2"/><rect x="246" y="226" width="9" height="26" rx="2"/>
+      <rect x="258" y="226" width="9" height="26" rx="2"/><rect x="270" y="226" width="9" height="26" rx="2"/>
+      <rect x="282" y="226" width="9" height="26" rx="2"/><rect x="294" y="226" width="9" height="26" rx="2"/>
+      <rect x="306" y="226" width="9" height="26" rx="2"/><rect x="318" y="226" width="9" height="26" rx="2"/>
+      <rect x="330" y="226" width="9" height="26" rx="2"/><rect x="342" y="226" width="9" height="26" rx="2"/>
+      <rect x="354" y="226" width="9" height="26" rx="2"/><rect x="366" y="226" width="9" height="26" rx="2"/>
+      <rect x="378" y="226" width="9" height="26" rx="2"/><rect x="390" y="226" width="9" height="26" rx="2"/>
+      <rect x="402" y="226" width="9" height="26" rx="2"/><rect x="414" y="226" width="9" height="26" rx="2"/>
+      <rect x="426" y="226" width="9" height="26" rx="2"/><rect x="438" y="226" width="9" height="26" rx="2"/>
+      <rect x="450" y="226" width="9" height="26" rx="2"/><rect x="462" y="226" width="9" height="26" rx="2"/>
+      <rect x="474" y="226" width="9" height="26" rx="2"/><rect x="486" y="226" width="9" height="26" rx="2"/>
+    </g>
+    <text x="506" y="244" font-size="10.5" fill="#5b6478">…</text>
+    <text x="596" y="238" font-size="10.5" fill="#5b6478">極小エキスパート 1024 個 / <tspan class="mono">Top-64</tspan></text>
+    <text x="596" y="256" font-size="10.5" fill="#5b6478">d = 128</text>
+    <text x="596" y="274" font-size="10.5" fill="#7b46c9">G = 32 を超えると改善が頭打ち</text>
+  </g>
+
+  <rect x="16" y="296" width="868" height="72" rx="10" fill="#e0f5ec" stroke="#1e9e6a" stroke-width="2"/>
+  <text x="450" y="320" font-size="12" font-weight="bold" text-anchor="middle" fill="#1e9e6a">実験の結論(Figure 20)</text>
+  <text x="450" y="342" font-size="11" text-anchor="middle" fill="#5b6478">G を 1 → 16 に上げると両モダリティが大きく改善。ただし飽和点が違う ——</text>
+  <text x="450" y="360" font-size="11" text-anchor="middle" fill="#d43d51"><tspan font-weight="bold">視覚は G=4 で飽和、言語は G=16 まで伸びる</tspan>。言語のほうが細かいルーティングを欲しがる。</text>
+</svg>
+<figcaption>
+粒度 G の効果。<strong>「言語は細かいルーティングから得をするが、視覚はそこまで要らない」</strong>という
+非対称性が、ここで早くも顔を出します —— これは<a href="scaling.html">スケーリング則編</a>の
+「言語はパラメータ飢餓・視覚はデータ飢餓」という発見と同じ方向を向いています。
+</figcaption>
+</figure>
+
+<h3 id="sparsity">つまみ 2: スパース性(総エキスパート数)</h3>
+<p>
+\(G = 16\) に固定し、<strong>アクティブな予算(16 エキスパート・隠れ次元 512)を据え置いたまま</strong>、
+総エキスパート数を 32 → 1008 に増やします。アクティブ比率は 50% から 1.6% まで下がります。
+</p>
+<table>
+  <tr><th>構成</th><th>総パラメータ</th><th>アクティブパラメータ</th></tr>
+  <tr><td>Dense ベースライン</td><td>1.50B</td><td>1.50B</td></tr>
+  <tr><td>E = 32</td><td>2.30B</td><td>1.50B</td></tr>
+  <tr><td>E = 64</td><td>3.92B</td><td>1.50B</td></tr>
+  <tr><td>E = 128</td><td>7.14B</td><td>1.50B</td></tr>
+  <tr><td>E = 256</td><td>13.59B</td><td>1.51B</td></tr>
+  <tr><td>E = 512</td><td>26.48B</td><td>1.52B</td></tr>
+  <tr><td>E = 1008</td><td><strong>51.46B</strong></td><td><strong>1.53B</strong></td></tr>
+</table>
+<div class="callout point">
+<span class="callout-title">結果(Figure 21・Figure 24)</span>
+<strong>両モダリティとも、総エキスパート数を増やすほど一貫して良くなります</strong> ——
+テキスト PPL は下がり、拡散損失は下がり、GenEval は上がる。しかも<strong>計算量は固定のまま</strong>。
+「MoE が言語で効くことは知られていたが、統一マルチモーダル事前学習にも素直に延長できる」というのが結論です。
+<br><br>
+ただし<strong>視覚表現によって差が出ます</strong>(Figure 24)。
+RAE(SigLIP 2)ではテキスト損失も拡散損失も伸び続けるのに対し、
+<strong>VAE(FLUX.1)では拡散損失が飽和します</strong>。
+論文はこれを “semantic representations <strong>scale better with sparsity</strong>” と表現しています ——
+§3 の「RAE が VAE に勝つ」という結論が、容量を増やしたときの伸びしろでも再確認された形です。
+</div>
+
+<h3 id="shared">つまみ 3: 共有エキスパート</h3>
+<p>
+DeepSeek-MoE 系で使われる<strong>「常時アクティブな共有エキスパート」</strong>を置くべきか。
+3 通りを比較します(総 256 個・アクティブ 16 個)。
+</p>
+<table>
+  <tr><th>構成</th><th>DCLM PPL ↓</th><th>Notes PPL ↓</th><th>拡散損失 ↓</th><th>GenEval ↑</th></tr>
+  <tr><td>共有なし(素の top-16)</td><td>14.80</td><td>27.39</td><td>0.484</td><td>0.360</td></tr>
+  <tr><td>グローバル共有(常時 1 個 + top-15)</td><td>14.79</td><td>27.25</td><td>0.483</td><td>0.364</td></tr>
+  <tr><td><strong>モダリティ別共有</strong>(モダリティごとに 1 個 + top-15)</td><td><strong>14.79</strong></td><td><strong>27.16</strong></td><td><strong>0.483</strong></td><td><strong>0.367</strong></td></tr>
+</table>
+<p>
+差は小さいものの<strong>全指標でモダリティ別共有が最良</strong>です。
+論文はここから
+“suggesting different modalities have <strong>distinct capacity needs</strong>”
+という読みを引き出し、次節の分析へつなげます。
+</p>
+
+<h2 id="emergent">創発するエキスパート特化</h2>
+<p>
+MoE を採用した以上、<strong>ルータが実際に何を学んだのか</strong>を見る必要があります。
+分析対象は <strong>13.5B 総 / 1.5B アクティブ、G=16、256 エキスパート、SigLIP 2、x 予測</strong>で
+<strong>1T トークン</strong>(テキスト 50% / 動画 25% / 画像テキスト 22.5% / 行動 2.5%)学習したモデルです。
+</p>
+
+<div class="callout math">
+<span class="callout-title">特化スコアの定義(論文 §F.7)</span>
+エキスパート \(e_i\) とモダリティ \(m\) について、選択率
+\(R^{(i)}_m = C^{(i)}_m / (N_m \times k)\) を測り、
+$$S_i = \frac{R^{(i)}_{\text{text}} - R^{(i)}_{\text{image}}}{R^{(i)}_{\text{text}} + R^{(i)}_{\text{image}}}$$
+\(S_i > 0.5\) をテキスト特化、\(S_i < -0.5\) を視覚特化、その間をマルチモーダルと分類します。
+</div>
+
+<figure class="diagram" id="spec-fig" data-cycle-ms="12000" data-step-count="3">
+<svg viewBox="0 0 900 420" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="MoE のエキスパート特化に関する 3 つの発見">
+  <g class="e1">
+    <rect x="16" y="36" width="286" height="220" rx="10" fill="#e5eafc" stroke="#3556d4" stroke-width="2"/>
+    <text x="159" y="60" font-size="12" font-weight="bold" text-anchor="middle" fill="#3556d4">① モダリティ特化が自然に生まれる</text>
+    <text x="159" y="80" font-size="9.5" text-anchor="middle" fill="#5b6478">層が深くなるほど視覚寄りになる</text>
+    <!-- schematic stacked bars: early layers text-dominant, later more vision -->
+    <text x="30" y="102" font-size="9" fill="#8a93ad">浅い層</text>
+    <rect x="76" y="92" width="150" height="14" fill="#8a93ad"/>
+    <rect x="226" y="92" width="30" height="14" fill="#a9b6f0"/>
+    <rect x="256" y="92" width="16" height="14" fill="#1e9e6a"/>
+    <rect x="76" y="110" width="140" height="14" fill="#8a93ad"/>
+    <rect x="216" y="110" width="34" height="14" fill="#a9b6f0"/>
+    <rect x="250" y="110" width="22" height="14" fill="#1e9e6a"/>
+    <rect x="76" y="128" width="126" height="14" fill="#8a93ad"/>
+    <rect x="202" y="128" width="42" height="14" fill="#a9b6f0"/>
+    <rect x="244" y="128" width="28" height="14" fill="#1e9e6a"/>
+    <rect x="76" y="146" width="118" height="14" fill="#8a93ad"/>
+    <rect x="194" y="146" width="44" height="14" fill="#a9b6f0"/>
+    <rect x="238" y="146" width="34" height="14" fill="#1e9e6a"/>
+    <rect x="76" y="164" width="108" height="14" fill="#8a93ad"/>
+    <rect x="184" y="164" width="48" height="14" fill="#a9b6f0"/>
+    <rect x="232" y="164" width="40" height="14" fill="#1e9e6a"/>
+    <text x="30" y="176" font-size="9" fill="#8a93ad">深い層</text>
+    <rect x="76" y="190" width="12" height="10" fill="#8a93ad"/>
+    <text x="94" y="199" font-size="9" fill="#5b6478">テキスト</text>
+    <rect x="146" y="190" width="12" height="10" fill="#a9b6f0"/>
+    <text x="164" y="199" font-size="9" fill="#5b6478">マルチモーダル</text>
+    <rect x="238" y="190" width="12" height="10" fill="#1e9e6a"/>
+    <text x="256" y="199" font-size="9" fill="#5b6478">視覚</text>
+    <text x="30" y="222" font-size="10" fill="#3556d4" font-weight="bold">= 「まず分けて、あとで統合する」戦略</text>
+    <text x="30" y="242" font-size="9.5" fill="#5b6478">(separate-then-integrate)</text>
+  </g>
+
+  <g class="e2">
+    <rect x="318" y="36" width="272" height="220" rx="10" fill="#fdeeda" stroke="#e07b1f" stroke-width="2"/>
+    <text x="454" y="60" font-size="12" font-weight="bold" text-anchor="middle" fill="#e07b1f">② 拡散 timestep には特化しない</text>
+    <text x="454" y="82" font-size="10" text-anchor="middle" fill="#5b6478">10 個の timestep 区間で選択率を測り、</text>
+    <text x="454" y="99" font-size="10" text-anchor="middle" fill="#5b6478">その変動係数(CV)を見る</text>
+    <line x1="338" y1="180" x2="570" y2="180" stroke="#c2c9db" stroke-width="1.5"/>
+    <path d="M 346 180 L 360 178 L 374 166 L 388 130 L 400 118 L 412 134 L 426 158 L 442 172 L 462 177 L 500 179 L 560 180" fill="none" stroke="#e07b1f" stroke-width="2.5"/>
+    <line x1="400" y1="180" x2="400" y2="114" stroke="#d43d51" stroke-width="1.5" stroke-dasharray="3 2"/>
+    <text x="400" y="196" font-size="9.5" text-anchor="middle" fill="#d43d51">CV ≈ 0.15</text>
+    <text x="346" y="196" font-size="9" fill="#8a93ad">0.0</text>
+    <text x="558" y="196" font-size="9" fill="#8a93ad">0.5</text>
+    <text x="454" y="220" font-size="10.5" text-anchor="middle" fill="#e07b1f" font-weight="bold">CV が 0.15 付近に密集 = ほぼ変動なし</text>
+    <text x="454" y="240" font-size="10" text-anchor="middle" fill="#5b6478">「ノイズが多い段階の専門家」は現れない</text>
+  </g>
+
+  <g class="e3">
+    <rect x="606" y="36" width="278" height="220" rx="10" fill="#e0f5ec" stroke="#1e9e6a" stroke-width="2"/>
+    <text x="745" y="60" font-size="12" font-weight="bold" text-anchor="middle" fill="#1e9e6a">③ 理解と生成は同じエキスパートを使う</text>
+    <line x1="640" y1="200" x2="640" y2="80" stroke="#c2c9db" stroke-width="1.5"/>
+    <line x1="640" y1="200" x2="860" y2="200" stroke="#c2c9db" stroke-width="1.5"/>
+    <text x="628" y="86" font-size="9" text-anchor="end" fill="#8a93ad">理解</text>
+    <text x="858" y="216" font-size="9" text-anchor="end" fill="#8a93ad">生成</text>
+    <line x1="640" y1="200" x2="850" y2="90" stroke="#1e9e6a" stroke-width="1.5" stroke-dasharray="4 3"/>
+    <g fill="#1e9e6a" opacity="0.75">
+      <circle cx="668" cy="186" r="3.5"/><circle cx="690" cy="176" r="3.5"/><circle cx="706" cy="164" r="3.5"/>
+      <circle cx="722" cy="160" r="3.5"/><circle cx="740" cy="148" r="3.5"/><circle cx="756" cy="142" r="3.5"/>
+      <circle cx="774" cy="128" r="3.5"/><circle cx="790" cy="124" r="3.5"/><circle cx="806" cy="112" r="3.5"/>
+      <circle cx="824" cy="104" r="3.5"/><circle cx="680" cy="172" r="3.5"/><circle cx="750" cy="156" r="3.5"/>
+      <circle cx="800" cy="122" r="3.5"/><circle cx="716" cy="172" r="3.5"/>
+    </g>
+    <text x="745" y="240" font-size="10.5" text-anchor="middle" fill="#1e9e6a" font-weight="bold">全層でピアソン相関 r ≥ 0.90</text>
+  </g>
+
+  <rect x="16" y="282" width="868" height="122" rx="10" fill="#f2f4fa" stroke="#7b46c9" stroke-width="2"/>
+  <text x="450" y="306" font-size="12.5" font-weight="bold" text-anchor="middle" fill="#7b46c9">3 つの発見が指し示すもの</text>
+  <text x="30" y="332" font-size="11" fill="#5b6478">・<tspan font-weight="bold">①</tspan> ロードバランシングをかけているにもかかわらず、<tspan font-weight="bold">テキストのほうが多くのエキスパートを取る</tspan>。</text>
+  <text x="46" y="352" font-size="11" fill="#5b6478">これは §7 のスケーリング則(言語はパラメータ飢餓・視覚はデータ飢餓)と整合する。</text>
+  <text x="30" y="374" font-size="11" fill="#5b6478">・<tspan font-weight="bold">②③</tspan> 視覚エキスパートは<tspan font-weight="bold">汎用的</tspan>。timestep でも、理解 / 生成の別でも分かれない。</text>
+  <text x="30" y="394" font-size="11" fill="#1e9e6a" font-weight="bold">→ 「理解と生成に別々の表現が要る」という前提そのものを、ルーティングの側からも否定している。</text>
+</svg>
+<figcaption>
+エキスパート特化の分析(論文 Figure 22・23・25)。
+①のグラフは論文 Figure 22 の傾向を模式化したもので、正確な本数は論文図を参照してください。
+<strong>③ は §3 の主張(単一表現で足りる)を、まったく別の角度から裏付ける証拠</strong>になっています。
+</figcaption>
+</figure>
+
+<h2 id="summary">この章のまとめ</h2>
+<div class="callout point">
+<span class="callout-title">アーキテクチャを 4 点で</span>
+<ol>
+  <li><strong>共有できるものはすべて共有する</strong> —— 系列も self-attention も 1 つ。
+  分かれるのは注意マスクの可視性・FFN・出口のヘッドだけ</li>
+  <li><strong>視覚表現は 1 つで足りる</strong> —— SigLIP 2 の潜在の上で直接拡散を回す(RAE)。
+  比較のためエンコーダは<strong>すべて 256 トークンに揃えて</strong>ある</li>
+  <li><strong>容量分離は「学習させる」のが最良</strong> ——
+  共有 FFN → モダリティ別 FFN → MoT → MoE の 4 段で、MoE が全指標で勝つ</li>
+  <li><strong>MoE の設定は G=16・高スパース性・モダリティ別共有エキスパート</strong>。
+  そしてモダリティ特化は<strong>設計しなくても創発する</strong></li>
+</ol>
+</div>
+<p>
+次章では、この 1 つのモデルの中で<strong>性質のまったく違う 2 つの目的関数がどう同居するのか</strong>、
+そして推論時にどうやってモダリティを切り替えるのかを見ます。
+</p>
+
+<nav class="pager">
+  <a href="./index.html"><span class="dir">← 前へ</span><span class="title">BLM 概要</span></a>
+  <a class="next" href="training.html"><span class="dir">次へ →</span><span class="title">2. 学習と生成の仕組み</span></a>
+</nav>
+
+</main>
+
+<footer class="site-footer">
+  <p>論文: <em>Beyond Language Modeling: An Exploration of Multimodal Pretraining</em>(ICML 2026, PMLR 306)/
+  <a href="https://arxiv.org/abs/2603.03276" target="_blank" rel="noopener">arXiv:2603.03276</a> /
+  <a href="https://beyond-llms.github.io/" target="_blank" rel="noopener">プロジェクトページ</a>(実装コードは未公開)</p>
+</footer>
+
+<script>
+MathJax = { tex: { inlineMath: [['\\(', '\\)']], displayMath: [['$$', '$$']] } };
+</script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js" async></script>
+<script src="assets/diagram-controls.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-core.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-python.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-yaml.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-bash.min.js"></script>
+</body>
+</html>

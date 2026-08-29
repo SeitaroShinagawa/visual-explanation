@@ -1,0 +1,502 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BLM 学習と生成 — 2 つの目的関数が 1 回の順伝播に同居する</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🔭</text></svg>">
+<link rel="stylesheet" href="assets/style.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/themes/prism-tomorrow.min.css">
+<style>
+/* ===== dual loss: 4 stages (13s) ===== */
+@keyframes dl-bright {
+  0%, 25%, 100% { opacity: 0.3; }
+  5%, 20% { opacity: 1; }
+}
+#loss-fig .l1 { animation: dl-bright 13s ease-in-out infinite backwards; }
+#loss-fig .l2 { animation: dl-bright 13s ease-in-out infinite backwards; animation-delay: 3.25s; }
+#loss-fig .l3 { animation: dl-bright 13s ease-in-out infinite backwards; animation-delay: 6.5s; }
+#loss-fig .l4 { animation: dl-bright 13s ease-in-out infinite backwards; animation-delay: 9.75s; }
+
+/* ===== data types: 4 kinds (14s) ===== */
+@keyframes dt-turn {
+  0%, 2% { opacity: 0.22; }
+  5%, 23% { opacity: 1; }
+  26%, 100% { opacity: 0.22; }
+}
+#data-fig .d1 { animation: dt-turn 14s ease-in-out infinite backwards; }
+#data-fig .d2 { animation: dt-turn 14s ease-in-out infinite backwards; animation-delay: 3.5s; }
+#data-fig .d3 { animation: dt-turn 14s ease-in-out infinite backwards; animation-delay: 7s; }
+#data-fig .d4 { animation: dt-turn 14s ease-in-out infinite backwards; animation-delay: 10.5s; }
+
+/* ===== modal switching inference: 5 steps (15s) ===== */
+@keyframes inf-bright {
+  0%, 20%, 100% { opacity: 0.3; }
+  4%, 16% { opacity: 1; }
+}
+#inf-fig .i1 { animation: inf-bright 15s ease-in-out infinite backwards; }
+#inf-fig .i2 { animation: inf-bright 15s ease-in-out infinite backwards; animation-delay: 3s; }
+#inf-fig .i3 { animation: inf-bright 15s ease-in-out infinite backwards; animation-delay: 6s; }
+#inf-fig .i4 { animation: inf-bright 15s ease-in-out infinite backwards; animation-delay: 9s; }
+#inf-fig .i5 { animation: inf-bright 15s ease-in-out infinite backwards; animation-delay: 12s; }
+
+@media (prefers-reduced-motion: reduce) {
+  #loss-fig .l1, #loss-fig .l2, #loss-fig .l3, #loss-fig .l4,
+  #data-fig .d1, #data-fig .d2, #data-fig .d3, #data-fig .d4,
+  #inf-fig .i1, #inf-fig .i2, #inf-fig .i3, #inf-fig .i4, #inf-fig .i5 { opacity: 1; }
+}
+</style>
+</head>
+<body>
+
+<nav class="topnav">
+  <a class="home-link" href="../index.html">Visual Explanation</a><span class="sep">/</span>
+  <a href="./index.html">BLM 概要</a>
+  <a href="architecture.html">1. アーキテクチャ</a>
+  <a href="training.html" class="current">2. 学習と生成</a>
+  <a href="experiments.html">3. 評価と実験</a>
+  <a href="scaling.html">4. スケーリング則</a>
+</nav>
+
+<header class="page-header">
+  <h1>2. 学習と生成の仕組み</h1>
+  <p>離散トークンの<strong>次トークン予測</strong>と、連続潜在の<strong>flow matching</strong>。
+  数学的にまったく別種の 2 つの目的関数が、
+  <strong>1 本の系列・1 回の順伝播・1 回の逆伝播</strong>の中で同時に最適化されます。</p>
+</header>
+
+<main class="article">
+
+<h2 id="objective">2 つの目的関数が同居する</h2>
+
+<div class="callout math">
+<span class="callout-title">論文 §2.1 の学習目的関数</span>
+<strong>テキスト</strong>: 標準的な自己回帰交差エントロピー \(\mathcal{L}_{\text{LM}}\)。
+<br><br>
+<strong>視覚</strong>: フレーム単位の flow matching。
+クリーンな潜在 \(z_0\) とノイズ \(\epsilon \sim \mathcal{N}(0, I)\) に対し、
+\(t \sim \mathcal{U}[0,1]\) を引いて
+$$z_t = (1-t)\,\epsilon + t\,z_0$$
+を作り、次を最小化します。
+$$\mathcal{L}_{\text{flow}} = \mathbb{E}_{t, z_0, \epsilon}\Big[\big\|v_\theta(z_t, t, \cdot) - (z_0 - \epsilon)\big\|_2^2\Big]$$
+<strong>結合損失</strong>:
+$$\mathcal{L} = \lambda_{\text{LM}}\mathcal{L}_{\text{LM}} + \lambda_{\text{flow}}\mathcal{L}_{\text{flow}},
+\qquad \lambda_{\text{LM}} = 1.0,\ \ \lambda_{\text{flow}} = 3.0$$
+</div>
+
+<p>
+式を読み解くポイントは 3 つあります。
+</p>
+<ul>
+  <li><strong>\(t\) の向き</strong> —— \(t=0\) が純ノイズ、\(t=1\) がクリーンです。
+  拡散モデルの慣例(\(t\) が大きいほどノイズが多い)とは<strong>逆向き</strong>なので混乱しやすい箇所です</li>
+  <li><strong>回帰の対象は「速度場」</strong> —— 目標は \(z_0 - \epsilon\)、
+  つまり<strong>ノイズからクリーンへ向かう直線の方向ベクトル</strong>です。
+  <a href="../BAGEL/index.html">BAGEL</a> の Rectified Flow と同じ発想で、
+  <a href="../NWM/index.html">NWM</a> の \(\epsilon\) 予測とは別系統</li>
+  <li><strong>\(\lambda_{\text{flow}} = 3.0\)</strong> —— 視覚側に<strong>3 倍の重み</strong>が付いています。
+  論文はこの値の導出理由を明記していませんが、
+  §E.2 の「loss centering」の議論から、<strong>2 つの損失のスケールが大きく違う</strong>ことへの
+  素朴な対処だと読めます</li>
+</ul>
+
+<div class="callout point">
+<span class="callout-title">ノイズスケジュールを「ノイズが多い側」へずらす</span>
+論文は “We <strong>shift the noise schedule towards the noisier end</strong>” と述べ、
+Esser+ (2024) と RAE の先行研究に従うとしています。
+<br><br>
+理由は高次元潜在の性質にあります —— SigLIP 2 の潜在は VAE 潜在より次元が高く、
+同じノイズ量でも「情報が壊れる度合い」が相対的に小さくなります。
+そのため<strong>難しい(ノイズの多い)領域を重点的にサンプリングしないと学習が甘くなる</strong>。
+<a href="../BAGEL/index.html">BAGEL</a> が解像度を上げる際に timestep shift を 1.0 → 4.0 に上げたのと、
+動機は同じ方向です。
+</div>
+
+<figure class="diagram" id="loss-fig" data-cycle-ms="13000" data-step-count="4">
+<svg viewBox="0 0 920 420" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="2 つの損失が 1 回の順伝播で同時に計算される流れ">
+  <defs>
+    <marker id="arrDL" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#8a93ad"/>
+    </marker>
+  </defs>
+
+  <g class="l1">
+    <text x="16" y="26" font-size="12.5" font-weight="bold" fill="#5b6478">① 系列を作る(テキストと画像が混ざったまま)</text>
+    <rect x="16" y="36" width="34" height="26" rx="4" fill="#e9ecf5" stroke="#8a93ad"/>
+    <rect x="54" y="36" width="34" height="26" rx="4" fill="#e9ecf5" stroke="#8a93ad"/>
+    <rect x="92" y="36" width="34" height="26" rx="4" fill="#e0f5ec" stroke="#1e9e6a"/>
+    <rect x="130" y="36" width="34" height="26" rx="4" fill="#e0f5ec" stroke="#1e9e6a"/>
+    <rect x="168" y="36" width="34" height="26" rx="4" fill="#e0f5ec" stroke="#1e9e6a"/>
+    <rect x="206" y="36" width="34" height="26" rx="4" fill="#e9ecf5" stroke="#8a93ad"/>
+    <text x="33" y="54" font-size="9" text-anchor="middle">📝</text>
+    <text x="71" y="54" font-size="9" text-anchor="middle">📝</text>
+    <text x="109" y="54" font-size="9" text-anchor="middle">🖼️</text>
+    <text x="147" y="54" font-size="9" text-anchor="middle">🖼️</text>
+    <text x="185" y="54" font-size="9" text-anchor="middle">🖼️</text>
+    <text x="223" y="54" font-size="9" text-anchor="middle">📝</text>
+    <text x="256" y="54" font-size="10" fill="#5b6478">…</text>
+  </g>
+
+  <g class="l2">
+    <rect x="16" y="86" width="286" height="112" rx="10" fill="#e0f5ec" stroke="#1e9e6a" stroke-width="2"/>
+    <text x="159" y="110" font-size="12" font-weight="bold" text-anchor="middle" fill="#1e9e6a">② 視覚トークンにだけノイズを載せる</text>
+    <text x="159" y="132" font-size="10.5" text-anchor="middle" class="mono" fill="#5b6478">t ~ U[0,1](フレームごとに独立)</text>
+    <text x="159" y="152" font-size="10.5" text-anchor="middle" class="mono" fill="#1e9e6a">z_t = (1−t)·ε + t·z₀</text>
+    <text x="159" y="174" font-size="10" text-anchor="middle" fill="#5b6478">スケジュールはノイズが多い側へシフト</text>
+    <text x="159" y="190" font-size="10" text-anchor="middle" fill="#d43d51">テキストトークンには何もしない</text>
+  </g>
+
+  <g class="l3">
+    <rect x="330" y="86" width="230" height="112" rx="10" fill="#fff" stroke="#1c2333" stroke-width="2.5"/>
+    <text x="445" y="112" font-size="13" font-weight="bold" text-anchor="middle">③ 1 回の順伝播</text>
+    <text x="445" y="134" font-size="10.5" text-anchor="middle" fill="#5b6478">共有 self-attention +</text>
+    <text x="445" y="151" font-size="10.5" text-anchor="middle" fill="#5b6478">モダリティ別 FFN(または MoE)</text>
+    <text x="445" y="176" font-size="10.5" text-anchor="middle" fill="#d43d51" font-weight="bold">テキストトークンは、後ろに来る</text>
+    <text x="445" y="192" font-size="10.5" text-anchor="middle" fill="#d43d51" font-weight="bold">ノイジーな視覚表現を条件にできる</text>
+  </g>
+
+  <g class="l4">
+    <rect x="590" y="66" width="314" height="66" rx="10" fill="#efe6fb" stroke="#7b46c9" stroke-width="2"/>
+    <text x="747" y="88" font-size="11.5" font-weight="bold" text-anchor="middle" fill="#7b46c9">語彙ヘッド → 交差エントロピー</text>
+    <text x="747" y="108" font-size="10.5" text-anchor="middle" class="mono" fill="#5b6478">L_LM</text>
+    <text x="747" y="124" font-size="10" text-anchor="middle" fill="#5b6478">重み λ_LM = 1.0</text>
+
+    <rect x="590" y="146" width="314" height="80" rx="10" fill="#e0f5ec" stroke="#1e9e6a" stroke-width="2"/>
+    <text x="747" y="168" font-size="11.5" font-weight="bold" text-anchor="middle" fill="#1e9e6a">連続線形ヘッド → 速度場の回帰</text>
+    <text x="747" y="188" font-size="10.5" text-anchor="middle" class="mono" fill="#5b6478">L_flow = ‖v_θ(z_t,t,·) − (z₀ − ε)‖²</text>
+    <text x="747" y="206" font-size="10" text-anchor="middle" fill="#5b6478">重み λ_flow = <tspan font-weight="bold">3.0</tspan></text>
+    <text x="747" y="220" font-size="9.5" text-anchor="middle" fill="#d43d51">視覚側が 3 倍重い</text>
+  </g>
+
+  <g fill="none" stroke="#8a93ad" stroke-width="2" marker-end="url(#arrDL)">
+    <path class="flow-edge" d="M 130 66 L 130 84"/>
+    <path class="flow-edge" d="M 304 142 L 328 142"/>
+    <path class="flow-edge" d="M 562 130 L 588 106"/>
+    <path class="flow-edge" d="M 562 154 L 588 178"/>
+  </g>
+
+  <rect x="16" y="250" width="888" height="86" rx="10" fill="#fbe4e8" stroke="#d43d51" stroke-width="2"/>
+  <text x="460" y="274" font-size="12.5" font-weight="bold" text-anchor="middle" fill="#d43d51">1 回の順伝播・逆伝播で両方を最適化する</text>
+  <text x="460" y="298" font-size="11" text-anchor="middle" fill="#5b6478">“The model optimizes L = λ_LM·L_LM + λ_flow·L_flow in a <tspan font-weight="bold">single forward-backward pass</tspan>.</text>
+  <text x="460" y="318" font-size="11" text-anchor="middle" fill="#5b6478">Output hidden states route to <tspan font-weight="bold">modality-specific heads</tspan>.”(論文 §C)</text>
+
+  <text x="16" y="362" font-size="11" fill="#5b6478">見落としやすい点: <tspan font-weight="bold">拡散の timestep はフレームごとに独立に引かれます</tspan>。1 本の系列に複数フレームが入っていれば、</text>
+  <text x="16" y="382" font-size="11" fill="#5b6478">それぞれ違うノイズレベルになる —— NWM が 1 サンプル 1 timestep だったのとは対照的です。</text>
+  <text x="16" y="406" font-size="11" fill="#d43d51" font-weight="bold">そして「テキストがノイジーな視覚表現に注意を張れる」ことが、この設計の肝になります。</text>
+</svg>
+<figcaption>
+学習 1 ステップの流れ。<strong>2 つの損失は足されるだけ</strong>で、
+勾配の切り離しやステージ分けはありません。
+モデルは毎ステップ「文字の続きを当てる」と「絵のノイズを取る」を同時にやらされます。
+</figcaption>
+</figure>
+
+<h3 id="predtarget">予測対象 — v 予測と x 予測</h3>
+<p>
+上の式は<strong>速度場(v)予測</strong>ですが、論文は<strong>x 予測</strong>(クリーンな \(z_0\) を直接予測する)も試します。
+そして<strong>どちらが良いかは視覚表現に依存する</strong>という、少し意外な結果を報告します。
+</p>
+<table>
+  <tr><th>視覚表現</th><th>次元</th><th>x 予測</th><th>v 予測</th><th>論文の観察(Figure 20)</th></tr>
+  <tr>
+    <td><strong>RAE(SigLIP 2)</strong></td>
+    <td>高次元</td>
+    <td><strong>良い</strong></td>
+    <td>やや劣る</td>
+    <td>全粒度で x 予測が画像生成に勝ち、言語への影響はほぼ無い</td>
+  </tr>
+  <tr>
+    <td><strong>VAE(FLUX.1)</strong></td>
+    <td>低次元</td>
+    <td>不安定</td>
+    <td><strong>良い</strong></td>
+    <td><strong>粒度を上げると x 予測でテキスト PPL が急上昇</strong>。v 予測は素直にスケールする</td>
+  </tr>
+</table>
+<p>
+論文の解釈は
+“x-pred is <strong>less stable for low-dimensional representations as expert dimension shrinks</strong>,
+while high-dimensional representations benefit”。
+最終構成では RAE + x 予測が採用され、DPG スコアが 0.63 → 0.65 に上がっています。
+</p>
+
+<h3 id="centering">損失の重みを動的にする — loss centering</h3>
+<p>
+\(\lambda_{\text{flow}} = 3.0\) という固定重みには弱点があります ——
+<strong>エンコーダを変えると flow matching 損失の大きさが桁違いに変わる</strong>のです。
+付録 §E.2 は DINO の centering に着想を得た適応的重み付けを試しています。
+</p>
+<div class="callout math">
+<span class="callout-title">論文 Eq. (1)–(2)</span>
+各ステップで
+$$c_{\text{current}} = \alpha \mathcal{L}_{\text{flow}} + (1-\alpha)\mathcal{L}_{\text{LM}}$$
+を計算し(\(\alpha \in [0,1]\) が重視度を制御)、EMA で中心を更新
+\(c_{\text{target}} \leftarrow \mu\, c_{\text{target}} + (1-\mu)\, c_{\text{current}}\)。
+そして重みを
+$$w_{\text{flow}} = \frac{c_{\text{target}}}{\mathcal{L}_{\text{flow}}}, \qquad
+w_{\text{LM}} = \frac{c_{\text{target}}}{\mathcal{L}_{\text{LM}}}$$
+と置きます。<strong>損失が大きいほど重みを小さくする</strong>ので、
+2 つの損失の実効的な寄与が揃います。
+</div>
+<table>
+  <tr><th rowspan="2">エンコーダ</th><th colspan="2">DPG スコア ↑</th><th colspan="2">Perplexity ↓</th></tr>
+  <tr><th>固定重み</th><th>centering</th><th>固定重み</th><th>centering</th></tr>
+  <tr><td>SigLIP 2</td><td>0.570</td><td><strong>0.612</strong>(+.042)</td><td><strong>15.06</strong></td><td>15.36(+.30)</td></tr>
+  <tr><td>FLUX.1</td><td>0.498</td><td>0.510(+.012)</td><td><strong>14.96</strong></td><td>15.14(+.18)</td></tr>
+  <tr><td>SD-VAE</td><td>0.470</td><td>0.480(+.010)</td><td><strong>15.13</strong></td><td>15.35(+.22)</td></tr>
+</table>
+<div class="callout warn">
+<span class="callout-title">これは「改善」ではなくトレードオフ</span>
+表を素直に読むと、<strong>centering は生成を良くし、言語を悪くします</strong>。
+とくに SigLIP 2 では DPG が +0.042 と大きく伸びる一方、PPL は +0.30 悪化しています。
+<br><br>
+論文は §E.2 でこの表を提示するのみで、<strong>本文の既定設定には採用していません</strong>
+(§F.1 が明記するとおり既定は \(\lambda_{\text{LM}}=1.0,\ \lambda_{\text{flow}}=3.0\) の固定値)。
+つまり<strong>「試したが採らなかった」選択肢</strong>として記録されている、と読むのが妥当です。
+生成を優先したい場合の選択肢としては有用でしょう。
+</div>
+
+<h2 id="data">何を食わせるか — 4 種類のデータ</h2>
+
+<figure class="diagram" id="data-fig" data-cycle-ms="14000" data-step-count="4">
+<svg viewBox="0 0 920 400" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="4 種類の学習データとそれぞれの供給信号">
+  <text x="16" y="26" font-size="13" font-weight="bold" fill="#5b6478">4 種類のデータ。それぞれ違う「教師信号の向き」を持つ</text>
+
+  <g class="d1">
+    <rect x="16" y="40" width="212" height="150" rx="10" fill="#e9ecf5" stroke="#8a93ad" stroke-width="2"/>
+    <text x="122" y="64" font-size="12" font-weight="bold" text-anchor="middle" fill="#5b6478">📝 テキスト</text>
+    <text x="122" y="84" font-size="11" text-anchor="middle" class="mono" fill="#d43d51">T → T</text>
+    <text x="122" y="106" font-size="10" text-anchor="middle" fill="#5b6478">DCLM(Web テキスト)</text>
+    <text x="122" y="132" font-size="10" text-anchor="middle" fill="#5b6478">次トークン予測のみ。</text>
+    <text x="122" y="148" font-size="10" text-anchor="middle" fill="#5b6478">言語能力の土台</text>
+    <text x="122" y="172" font-size="10" text-anchor="middle" fill="#8a93ad">1T 学習時の比率: <tspan font-weight="bold">50%</tspan></text>
+  </g>
+
+  <g class="d2">
+    <rect x="240" y="40" width="212" height="150" rx="10" fill="#e0f5ec" stroke="#1e9e6a" stroke-width="2"/>
+    <text x="346" y="64" font-size="12" font-weight="bold" text-anchor="middle" fill="#1e9e6a">🎬 動画(ラベルなし)</text>
+    <text x="346" y="84" font-size="11" text-anchor="middle" class="mono" fill="#d43d51">I → I</text>
+    <text x="346" y="106" font-size="10" text-anchor="middle" fill="#5b6478">YouTube-Temporal 1B /</text>
+    <text x="346" y="121" font-size="10" text-anchor="middle" fill="#5b6478">Something-Something V2 / Kinetics</text>
+    <text x="346" y="144" font-size="10" text-anchor="middle" fill="#5b6478">1 FPS でフレーム単位に符号化。</text>
+    <text x="346" y="159" font-size="10" text-anchor="middle" fill="#1e9e6a" font-weight="bold">テキスト注釈は一切なし</text>
+    <text x="346" y="180" font-size="10" text-anchor="middle" fill="#8a93ad">比率: <tspan font-weight="bold">25%</tspan></text>
+  </g>
+
+  <g class="d3">
+    <rect x="464" y="40" width="212" height="150" rx="10" fill="#e5eafc" stroke="#3556d4" stroke-width="2"/>
+    <text x="570" y="64" font-size="12" font-weight="bold" text-anchor="middle" fill="#3556d4">🖼️ 画像テキスト対</text>
+    <text x="570" y="84" font-size="11" text-anchor="middle" class="mono" fill="#d43d51">I → T, T → I</text>
+    <text x="570" y="106" font-size="10" text-anchor="middle" fill="#5b6478">MetaCLIP(Web クロール)</text>
+    <text x="570" y="121" font-size="10" text-anchor="middle" fill="#5b6478">社内 Shutterstock(高審美性)</text>
+    <text x="570" y="144" font-size="10" text-anchor="middle" fill="#3556d4" font-weight="bold">両方向。理解と生成の両方を担う</text>
+    <text x="570" y="164" font-size="10" text-anchor="middle" fill="#d43d51">↑ 言語 PPL を少し悪化させる犯人</text>
+    <text x="570" y="182" font-size="10" text-anchor="middle" fill="#8a93ad">比率: <tspan font-weight="bold">22.5%</tspan></text>
+  </g>
+
+  <g class="d4">
+    <rect x="688" y="40" width="216" height="150" rx="10" fill="#fdeeda" stroke="#e07b1f" stroke-width="2"/>
+    <text x="796" y="64" font-size="12" font-weight="bold" text-anchor="middle" fill="#e07b1f">🧭 行動条件付き動画</text>
+    <text x="796" y="84" font-size="11" text-anchor="middle" class="mono" fill="#d43d51">I + T → I</text>
+    <text x="796" y="106" font-size="10" text-anchor="middle" fill="#5b6478">NWM(ロボットのナビ軌道)</text>
+    <text x="796" y="121" font-size="10" text-anchor="middle" fill="#5b6478">社内のテキスト注釈付き動画</text>
+    <text x="796" y="144" font-size="10" text-anchor="middle" fill="#e07b1f" font-weight="bold">行動を「文字列」として書く</text>
+    <text x="796" y="160" font-size="9" text-anchor="middle" class="mono" fill="#5b6478">"action: dx=+4.96, dy=+1.50, …"</text>
+    <text x="796" y="180" font-size="10" text-anchor="middle" fill="#8a93ad">比率: <tspan font-weight="bold">2.5%</tspan></text>
+  </g>
+
+  <rect x="16" y="214" width="888" height="76" rx="10" fill="#f2f4fa" stroke="#7b46c9" stroke-width="2"/>
+  <text x="460" y="238" font-size="12.5" font-weight="bold" text-anchor="middle" fill="#7b46c9">「行動 2.5%」で世界モデルが立ち上がる</text>
+  <text x="460" y="262" font-size="11" text-anchor="middle" fill="#5b6478">上の比率は §6.2 の分析対象モデル(1T トークン)のもの。§5 の実験では、この比率をさらに下げても</text>
+  <text x="460" y="282" font-size="11" text-anchor="middle" fill="#d43d51"><tspan font-weight="bold">わずか 1% で性能が飽和</tspan>することが示される —— 詳細は<tspan text-decoration="underline">実験編</tspan>へ。</text>
+
+  <text x="16" y="322" font-size="12" font-weight="bold" fill="#5b6478">データ加工の細部(付録 §B)</text>
+  <text x="16" y="344" font-size="10.5" fill="#5b6478">・<tspan font-weight="bold">再キャプション</tspan>: Qwen2.5-VL-32B-Instruct で生成(temperature 0.6 / top-p 0.95 / 最大 128 トークン)</text>
+  <text x="16" y="364" font-size="10.5" fill="#5b6478">・<tspan font-weight="bold">動画の行動注釈</tspan>: YouTube-Temporal 1B から約 <tspan font-weight="bold">1200 万件</tspan>。MLLM が連続する 2 チャンクの遷移を物理的な動作として説明し、</text>
+  <text x="30" y="382" font-size="10.5" fill="#5b6478">  自己反省(self-reflection)で検証する自動パイプライン</text>
+</svg>
+<figcaption>
+4 種類のデータと供給信号(論文 Table 2)。
+<strong>「行動をテキストとして書く」</strong>という一点だけで、
+NWM が専用のベクトル埋め込みでやっていたことを、追加の部品なしに表現しています。
+</figcaption>
+</figure>
+
+<h2 id="hparams">ハイパーパラメータ</h2>
+<table>
+  <tr><th>項目</th><th>値</th><th>出どころ</th></tr>
+  <tr><td>系列長</td><td>4096</td><td>§F.2</td></tr>
+  <tr><td>GPU 数 / バッチ</td><td>128 GPU × 4 / GPU = <strong>約 200 万トークン / step</strong></td><td>§F.2</td></tr>
+  <tr><td>最適化</td><td>AdamW</td><td>§F.2</td></tr>
+  <tr><td>学習率</td><td>ピーク <strong>3×10⁻⁴</strong>、1000 step ウォームアップ、コサイン減衰でピークの 5% まで</td><td>§F.2</td></tr>
+  <tr><td>損失重み</td><td>λ<sub>LM</sub> = 1.0 / λ<sub>flow</sub> = <strong>3.0</strong></td><td>§F.1</td></tr>
+  <tr><td>既定モデル</td><td>総 2.3B / アクティブ 1.5B</td><td>§2.2</td></tr>
+  <tr><td>視覚エンコーダ</td><td>SigLIP 2 So400M(<strong>凍結</strong>)、224×224、256 トークン</td><td>§2.2 / Table 5</td></tr>
+  <tr><td>テキストトークナイザ</td><td>LLaMA-3 の BPE</td><td>§2.2</td></tr>
+  <tr><td>推論(視覚)</td><td><strong>25 step Euler サンプラ</strong>、CFG = 3.0</td><td>§2.1 / §F.3</td></tr>
+  <tr><td>CFG 用の条件ドロップアウト</td><td><strong>学習時 10%</strong></td><td>§F.3</td></tr>
+  <tr><td>MoE 実験の基底</td><td>16 層 / d<sub>model</sub>=2048 / GQA(query 32・KV 8)/ FFN 拡大率 1.5 / d<sub>expert</sub>=512 / top-k=16</td><td>§F.6</td></tr>
+  <tr><td>MoE 実験の規模</td><td>約 57B トークン、グローバルバッチ 512 系列、H200 × 64</td><td>§F.6</td></tr>
+</table>
+
+<div class="callout point">
+<span class="callout-title">NWM との対比 — CFG の扱いが逆</span>
+<a href="../NWM/index.html">NWM</a> には<strong>CFG のための条件ドロップアウトが実装されていませんでした</strong>。
+行動条件は「創造性」ではなく忠実さが要るので、条件を強調する必要がなかったからです。
+<br><br>
+本作は逆に<strong>10% のドロップアウトを入れ、推論時に CFG=3.0 をかけます</strong>。
+テキストから画像を生成する用途が主で、
+<strong>「プロンプトへの忠実さを強めたい」</strong>という要求があるためです。
+同じ「条件付き生成」でも、条件の性質が違えば設計も逆になる、という good example です。
+</div>
+
+<h2 id="inference">生成の仕組み — モダリティを切り替えながら書く</h2>
+<p>
+推論時、モデルは<strong>離散的な自己回帰生成</strong>と<strong>連続的な flow matching</strong> のあいだを
+動的に行き来します。切り替えの合図は <code>&lt;BOI&gt;</code> トークンです。
+</p>
+
+<figure class="diagram" id="inf-fig" data-cycle-ms="15000" data-step-count="5">
+<svg viewBox="0 0 920 420" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="モダリティ切り替え推論アルゴリズムの 5 段階">
+  <defs>
+    <marker id="arrI" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#8a93ad"/>
+    </marker>
+  </defs>
+
+  <g class="i1">
+    <rect x="14" y="46" width="160" height="96" rx="10" fill="#e9ecf5" stroke="#8a93ad" stroke-width="2"/>
+    <text x="94" y="70" font-size="11.5" font-weight="bold" text-anchor="middle" fill="#5b6478">① テキストを書く</text>
+    <text x="94" y="92" font-size="10" text-anchor="middle" fill="#5b6478">通常の自己回帰</text>
+    <text x="94" y="110" font-size="10" text-anchor="middle" fill="#5b6478">next-token 予測</text>
+    <text x="94" y="130" font-size="10" text-anchor="middle" class="mono" fill="#5b6478">📝 📝 📝 …</text>
+  </g>
+
+  <g class="i2">
+    <rect x="196" y="46" width="150" height="96" rx="10" fill="#efe6fb" stroke="#7b46c9" stroke-width="2.5"/>
+    <text x="271" y="70" font-size="11.5" font-weight="bold" text-anchor="middle" fill="#7b46c9">② &lt;BOI&gt; が出た</text>
+    <text x="271" y="92" font-size="10" text-anchor="middle" fill="#5b6478">テキスト生成を</text>
+    <text x="271" y="108" font-size="10" text-anchor="middle" fill="#7b46c9" font-weight="bold">いったん中断する</text>
+    <text x="271" y="130" font-size="10" text-anchor="middle" fill="#d43d51">モードの切り替え点</text>
+  </g>
+
+  <g class="i3">
+    <rect x="368" y="46" width="160" height="96" rx="10" fill="#fbe4e8" stroke="#d43d51" stroke-width="2"/>
+    <text x="448" y="70" font-size="11.5" font-weight="bold" text-anchor="middle" fill="#d43d51">③ 純ノイズを並べる</text>
+    <text x="448" y="92" font-size="10" text-anchor="middle" fill="#5b6478">256 個のノイズベクトルを</text>
+    <text x="448" y="108" font-size="10" text-anchor="middle" fill="#5b6478">系列の末尾に追加</text>
+    <text x="448" y="130" font-size="10" text-anchor="middle" class="mono" fill="#d43d51">ε ε ε ε ε …</text>
+  </g>
+
+  <g class="i4">
+    <rect x="550" y="46" width="176" height="96" rx="10" fill="#e0f5ec" stroke="#1e9e6a" stroke-width="2"/>
+    <text x="638" y="70" font-size="11.5" font-weight="bold" text-anchor="middle" fill="#1e9e6a">④ 25 step でデノイズ</text>
+    <text x="638" y="92" font-size="10" text-anchor="middle" fill="#5b6478">Euler サンプラ / CFG = 3.0</text>
+    <text x="638" y="110" font-size="10" text-anchor="middle" fill="#5b6478">前置きのテキストが条件になる</text>
+    <text x="638" y="130" font-size="10" text-anchor="middle" fill="#1e9e6a">画像内は双方向 attention</text>
+    <path d="M 726 122 C 758 122, 758 92, 730 92" fill="none" stroke="#1e9e6a" stroke-width="2" stroke-dasharray="5 4" marker-end="url(#arrI)"/>
+    <text x="778" y="112" font-size="10" fill="#1e9e6a" text-anchor="middle">×25</text>
+  </g>
+
+  <g class="i5">
+    <rect x="14" y="188" width="240" height="86" rx="10" fill="#efe6fb" stroke="#7b46c9" stroke-width="2"/>
+    <text x="134" y="212" font-size="11.5" font-weight="bold" text-anchor="middle" fill="#7b46c9">⑤ &lt;EOI&gt; を置いて戻る</text>
+    <text x="134" y="234" font-size="10" text-anchor="middle" fill="#5b6478">テキスト生成を再開する。</text>
+    <text x="134" y="252" font-size="10" text-anchor="middle" fill="#5b6478">できた画像は以降の文脈になる</text>
+    <text x="134" y="268" font-size="10" text-anchor="middle" fill="#d43d51">→ 何度でも往復できる</text>
+
+    <rect x="278" y="188" width="626" height="86" rx="10" fill="#e5eafc" stroke="#3556d4" stroke-width="2"/>
+    <text x="591" y="212" font-size="12" font-weight="bold" text-anchor="middle" fill="#3556d4">論文 §C “Modal-switching inference algorithm”</text>
+    <text x="591" y="236" font-size="11" text-anchor="middle" fill="#5b6478">“Upon sampling a &lt;BOI&gt; token, the decoding <tspan font-weight="bold">suspends text generation</tspan> and appends pure noise vectors.</text>
+    <text x="591" y="256" font-size="11" text-anchor="middle" fill="#5b6478">The model denoises these using a 25-step Euler sampler, then appends &lt;EOI&gt; and <tspan font-weight="bold">resumes text generation</tspan>.”</text>
+  </g>
+
+  <g fill="none" stroke="#8a93ad" stroke-width="2" marker-end="url(#arrI)">
+    <path class="flow-edge" d="M 176 94 L 194 94"/>
+    <path class="flow-edge" d="M 348 94 L 366 94"/>
+    <path class="flow-edge" d="M 530 94 L 548 94"/>
+  </g>
+  <path d="M 638 144 C 638 168, 200 170, 134 186" fill="none" stroke="#7b46c9" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#arrI)"/>
+
+  <rect x="14" y="296" width="890" height="108" rx="10" fill="#f2f4fa" stroke="#7b46c9" stroke-width="2"/>
+  <text x="459" y="320" font-size="12.5" font-weight="bold" text-anchor="middle" fill="#7b46c9">本シリーズの他モデルと比べると</text>
+  <text x="30" y="346" font-size="11" fill="#5b6478">・<tspan font-weight="bold">NExT-GPT / CoDi-2</tspan>: LLM が「注文書」を書き、<tspan font-weight="bold">外部の拡散モデル</tspan>に渡す。モデルが 2 つある。</text>
+  <text x="30" y="366" font-size="11" fill="#5b6478">・<tspan font-weight="bold">BAGEL</tspan>: LLM 本体がデノイザになる。合図トークンは無く、呼び出し側が <tspan class="mono">generate_image()</tspan> を呼ぶ。</text>
+  <text x="30" y="386" font-size="11" fill="#7b46c9" font-weight="bold">・<tspan font-weight="bold">本作</tspan>: LLM 本体がデノイザになる点は BAGEL と同じ。ただし切り替えは <tspan class="mono">&lt;BOI&gt;</tspan> の<tspan font-weight="bold">サンプリングそのもの</tspan>が引き起こす。</text>
+</svg>
+<figcaption>
+モダリティ切り替え推論。<strong>「絵を描き始めるかどうか」もモデル自身がサンプリングで決める</strong>ため、
+外側の制御ロジックがほとんど要りません。
+</figcaption>
+</figure>
+
+<div class="codeblock pseudo">
+<div class="codehead"><span class="path">⚠️ 擬似コード — 論文 §C の記述から再構成(公式実装は未公開)</span></div>
+<pre><code class="language-python"># 論文に実装コードは付随しません。以下は §C の文章を手続きに書き下したもので、
+# 変数名・構造は本解説による再構成です。論文に書かれていない箇所は補っていません。
+
+seq = embed_text(prompt)                    # 系列は 1 本
+
+while not done:
+    logits = model(seq)[-1]                 # 語彙ヘッド
+    tok = sample(logits)
+
+    if tok == BOI:                          # ← ここがモード切り替え点
+        seq.append(BOI)
+        z = randn(256, d_latent)            # 純ノイズを 256 個並べる
+        for step in range(25):              # 25-step Euler サンプラ
+            t = step / 25
+            v = model(seq + z)              # 連続線形ヘッドが速度場を返す
+            v = cfg(v, guidance_scale=3.0)  # classifier-free guidance
+            z = z + v * (1 / 25)            # Euler 更新
+        seq.append(z)
+        seq.append(EOI)                     # テキスト生成へ戻る
+    else:
+        seq.append(tok)
+
+pixels = frozen_decoder(z)                  # 潜在 → 画素(RAE の既製復号器)</code></pre>
+</div>
+
+<h2 id="summary">この章のまとめ</h2>
+<div class="callout point">
+<span class="callout-title">学習と生成を 4 点で</span>
+<ol>
+  <li><strong>損失は 2 本を足すだけ</strong> —— 交差エントロピー(重み 1.0)+ flow matching(重み <strong>3.0</strong>)。
+  1 回の順伝播・逆伝播で同時に最適化する</li>
+  <li><strong>ノイズはフレームごとに独立</strong>に載る。
+  スケジュールは高次元潜在に合わせて「ノイズが多い側」へずらす</li>
+  <li><strong>予測対象は表現に依存する</strong> ——
+  高次元(RAE)なら x 予測、低次元(VAE)なら v 予測が安定</li>
+  <li><strong>推論は <code>&lt;BOI&gt;</code> の出現で切り替わる</strong>。
+  25 step の Euler で描いて <code>&lt;EOI&gt;</code> を置き、テキストへ戻る</li>
+</ol>
+</div>
+<p>
+次章では、この仕掛けで学習したモデルを<strong>どう測り、何が分かったのか</strong> ——
+7 つの評価指標と、視覚表現・データ・世界モデルの 3 つの実験群を見ていきます。
+</p>
+
+<nav class="pager">
+  <a href="architecture.html"><span class="dir">← 前へ</span><span class="title">1. アーキテクチャ</span></a>
+  <a class="next" href="experiments.html"><span class="dir">次へ →</span><span class="title">3. 評価方法と実験結果</span></a>
+</nav>
+
+</main>
+
+<footer class="site-footer">
+  <p>論文: <em>Beyond Language Modeling: An Exploration of Multimodal Pretraining</em>(ICML 2026, PMLR 306)/
+  <a href="https://arxiv.org/abs/2603.03276" target="_blank" rel="noopener">arXiv:2603.03276</a> /
+  <a href="https://beyond-llms.github.io/" target="_blank" rel="noopener">プロジェクトページ</a>(実装コードは未公開)</p>
+</footer>
+
+<script>
+MathJax = { tex: { inlineMath: [['\\(', '\\)']], displayMath: [['$$', '$$']] } };
+</script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js" async></script>
+<script src="assets/diagram-controls.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-core.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-python.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-yaml.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-bash.min.js"></script>
+</body>
+</html>
