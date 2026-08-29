@@ -1,0 +1,629 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NWM アーキテクチャ詳解 — CDiT ブロックを 1 行ずつ読む</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🧭</text></svg>">
+<link rel="stylesheet" href="assets/style.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/themes/prism-tomorrow.min.css">
+<style>
+/* ===== CDiT block diagram: 4 stages (12s) ===== */
+@keyframes blk-bright {
+  0%, 25%, 100% { opacity: 0.32; }
+  6%, 19% { opacity: 1; }
+}
+#blk-fig .b1 { animation: blk-bright 12s ease-in-out infinite backwards; }
+#blk-fig .b2 { animation: blk-bright 12s ease-in-out infinite backwards; animation-delay: 3s; }
+#blk-fig .b3 { animation: blk-bright 12s ease-in-out infinite backwards; animation-delay: 6s; }
+#blk-fig .b4 { animation: blk-bright 12s ease-in-out infinite backwards; animation-delay: 9s; }
+
+/* ===== attention cost diagram: DiT vs CDiT (10s, 2 steps) ===== */
+@keyframes cost-turn {
+  0%, 3% { opacity: 0.2; }
+  8%, 45% { opacity: 1; }
+  50%, 100% { opacity: 0.2; }
+}
+#cost-fig .c1 { animation: cost-turn 10s ease-in-out infinite backwards; }
+#cost-fig .c2 { animation: cost-turn 10s ease-in-out infinite backwards; animation-delay: 5s; }
+
+/* ===== shape diagram: tensor pipeline (15s, 5 steps) ===== */
+@keyframes shp-bright {
+  0%, 20%, 100% { opacity: 0.35; }
+  5%, 15% { opacity: 1; }
+}
+#shape-fig .p1 { animation: shp-bright 15s ease-in-out infinite backwards; }
+#shape-fig .p2 { animation: shp-bright 15s ease-in-out infinite backwards; animation-delay: 3s; }
+#shape-fig .p3 { animation: shp-bright 15s ease-in-out infinite backwards; animation-delay: 6s; }
+#shape-fig .p4 { animation: shp-bright 15s ease-in-out infinite backwards; animation-delay: 9s; }
+#shape-fig .p5 { animation: shp-bright 15s ease-in-out infinite backwards; animation-delay: 12s; }
+
+@media (prefers-reduced-motion: reduce) {
+  #blk-fig .b1, #blk-fig .b2, #blk-fig .b3, #blk-fig .b4,
+  #cost-fig .c1, #cost-fig .c2,
+  #shape-fig .p1, #shape-fig .p2, #shape-fig .p3, #shape-fig .p4, #shape-fig .p5 { opacity: 1; }
+}
+</style>
+</head>
+<body>
+
+<nav class="topnav">
+  <a class="home-link" href="../index.html">Visual Explanation</a><span class="sep">/</span>
+  <a href="./index.html">NWM 概要</a>
+  <a href="architecture.html" class="current">1. アーキテクチャ</a>
+  <a href="training.html">2. 学習プロセス</a>
+  <a href="inference.html">3. 生成と計画</a>
+  <a href="evaluation.html">4. 評価と実験結果</a>
+</nav>
+
+<header class="page-header">
+  <h1>1. アーキテクチャ詳解</h1>
+  <p>Conditional Diffusion Transformer(CDiT)は、DiT から
+  <strong>「文脈を self-attention に入れない」</strong>という一手だけを引き算し、
+  代わりに cross-attention を足したモデルです。
+  その一手がなぜ効くのかを、テンソル形状と計算量から確かめます。</p>
+</header>
+
+<main class="article">
+
+<h2 id="pipeline">まず全体のテンソル形状を押さえる</h2>
+<p>
+CDiT が扱うのは画像そのものではなく、<strong>Stable Diffusion の VAE が吐く潜在テンソル</strong>です。
+224×224 の RGB 画像が 28×28×4 に圧縮され、そこからさらに 2×2 のパッチに切られてトークンになります。
+</p>
+
+<figure class="diagram" id="shape-fig" data-cycle-ms="15000" data-step-count="5">
+<svg viewBox="0 0 940 380" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="画像から CDiT の出力までのテンソル形状の変化">
+  <defs>
+    <marker id="arrS" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#8a93ad"/>
+    </marker>
+  </defs>
+
+  <g class="p1">
+    <rect x="16" y="60" width="140" height="92" rx="10" fill="#e5eafc" stroke="#3556d4" stroke-width="2"/>
+    <text x="86" y="84" font-size="12" font-weight="bold" text-anchor="middle" fill="#3556d4">① 画像</text>
+    <text x="86" y="104" font-size="11" text-anchor="middle" class="mono" fill="#5b6478">(B, T, 3, 224, 224)</text>
+    <text x="86" y="122" font-size="9.5" text-anchor="middle" fill="#5b6478">T = 文脈 4 + ゴール 4</text>
+    <text x="86" y="139" font-size="9.5" text-anchor="middle" fill="#5b6478">4:3 中央切り出し → 224 正方</text>
+  </g>
+
+  <g class="p2">
+    <rect x="188" y="60" width="152" height="92" rx="10" fill="#e0f5ec" stroke="#1e9e6a" stroke-width="2"/>
+    <text x="264" y="84" font-size="12" font-weight="bold" text-anchor="middle" fill="#1e9e6a">② VAE 潜在</text>
+    <text x="264" y="104" font-size="11" text-anchor="middle" class="mono" fill="#5b6478">(B, T, 4, 28, 28)</text>
+    <text x="264" y="122" font-size="9.5" text-anchor="middle" fill="#5b6478">8× 圧縮・4 チャネル</text>
+    <text x="264" y="139" font-size="9.5" text-anchor="middle" class="mono" fill="#5b6478">.sample().mul_(0.18215)</text>
+  </g>
+
+  <g class="p3">
+    <rect x="372" y="36" width="164" height="66" rx="10" fill="#f2f4fa" stroke="#8a93ad" stroke-width="2"/>
+    <text x="454" y="58" font-size="11.5" font-weight="bold" text-anchor="middle" fill="#5b6478">③a 文脈トークン</text>
+    <text x="454" y="77" font-size="10.5" text-anchor="middle" class="mono" fill="#5b6478">(N, 784, d)</text>
+    <text x="454" y="93" font-size="9.5" text-anchor="middle" fill="#5b6478">= 4 フレーム × 196</text>
+
+    <rect x="372" y="112" width="164" height="66" rx="10" fill="#fbe4e8" stroke="#d43d51" stroke-width="2"/>
+    <text x="454" y="134" font-size="11.5" font-weight="bold" text-anchor="middle" fill="#d43d51">③b 生成対象トークン</text>
+    <text x="454" y="153" font-size="10.5" text-anchor="middle" class="mono" fill="#5b6478">(N, 196, d)</text>
+    <text x="454" y="169" font-size="9.5" text-anchor="middle" fill="#5b6478">ノイズを載せた 1 フレーム分</text>
+    <text x="454" y="200" font-size="10" text-anchor="middle" fill="#5b6478">28×28 を 2×2 で切って 14×14 = <tspan font-weight="bold">196</tspan></text>
+    <text x="454" y="217" font-size="10" text-anchor="middle" fill="#5b6478">N = B × ゴール数</text>
+  </g>
+
+  <g class="p4">
+    <rect x="568" y="60" width="164" height="118" rx="10" fill="#fff" stroke="#1c2333" stroke-width="2.5"/>
+    <text x="650" y="84" font-size="12.5" font-weight="bold" text-anchor="middle">④ CDiT ブロック × N</text>
+    <text x="650" y="104" font-size="10" text-anchor="middle" fill="#5b6478">生成対象だけが更新される</text>
+    <text x="650" y="122" font-size="10" text-anchor="middle" class="mono" fill="#5b6478">x ← block(x, c, x_cond)</text>
+    <text x="650" y="142" font-size="10" text-anchor="middle" fill="#d43d51">x_cond は毎ブロック不変</text>
+    <text x="650" y="160" font-size="10" text-anchor="middle" fill="#5b6478">(使い回せる)</text>
+  </g>
+
+  <g class="p5">
+    <rect x="764" y="36" width="160" height="70" rx="10" fill="#efe6fb" stroke="#7b46c9" stroke-width="2"/>
+    <text x="844" y="58" font-size="11.5" font-weight="bold" text-anchor="middle" fill="#7b46c9">⑤ FinalLayer</text>
+    <text x="844" y="77" font-size="10.5" text-anchor="middle" class="mono" fill="#5b6478">(N, 196, 2·2·8=32)</text>
+    <text x="844" y="94" font-size="9.5" text-anchor="middle" fill="#5b6478">unpatchify で戻す</text>
+
+    <rect x="764" y="120" width="160" height="86" rx="10" fill="#fdeeda" stroke="#e07b1f" stroke-width="2"/>
+    <text x="844" y="142" font-size="11.5" font-weight="bold" text-anchor="middle" fill="#e07b1f">出力</text>
+    <text x="844" y="161" font-size="10.5" text-anchor="middle" class="mono" fill="#5b6478">(N, 8, 28, 28)</text>
+    <text x="844" y="179" font-size="9.5" text-anchor="middle" fill="#5b6478">前半 4ch = ノイズ ε の予測</text>
+    <text x="844" y="196" font-size="9.5" text-anchor="middle" fill="#5b6478">後半 4ch = 分散の補間係数</text>
+  </g>
+
+  <g fill="none" stroke="#8a93ad" stroke-width="2" marker-end="url(#arrS)">
+    <path class="flow-edge" d="M 156 106 L 186 106"/>
+    <path class="flow-edge" d="M 340 96 L 370 70"/>
+    <path class="flow-edge" d="M 340 116 L 370 140"/>
+    <path class="flow-edge" d="M 536 145 L 566 128"/>
+    <path class="flow-edge" d="M 536 70 L 566 92"/>
+    <path class="flow-edge" d="M 732 106 L 762 84"/>
+    <path class="flow-edge" d="M 844 106 L 844 118"/>
+  </g>
+
+  <text x="16" y="250" font-size="12" font-weight="bold" fill="#d43d51">数字で押さえておきたいこと</text>
+  <text x="16" y="272" font-size="11" fill="#5b6478">・1 フレーム = <tspan class="mono">196</tspan> トークン。文脈 4 フレームで <tspan class="mono">784</tspan> トークン。合計しても <tspan class="mono">980</tspan> にしかならない。</text>
+  <text x="16" y="292" font-size="11" fill="#5b6478">・拡散モデルなので、この計 980 トークンぶんの計算を<tspan font-weight="bold">推論時に 250 回</tspan>繰り返す。</text>
+  <text x="16" y="312" font-size="11" fill="#5b6478">・さらに計画では、その 250 回のデノイズを<tspan font-weight="bold">軌道 1 本につき 8 回</tspan>、<tspan font-weight="bold">軌道 120 本 × 3 反復</tspan>ぶん回す。</text>
+  <text x="16" y="332" font-size="11" fill="#d43d51" font-weight="bold">→ だから「1 回の順伝播が軽いこと」が、このモデルでは品質と同じくらい重要になる。</text>
+  <text x="16" y="356" font-size="11" fill="#5b6478">CDiT の設計は、この一点への回答として読むと筋が通ります。</text>
+</svg>
+<figcaption>
+画像から出力までのテンソル形状。<code>learn_sigma=True</code> のため出力チャネルが入力の 2 倍(8)ある点、
+文脈トークンが<strong>ブロックを通しても更新されない</strong>点が、後の設計を理解する鍵になります。
+</figcaption>
+</figure>
+
+<h2 id="cdit-block">CDiT ブロック — 3 段構成と、その順番の意味</h2>
+<p>
+まずコードそのものを見てしまうのが早道です。ブロックの本体はたった 7 行です。
+</p>
+
+<div class="codeblock">
+<div class="codehead"><span class="path">models.py</span> L83–110
+<a href="https://github.com/facebookresearch/nwm/blob/3f6cd8e70d6f2d1e2b9684acff510710135f0f41/models.py#L83-L110" target="_blank" rel="noopener">GitHub ↗</a></div>
+<pre><code class="language-python">class CDiTBlock(nn.Module):
+    """
+    A DiT block with adaptive layer norm zero (adaLN-Zero) conditioning.
+    """
+    def __init__(self, hidden_size, num_heads, mlp_ratio=4.0, **block_kwargs):
+        super().__init__()
+        self.norm1 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
+        self.attn = Attention(hidden_size, num_heads=num_heads, qkv_bias=True, **block_kwargs)
+        self.norm2 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
+        self.norm_cond = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
+        self.cttn = nn.MultiheadAttention(hidden_size, num_heads=num_heads, add_bias_kv=True, bias=True, batch_first=True, **block_kwargs)
+        self.adaLN_modulation = nn.Sequential(
+            nn.SiLU(),
+            nn.Linear(hidden_size, 11 * hidden_size, bias=True)
+        )
+
+        self.norm3 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
+        mlp_hidden_dim = int(hidden_size * mlp_ratio)
+        approx_gelu = lambda: nn.GELU(approximate="tanh")
+        self.mlp = Mlp(in_features=hidden_size, hidden_features=mlp_hidden_dim, act_layer=approx_gelu, drop=0)
+
+    def forward(self, x, c, x_cond):
+        shift_msa, scale_msa, gate_msa, shift_ca_xcond, scale_ca_xcond, shift_ca_x, scale_ca_x, gate_ca_x, shift_mlp, scale_mlp, gate_mlp = self.adaLN_modulation(c).chunk(11, dim=1)
+        x = x + gate_msa.unsqueeze(1) * self.attn(modulate(self.norm1(x), shift_msa, scale_msa))
+        x_cond_norm = modulate(self.norm_cond(x_cond), shift_ca_xcond, scale_ca_xcond)
+        x = x + gate_ca_x.unsqueeze(1) * self.cttn(query=modulate(self.norm2(x), shift_ca_x, scale_ca_x), key=x_cond_norm, value=x_cond_norm, need_weights=False)[0]
+        x = x + gate_mlp.unsqueeze(1) * self.mlp(modulate(self.norm3(x), shift_mlp, scale_mlp))
+        return x</code></pre>
+</div>
+<p>
+<code>forward</code> は 4 行しかありません ——
+<strong>①自己注意 → ②交差注意 → ③MLP</strong>、そのすべてが
+1 行目で作った 11 本の変調係数で味付けされる、という構造です。
+cross-attention の直前で <code>x_cond</code> 側も変調されている(L107)ことに注意してください。
+</p>
+
+<figure class="diagram" id="blk-fig" data-cycle-ms="12000" data-step-count="4">
+<svg viewBox="0 0 900 470" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="CDiT ブロックの 3 段構成と AdaLN 変調">
+  <defs>
+    <marker id="arrB" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#8a93ad"/>
+    </marker>
+  </defs>
+
+  <!-- static frame -->
+  <rect x="230" y="16" width="360" height="416" rx="14" fill="#fafbff" stroke="#c2c9db" stroke-dasharray="5 4"/>
+  <text x="410" y="40" font-size="12" text-anchor="middle" fill="#8a93ad">CDiTBlock(これが 28 段積まれる)</text>
+
+  <rect x="60" y="60" width="140" height="46" rx="9" fill="#fbe4e8" stroke="#d43d51" stroke-width="2"/>
+  <text x="130" y="80" font-size="11" text-anchor="middle" fill="#d43d51" font-weight="bold">x: 生成対象</text>
+  <text x="130" y="96" font-size="9.5" text-anchor="middle" class="mono" fill="#5b6478">(N, 196, d)</text>
+
+  <rect x="620" y="176" width="150" height="52" rx="9" fill="#f2f4fa" stroke="#8a93ad" stroke-width="2"/>
+  <text x="695" y="196" font-size="11" text-anchor="middle" fill="#5b6478" font-weight="bold">x_cond: 文脈</text>
+  <text x="695" y="212" font-size="9.5" text-anchor="middle" class="mono" fill="#5b6478">(N, 784, d)</text>
+  <text x="695" y="242" font-size="9.5" text-anchor="middle" fill="#1e9e6a">ブロックを通っても不変</text>
+
+  <!-- ① self attention -->
+  <g class="b1">
+    <rect x="256" y="62" width="308" height="70" rx="10" fill="#e5eafc" stroke="#3556d4" stroke-width="2"/>
+    <text x="410" y="84" font-size="12.5" font-weight="bold" text-anchor="middle" fill="#3556d4">① self-attention</text>
+    <text x="410" y="102" font-size="10" text-anchor="middle" fill="#5b6478">Q, K, V すべて <tspan class="mono">x</tspan> の 196 トークンから</text>
+    <text x="410" y="120" font-size="10.5" text-anchor="middle" fill="#d43d51" font-weight="bold">文脈は 1 トークンも入らない</text>
+  </g>
+
+  <!-- ② cross attention -->
+  <g class="b2">
+    <rect x="256" y="164" width="308" height="82" rx="10" fill="#fdeeda" stroke="#e07b1f" stroke-width="2"/>
+    <text x="410" y="186" font-size="12.5" font-weight="bold" text-anchor="middle" fill="#e07b1f">② cross-attention</text>
+    <text x="410" y="204" font-size="10" text-anchor="middle" fill="#5b6478">Q = <tspan class="mono">x</tspan>(196) / K, V = <tspan class="mono">x_cond</tspan>(784)</text>
+    <text x="410" y="222" font-size="10" text-anchor="middle" fill="#5b6478">ここでだけ「過去」が入ってくる</text>
+    <text x="410" y="239" font-size="10" text-anchor="middle" fill="#1e9e6a">出力は skip connection で足し込む</text>
+    <path d="M 618 202 L 568 202" stroke="#e07b1f" stroke-width="2.5" fill="none" marker-end="url(#arrB)"/>
+  </g>
+
+  <!-- ③ MLP -->
+  <g class="b3">
+    <rect x="256" y="278" width="308" height="62" rx="10" fill="#e0f5ec" stroke="#1e9e6a" stroke-width="2"/>
+    <text x="410" y="300" font-size="12.5" font-weight="bold" text-anchor="middle" fill="#1e9e6a">③ MLP(4× 拡大の 2 層 + GELU)</text>
+    <text x="410" y="322" font-size="10" text-anchor="middle" fill="#5b6478">トークンごとに独立。ここも skip connection</text>
+  </g>
+
+  <!-- ④ adaLN -->
+  <g class="b4">
+    <rect x="16" y="180" width="176" height="230" rx="11" fill="#efe6fb" stroke="#7b46c9" stroke-width="2"/>
+    <text x="104" y="204" font-size="12" font-weight="bold" text-anchor="middle" fill="#7b46c9">④ AdaLN-Zero</text>
+    <text x="104" y="222" font-size="10" text-anchor="middle" class="mono" fill="#5b6478">SiLU → Linear(d, 11d)</text>
+    <text x="104" y="242" font-size="10" text-anchor="middle" fill="#5b6478">条件 <tspan class="mono">c = ξ</tspan> から</text>
+    <text x="104" y="258" font-size="10" text-anchor="middle" fill="#5b6478"><tspan font-weight="bold">11 本</tspan>の係数を作る</text>
+    <text x="30" y="282" font-size="9.5" fill="#3556d4">① shift, scale, gate</text>
+    <text x="30" y="300" font-size="9.5" fill="#e07b1f">② 文脈側 shift, scale</text>
+    <text x="30" y="318" font-size="9.5" fill="#e07b1f">② query 側 shift, scale, gate</text>
+    <text x="30" y="336" font-size="9.5" fill="#1e9e6a">③ shift, scale, gate</text>
+    <text x="104" y="362" font-size="9.5" text-anchor="middle" fill="#d43d51">3+2+3+3 = <tspan font-weight="bold">11</tspan></text>
+    <text x="104" y="384" font-size="9.5" text-anchor="middle" fill="#5b6478">最終層はゼロ初期化 →</text>
+    <text x="104" y="400" font-size="9.5" text-anchor="middle" fill="#5b6478">学習開始時は恒等写像</text>
+    <path d="M 194 250 C 220 250, 226 96, 252 96" fill="none" stroke="#7b46c9" stroke-width="1.6" stroke-dasharray="4 3" marker-end="url(#arrB)"/>
+    <path d="M 194 280 C 220 280, 226 202, 252 202" fill="none" stroke="#7b46c9" stroke-width="1.6" stroke-dasharray="4 3" marker-end="url(#arrB)"/>
+    <path d="M 194 320 C 220 320, 226 308, 252 308" fill="none" stroke="#7b46c9" stroke-width="1.6" stroke-dasharray="4 3" marker-end="url(#arrB)"/>
+  </g>
+
+  <g fill="none" stroke="#8a93ad" stroke-width="2" marker-end="url(#arrB)">
+    <path class="flow-edge" d="M 200 84 L 254 84"/>
+    <path d="M 410 132 L 410 162"/>
+    <path d="M 410 246 L 410 276"/>
+    <path d="M 410 340 L 410 372"/>
+  </g>
+
+  <rect x="330" y="374" width="160" height="42" rx="9" fill="#fbe4e8" stroke="#d43d51" stroke-width="2"/>
+  <text x="410" y="392" font-size="11" text-anchor="middle" fill="#d43d51" font-weight="bold">更新された x</text>
+  <text x="410" y="408" font-size="9.5" text-anchor="middle" class="mono" fill="#5b6478">(N, 196, d)</text>
+
+  <text x="620" y="300" font-size="11" fill="#5b6478">論文の一文:</text>
+  <text x="620" y="322" font-size="10.5" fill="#5b6478">“CDiT resembles the original</text>
+  <text x="620" y="339" font-size="10.5" fill="#5b6478">Transformer Block, <tspan font-weight="bold">without</tspan></text>
+  <text x="620" y="356" font-size="10.5" fill="#d43d51" font-weight="bold">applying expensive self-</text>
+  <text x="620" y="373" font-size="10.5" fill="#d43d51" font-weight="bold">attention over the context</text>
+  <text x="620" y="390" font-size="10.5" fill="#d43d51" font-weight="bold">tokens.”</text>
+  <text x="620" y="414" font-size="10" fill="#5b6478">つまり元祖 Transformer の</text>
+  <text x="620" y="430" font-size="10" fill="#5b6478">デコーダブロックそのもの。</text>
+</svg>
+<figcaption>
+CDiT ブロックの構造。<strong>①→②→③ の順番は、元祖 Transformer のデコーダ層と同じ</strong>です。
+新しい部品は 1 つも入っていません。新しいのは<strong>「何を self-attention に入れないか」</strong>という
+判断のほうです。
+</figcaption>
+</figure>
+
+<h3 id="adaln">なぜ AdaLN が 11 分割なのか</h3>
+<p>
+DiT の AdaLN は <code>6 * hidden_size</code>(self-attention の shift/scale/gate と MLP の shift/scale/gate)でした。
+CDiT はこれが <strong>11</strong> になっています。増えた 5 本の内訳は次の通りです。
+</p>
+
+<table>
+  <tr><th>係数</th><th>何を変調するか</th><th>DiT にもある?</th></tr>
+  <tr><td><code>shift_msa, scale_msa, gate_msa</code></td><td>self-attention(3 本)</td><td>あり</td></tr>
+  <tr><td><code>shift_ca_xcond, scale_ca_xcond</code></td><td><strong>cross-attention の key/value 側</strong>(= 文脈の LayerNorm 出力)</td><td><strong>なし</strong></td></tr>
+  <tr><td><code>shift_ca_x, scale_ca_x, gate_ca_x</code></td><td><strong>cross-attention の query 側</strong></td><td><strong>なし</strong></td></tr>
+  <tr><td><code>shift_mlp, scale_mlp, gate_mlp</code></td><td>MLP(3 本)</td><td>あり</td></tr>
+</table>
+
+<div class="callout point">
+<span class="callout-title">見落としやすい設計 — 文脈も条件で変調される</span>
+<code>shift_ca_xcond / scale_ca_xcond</code> があるおかげで、<strong>同じ文脈フレームでも
+「どんな行動を取るか」によって違う見え方をします</strong>。
+文脈を静的な参照テーブルとして扱うのではなく、
+<strong>行動と時間シフトに応じて読み方を変えられる</strong>ようにしてあるわけです。
+<br><br>
+なお <code>gate</code> は cross-attention の出力側にだけ付き(<code>gate_ca_x</code>)、
+文脈側には付きません —— <code>gate</code> は残差に足し込む量を制御する係数なので、
+残差の主体である query 側にしか意味がないためです。
+</div>
+
+<div class="callout math">
+<span class="callout-title">パラメータ内訳から見える「AdaLN の重さ」</span>
+XL 構成(\(d = 1152\))で、1 ブロックのパラメータ数を数えるとこうなります。
+<table>
+  <tr><th>部品</th><th>パラメータ数</th><th>ブロック内の割合</th></tr>
+  <tr><td>self-attention</td><td>5.31 M</td><td>15%</td></tr>
+  <tr><td>cross-attention</td><td>5.32 M</td><td>15%</td></tr>
+  <tr><td>MLP</td><td>10.62 M</td><td>30%</td></tr>
+  <tr><td><strong>AdaLN 変調(11 分割)</strong></td><td><strong>14.61 M</strong></td><td><strong>41%</strong></td></tr>
+</table>
+<strong>ブロックの 4 割は AdaLN です</strong>。
+DiT の 6 分割でも 7.97 M(DiT-XL ブロックの 33%)を占めていたので、
+これは DiT 系の設計に共通する性質でもあります。
+「たった 4 つのスカラーを条件にするだけなのに、なぜ 1B のモデルが要るのか」という疑問の
+答えの一部がここにあります —— <strong>条件の情報量が小さいことと、
+それを全層に反映させる機構が軽いことは別問題</strong>です。
+</div>
+
+<h2 id="conditioning">条件ベクトル ξ の作り方</h2>
+<p>
+論文 Eq. (3) の \(\xi = \psi_a + \psi_k + \psi_t\) は、コードでは <code>forward</code> のたった 4 行です。
+</p>
+
+<div class="codeblock">
+<div class="codehead"><span class="path">models.py</span> L226–245 <code>CDiT.forward</code>
+<a href="https://github.com/facebookresearch/nwm/blob/3f6cd8e70d6f2d1e2b9684acff510710135f0f41/models.py#L226-L245" target="_blank" rel="noopener">GitHub ↗</a></div>
+<pre><code class="language-python">    def forward(self, x, t, y, x_cond, rel_t):
+        x = self.x_embedder(x) + self.pos_embed[self.context_size:]
+        x_cond = self.x_embedder(x_cond.flatten(0, 1)).unflatten(0, (x_cond.shape[0], x_cond.shape[1])) + self.pos_embed[:self.context_size]
+        x_cond = x_cond.flatten(1, 2)
+        t = self.t_embedder(t[..., None])
+        y = self.y_embedder(y)
+        time_emb = self.time_embedder(rel_t[..., None])
+        c = t + time_emb + y # if training on unlabeled data, dont add y.
+
+        for block in self.blocks:
+            x = block(x, c, x_cond)
+        x = self.final_layer(x, c)
+        x = self.unpatchify(x)
+        return x</code></pre>
+</div>
+
+<p>
+<code>c = t + time_emb + y</code> —— この 1 行が Eq. (3) です。
+3 つの埋め込みを<strong>連結ではなく加算</strong>している点に注目してください。
+連結なら次元が 3 倍になりますが、加算なら \(d\) のままです。
+AdaLN が全ブロックにこの \(d\) 次元ベクトルを配るので、次元を増やすとコストが 3 倍になってしまいます。
+</p>
+
+<div class="callout warn">
+<span class="callout-title">末尾のコメントが示す「ラベルなしデータ」の扱い</span>
+<code># if training on unlabeled data, dont add y.</code> ——
+論文 §3.2 の
+“To train on unlabeled data, we simply <strong>omit explicit navigation actions</strong> when computing ξ”
+に対応するコメントですが、<strong>公開コードにこの分岐は実装されていません</strong>。
+<code>c = t + time_emb + y</code> は常に 3 項を足します。
+Ego4D を使った実験(<a href="evaluation.html#ego4d">評価編</a>)を再現するには、
+このコメントに従って自分で分岐を書く必要があります。
+関連して、<code>config/data_config.yaml</code> にも Ego4D のエントリはありません。
+</div>
+
+<h3 id="action-embed">行動埋め込み — 3 つのスカラーを別々の MLP に通す</h3>
+
+<div class="codeblock">
+<div class="codehead"><span class="path">models.py</span> L65–77
+<a href="https://github.com/facebookresearch/nwm/blob/3f6cd8e70d6f2d1e2b9684acff510710135f0f41/models.py#L65-L77" target="_blank" rel="noopener">GitHub ↗</a></div>
+<pre><code class="language-python">class ActionEmbedder(nn.Module):
+    """
+    Embeds action xy into vector representations.
+    """
+    def __init__(self, hidden_size, frequency_embedding_size=256):
+        super().__init__()
+        hsize = hidden_size//3
+        self.x_emb = TimestepEmbedder(hsize, frequency_embedding_size)
+        self.y_emb = TimestepEmbedder(hsize, frequency_embedding_size)
+        self.angle_emb = TimestepEmbedder(hidden_size -2*hsize, frequency_embedding_size)
+
+    def forward(self, xya):
+        return torch.cat([self.x_emb(xya[...,0:1]), self.y_emb(xya[...,1:2]), self.angle_emb(xya[...,2:3])], dim=-1)</code></pre>
+</div>
+
+<p>
+論文の
+“we first map each scalar to \(\mathbb{R}^{\frac{d}{3}}\) by extracting sine-cosine features,
+then applying a 2-layer MLP, and concatenating them into a single vector \(\psi_a \in \mathbb{R}^d\)”
+がそのままコードになっています。
+</p>
+<ul>
+  <li><strong>3 成分それぞれに独立した埋め込み器</strong>を持つ ——
+  Δx、Δy、Δyaw は物理的に別の量なので、重みを共有しない</li>
+  <li><strong>拡散 timestep と同じ <code>TimestepEmbedder</code> を使い回している</strong> ——
+  sin-cos 周波数特徴(256 次元)→ Linear → SiLU → Linear。
+  連続値をそのまま線形層に入れるより、周波数展開してからのほうが細かい差を拾える</li>
+  <li>\(d\) が 3 で割り切れない場合(1152 は割り切れるが 1024 は割り切れない)は、
+  <strong>角度の埋め込みが余りを吸収する</strong>(<code>hidden_size - 2*hsize</code>)</li>
+</ul>
+
+<h3 id="pos-embed">位置埋め込み — フレームの順番はここで表現される</h3>
+<div class="codeblock">
+<div class="codehead"><span class="path">models.py</span> L159
+<a href="https://github.com/facebookresearch/nwm/blob/3f6cd8e70d6f2d1e2b9684acff510710135f0f41/models.py#L159" target="_blank" rel="noopener">GitHub ↗</a></div>
+<pre><code class="language-python">        self.pos_embed = nn.Parameter(torch.zeros(self.context_size + 1, num_patches, hidden_size), requires_grad=True) # for context and for predicted frame</code></pre>
+</div>
+<p>
+形状が <code>(context_size + 1, num_patches, hidden_size)</code> = <code>(5, 196, d)</code> であることに注目してください。
+<strong>フレームの位置ごとに、196 パッチ分の位置埋め込みを丸ごと別々に持っています</strong>。
+時間方向の位置埋め込みと空間方向の位置埋め込みを分けて足す設計ではなく、
+<strong>(時刻, 空間位置) の組ごとに独立したベクトル</strong>を学習するわけです。
+</p>
+<ul>
+  <li><code>pos_embed[:4]</code> が文脈フレーム用、<code>pos_embed[4:]</code> が生成対象用。
+  <strong>生成対象は文脈とは違う位置埋め込みをもらう</strong>ので、
+  cross-attention の中で「自分は未来のフレームだ」と区別できる</li>
+  <li>ファイル末尾に <code>get_2d_sincos_pos_embed</code>(MAE 由来)が定義されていますが、
+  <strong>CDiT では使われていません</strong>。実際には <code>nn.init.normal_(std=0.02)</code> で
+  初期化された<strong>学習可能パラメータ</strong>です
+  (コメントの “Initialize (and freeze) pos_embed by sin-cos embedding” は DiT からの残骸)</li>
+  <li>この設計の帰結として、<strong>文脈長を学習後に変えられません</strong>。
+  <code>context_size</code> を変えると <code>pos_embed</code> の形状が変わり、
+  チェックポイントを <code>strict=True</code> で読み込めなくなります</li>
+</ul>
+
+<h2 id="complexity">DiT ではなく CDiT にする理由 — 計算量</h2>
+<p>
+論文 §3.2 の議論は明快です。トークン次元 \(d\)、1 フレームあたりのトークン数 \(n\)、文脈フレーム数 \(m\) として:
+</p>
+
+<div class="callout math">
+<span class="callout-title">論文 §3.2 の計算量</span>
+<strong>DiT</strong>(文脈も全部 self-attention に入れる):
+$$O(m^2 n^2 d) \quad \text{—— 文脈長に対して} \textbf{二乗}$$
+<strong>CDiT</strong>(支配項は cross-attention):
+$$O(m n^2 d) \quad \text{—— 文脈長に対して} \textbf{線形}$$
+“allowing us to use longer context size”。
+</div>
+
+<figure class="diagram" id="cost-fig" data-cycle-ms="10000" data-step-count="2">
+<svg viewBox="0 0 900 400" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="DiT と CDiT のアテンション行列サイズ比較">
+  <!-- DiT -->
+  <g class="c1">
+    <text x="30" y="34" font-size="13.5" font-weight="bold" fill="#d43d51">① DiT: 980 × 980 の巨大な 1 枚</text>
+    <rect x="30" y="48" width="240" height="240" rx="6" fill="#fbe4e8" stroke="#d43d51" stroke-width="2"/>
+    <line x1="78" y1="48" x2="78" y2="288" stroke="#d43d51" stroke-width="0.8" opacity="0.5"/>
+    <line x1="126" y1="48" x2="126" y2="288" stroke="#d43d51" stroke-width="0.8" opacity="0.5"/>
+    <line x1="174" y1="48" x2="174" y2="288" stroke="#d43d51" stroke-width="0.8" opacity="0.5"/>
+    <line x1="222" y1="48" x2="222" y2="288" stroke="#d43d51" stroke-width="0.8" opacity="0.5"/>
+    <line x1="30" y1="96" x2="270" y2="96" stroke="#d43d51" stroke-width="0.8" opacity="0.5"/>
+    <line x1="30" y1="144" x2="270" y2="144" stroke="#d43d51" stroke-width="0.8" opacity="0.5"/>
+    <line x1="30" y1="192" x2="270" y2="192" stroke="#d43d51" stroke-width="0.8" opacity="0.5"/>
+    <line x1="30" y1="240" x2="270" y2="240" stroke="#d43d51" stroke-width="0.8" opacity="0.5"/>
+    <text x="150" y="172" font-size="14" text-anchor="middle" fill="#d43d51" font-weight="bold">980² = 960,400</text>
+    <text x="150" y="196" font-size="11" text-anchor="middle" fill="#5b6478">マス目(= 内積の回数)</text>
+    <text x="30" y="312" font-size="10.5" fill="#5b6478">文脈 784 + 生成対象 196 = 980 トークンが</text>
+    <text x="30" y="330" font-size="10.5" fill="#5b6478">総当たりで注意を張り合う。</text>
+    <text x="30" y="352" font-size="10.5" fill="#d43d51" font-weight="bold">文脈を 8 フレームに増やすと 4 倍近くになる。</text>
+    <text x="30" y="374" font-size="10.5" fill="#5b6478">しかも文脈どうしの注意は、毎デノイズ反復で</text>
+    <text x="30" y="392" font-size="10.5" fill="#5b6478">同じ計算を繰り返しているだけ。</text>
+  </g>
+
+  <!-- CDiT -->
+  <g class="c2">
+    <text x="470" y="34" font-size="13.5" font-weight="bold" fill="#1e9e6a">② CDiT: 小さな 2 枚に分ける</text>
+    <rect x="470" y="48" width="48" height="48" rx="4" fill="#e5eafc" stroke="#3556d4" stroke-width="2"/>
+    <text x="536" y="70" font-size="11" fill="#3556d4" font-weight="bold">self-attention</text>
+    <text x="536" y="87" font-size="11" class="mono" fill="#5b6478">196² = 38,416</text>
+
+    <rect x="470" y="120" width="192" height="48" rx="4" fill="#fdeeda" stroke="#e07b1f" stroke-width="2"/>
+    <line x1="518" y1="120" x2="518" y2="168" stroke="#e07b1f" stroke-width="0.8" opacity="0.6"/>
+    <line x1="566" y1="120" x2="566" y2="168" stroke="#e07b1f" stroke-width="0.8" opacity="0.6"/>
+    <line x1="614" y1="120" x2="614" y2="168" stroke="#e07b1f" stroke-width="0.8" opacity="0.6"/>
+    <text x="678" y="142" font-size="11" fill="#e07b1f" font-weight="bold">cross-attention</text>
+    <text x="678" y="159" font-size="11" class="mono" fill="#5b6478">196 × 784 = 153,664</text>
+
+    <rect x="470" y="196" width="330" height="52" rx="9" fill="#e0f5ec" stroke="#1e9e6a" stroke-width="2"/>
+    <text x="635" y="217" font-size="12.5" text-anchor="middle" fill="#1e9e6a" font-weight="bold">合計 192,080 マス</text>
+    <text x="635" y="237" font-size="11" text-anchor="middle" fill="#5b6478">DiT の <tspan font-weight="bold">約 1/5</tspan></text>
+
+    <text x="470" y="278" font-size="10.5" fill="#5b6478">文脈どうしの注意(784² = 614,656 マス)が</text>
+    <text x="470" y="296" font-size="10.5" fill="#1e9e6a" font-weight="bold">まるごと消えるのが効いている。</text>
+    <text x="470" y="322" font-size="10.5" fill="#5b6478">文脈を 8 フレームに増やしても、</text>
+    <text x="470" y="340" font-size="10.5" fill="#5b6478">増えるのは cross-attention の横幅だけ</text>
+    <text x="470" y="358" font-size="10.5" fill="#5b6478">(196×784 → 196×1568)。</text>
+    <text x="470" y="382" font-size="10.5" fill="#1e9e6a" font-weight="bold">= 文脈長に対して線形。</text>
+  </g>
+
+  <text x="30" y="18" font-size="11" fill="#8a93ad">条件: 1 フレーム 196 トークン、文脈 4 フレーム、生成対象 1 フレーム</text>
+</svg>
+<figcaption>
+アテンション行列の「マス目の数」で見た両者の差。
+上の数字は<strong>アテンション部分だけ</strong>の比較で、実際の FLOPs には MLP や射影も入ります。
+論文が報告する実測値は <strong>「4× fewer FLOPs compared to a standard DiT」</strong>です。
+</figcaption>
+</figure>
+
+<div class="callout point">
+<span class="callout-title">論文が「驚いた」と書いている結果</span>
+“Surprisingly, even with <strong>equal amount of parameters</strong> (e.g, CDiT-L compared to DiT-XL),
+CDiT is <strong>4× faster and performs better</strong>.”
+<br><br>
+CDiT-L と DiT-XL が同規模というのは実際に数えられます ——
+<strong>CDiT-L/2 は約 687M、DiT-XL/2 は約 675M</strong>(本解説で <code>models.py</code> の定義から
+手計算した値。ブロック内訳は下表)。
+つまり「小さいから速い」のではなく、<strong>同じ大きさのまま速くて強い</strong>という主張です。
+</div>
+
+<h3 id="sizes">モデルサイズの一覧</h3>
+<div class="codeblock">
+<div class="codehead"><span class="path">models.py</span> L306–324
+<a href="https://github.com/facebookresearch/nwm/blob/3f6cd8e70d6f2d1e2b9684acff510710135f0f41/models.py#L306-L324" target="_blank" rel="noopener">GitHub ↗</a></div>
+<pre><code class="language-python">def CDiT_XL_2(**kwargs):
+    return CDiT(depth=28, hidden_size=1152, patch_size=2, num_heads=16, **kwargs)
+
+def CDiT_L_2(**kwargs):
+    return CDiT(depth=24, hidden_size=1024, patch_size=2, num_heads=16, **kwargs)
+
+def CDiT_B_2(**kwargs):
+    return CDiT(depth=12, hidden_size=768, patch_size=2, num_heads=12, **kwargs)
+
+def CDiT_S_2(**kwargs):
+    return CDiT(depth=12, hidden_size=384, patch_size=2, num_heads=6, **kwargs)</code></pre>
+</div>
+
+<table>
+  <tr><th>構成</th><th>depth</th><th>hidden</th><th>heads</th><th>総パラメータ数(概算)</th><th>備考</th></tr>
+  <tr><td><strong>CDiT-XL/2</strong></td><td>28</td><td>1152</td><td>16</td><td><strong>約 1.01 B</strong></td><td>論文の既定。“scaled up to 1 billion parameters”</td></tr>
+  <tr><td>CDiT-L/2</td><td>24</td><td>1024</td><td>16</td><td>約 687 M</td><td>DiT-XL/2(約 675M)とほぼ同規模</td></tr>
+  <tr><td>CDiT-B/2</td><td>12</td><td>768</td><td>12</td><td>約 195 M</td><td>スケーリング実験用</td></tr>
+  <tr><td>CDiT-S/2</td><td>12</td><td>384</td><td>6</td><td>約 49 M</td><td>同上</td></tr>
+</table>
+<p>
+※ パラメータ数は本解説で <code>models.py</code> の定義(<code>input_size=28</code>, <code>context_size=4</code>,
+<code>in_channels=4</code>, <code>learn_sigma=True</code>)から算出した概算値です。
+論文が明示しているのは XL の「1B」のみで、他は記載がありません。
+</p>
+
+<h2 id="init">初期化 — ゼロから立ち上がる仕掛け</h2>
+<p>
+<code>initialize_weights</code>(L165–209)には、DiT 系に共通する 2 つのゼロ初期化があります。
+</p>
+<div class="codeblock">
+<div class="codehead"><span class="path">models.py</span> L200–209
+<a href="https://github.com/facebookresearch/nwm/blob/3f6cd8e70d6f2d1e2b9684acff510710135f0f41/models.py#L200-L209" target="_blank" rel="noopener">GitHub ↗</a></div>
+<pre><code class="language-python">        # Zero-out adaLN modulation layers in DiT blocks:
+        for block in self.blocks:
+            nn.init.constant_(block.adaLN_modulation[-1].weight, 0)
+            nn.init.constant_(block.adaLN_modulation[-1].bias, 0)
+
+        # Zero-out output layers:
+        nn.init.constant_(self.final_layer.adaLN_modulation[-1].weight, 0)
+        nn.init.constant_(self.final_layer.adaLN_modulation[-1].bias, 0)
+        nn.init.constant_(self.final_layer.linear.weight, 0)
+        nn.init.constant_(self.final_layer.linear.bias, 0)</code></pre>
+</div>
+<ul>
+  <li><strong>AdaLN の最終 Linear がゼロ</strong> → 学習開始時は
+  <code>shift=0, scale=0, gate=0</code>。<code>modulate(x, 0, 0) = x</code> かつ
+  <code>gate * attn(...) = 0</code> なので、<strong>全ブロックが恒等写像</strong>として始まる
+  (これが “adaLN-<strong>Zero</strong>” の由来)</li>
+  <li><strong>FinalLayer の Linear もゼロ</strong> → 最初の予測は常にゼロテンソル。
+  「何も予測しない」状態から徐々に立ち上がる</li>
+</ul>
+<p>
+つまり<strong>初期状態の CDiT は「何をしても出力ゼロ」</strong>で、
+学習が進むにつれてブロックが 1 つずつ「効き始める」構造になっています。
+深いモデルを安定に学習させるための、DiT 由来の作法です。
+</p>
+
+<h2 id="summary">この章のまとめ</h2>
+<div class="callout point">
+<span class="callout-title">CDiT の設計を 4 点で</span>
+<ol>
+  <li><strong>self-attention は生成対象だけ</strong>。文脈は cross-attention 経由でしか入らない
+  → 計算量が文脈長に対して線形になる</li>
+  <li><strong>文脈トークンはブロックを通しても更新されない</strong>
+  → 各層が同じ <code>x_cond</code> を参照するだけで済む</li>
+  <li><strong>条件は 4 つのスカラー(Δx, Δy, Δyaw, k)+ 拡散 timestep のみ</strong>。
+  sin-cos 展開 → MLP → 加算 → AdaLN で全層に配る</li>
+  <li><strong>位置埋め込みは (時刻, 空間) の組ごとに学習</strong>。
+  そのぶん文脈長は学習後に変えられない</li>
+</ol>
+</div>
+<p>
+次章では、このモデルに<strong>何を食わせて</strong>学習するのかを見ます ——
+とくに「行動」がどうやって生の GPS/オドメトリから 3 つの正規化スカラーになるのか、
+そして「1 観測につきゴール 4 つ」という工夫が何を防いでいるのかを追います。
+</p>
+
+<nav class="pager">
+  <a href="./index.html"><span class="dir">← 前へ</span><span class="title">NWM 概要</span></a>
+  <a class="next" href="training.html"><span class="dir">次へ →</span><span class="title">2. 学習プロセス</span></a>
+</nav>
+
+</main>
+
+<footer class="site-footer">
+  <p>引用コード: <a href="https://github.com/facebookresearch/nwm/tree/3f6cd8e70d6f2d1e2b9684acff510710135f0f41" target="_blank" rel="noopener">facebookresearch/nwm</a>(CC BY-NC 4.0)/
+  論文: <a href="https://arxiv.org/abs/2412.03572" target="_blank" rel="noopener">Navigation World Models</a>(arXiv:2412.03572, CVPR 2025 Oral)</p>
+</footer>
+
+<script>
+MathJax = { tex: { inlineMath: [['\\(', '\\)']], displayMath: [['$$', '$$']] } };
+</script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js" async></script>
+<script src="assets/diagram-controls.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-core.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-python.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-yaml.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-bash.min.js"></script>
+</body>
+</html>

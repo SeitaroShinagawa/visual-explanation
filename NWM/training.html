@@ -1,0 +1,720 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NWM 学習プロセス — 行動の作り方から拡散損失まで</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🧭</text></svg>">
+<link rel="stylesheet" href="assets/style.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/themes/prism-tomorrow.min.css">
+<style>
+/* ===== action pipeline: raw pose -> normalized 3-vector (16s, 4 steps) ===== */
+@keyframes apl-bright {
+  0%, 25%, 100% { opacity: 0.3; }
+  6%, 19% { opacity: 1; }
+}
+#apl-fig .n1 { animation: apl-bright 16s ease-in-out infinite backwards; }
+#apl-fig .n2 { animation: apl-bright 16s ease-in-out infinite backwards; animation-delay: 4s; }
+#apl-fig .n3 { animation: apl-bright 16s ease-in-out infinite backwards; animation-delay: 8s; }
+#apl-fig .n4 { animation: apl-bright 16s ease-in-out infinite backwards; animation-delay: 12s; }
+
+/* ===== batch expansion: 1 sample -> 4 goal pairs (12s, 4 steps) ===== */
+@keyframes bat-turn {
+  0%, 3% { opacity: 0.2; }
+  8%, 23% { opacity: 1; }
+  28%, 100% { opacity: 0.2; }
+}
+#batch-fig .g1 { animation: bat-turn 12s ease-in-out infinite backwards; }
+#batch-fig .g2 { animation: bat-turn 12s ease-in-out infinite backwards; animation-delay: 3s; }
+#batch-fig .g3 { animation: bat-turn 12s ease-in-out infinite backwards; animation-delay: 6s; }
+#batch-fig .g4 { animation: bat-turn 12s ease-in-out infinite backwards; animation-delay: 9s; }
+
+/* ===== diffusion loss: noise in, epsilon out (12s, 4 steps) ===== */
+@keyframes dif-bright {
+  0%, 25%, 100% { opacity: 0.3; }
+  6%, 19% { opacity: 1; }
+}
+#diff-fig .d1 { animation: dif-bright 12s ease-in-out infinite backwards; }
+#diff-fig .d2 { animation: dif-bright 12s ease-in-out infinite backwards; animation-delay: 3s; }
+#diff-fig .d3 { animation: dif-bright 12s ease-in-out infinite backwards; animation-delay: 6s; }
+#diff-fig .d4 { animation: dif-bright 12s ease-in-out infinite backwards; animation-delay: 9s; }
+
+@media (prefers-reduced-motion: reduce) {
+  #apl-fig .n1, #apl-fig .n2, #apl-fig .n3, #apl-fig .n4,
+  #batch-fig .g1, #batch-fig .g2, #batch-fig .g3, #batch-fig .g4,
+  #diff-fig .d1, #diff-fig .d2, #diff-fig .d3, #diff-fig .d4 { opacity: 1; }
+}
+</style>
+</head>
+<body>
+
+<nav class="topnav">
+  <a class="home-link" href="../index.html">Visual Explanation</a><span class="sep">/</span>
+  <a href="./index.html">NWM 概要</a>
+  <a href="architecture.html">1. アーキテクチャ</a>
+  <a href="training.html" class="current">2. 学習プロセス</a>
+  <a href="inference.html">3. 生成と計画</a>
+  <a href="evaluation.html">4. 評価と実験結果</a>
+</nav>
+
+<header class="page-header">
+  <h1>2. 学習プロセス</h1>
+  <p>NWM の学習は<strong>拡散モデルの標準的な学習そのもの</strong>で、
+  凝った損失も、段階的なカリキュラムもありません。
+  工夫はすべて<strong>「1 サンプルをどう作るか」</strong>に集中しています ——
+  行動をどう正規化するか、ゴールを何個引くか、時間シフトをどう混ぜるか。</p>
+</header>
+
+<main class="article">
+
+<h2 id="data">何を食わせるか — 5 つのロボットデータセットと Ego4D</h2>
+<p>
+NWM は<strong>タスク埋め込みも身体(embodiment)埋め込みも持ちません</strong>。
+四輪車も、四足歩行ロボットも、オフロード ATV も、屋内 Roomba も、
+全部まとめて 1 本のデータセットとして流し込みます。
+</p>
+
+<table>
+  <tr><th>データセット</th><th>中身</th><th>規模(論文 Appendix 8.1)</th><th>用途</th><th>コード上の名前</th></tr>
+  <tr>
+    <td><strong>RECON</strong></td>
+    <td>屋外オープンワールド探索(Clearpath Jackal UGV)</td>
+    <td>40 時間 / 9 環境<br>学習 9,468・評価 2,367 セグメント</td>
+    <td>学習 + 主評価</td>
+    <td><code>recon</code></td>
+  </tr>
+  <tr>
+    <td><strong>SCAND</strong></td>
+    <td>社会的に適切な歩行ナビ(Jackal と Boston Dynamics Spot)</td>
+    <td>8.7 時間 / 138 軌道 / 25 マイル<br>学習 484・評価 121</td>
+    <td>学習 + 評価</td>
+    <td><code>scand</code></td>
+  </tr>
+  <tr>
+    <td><strong>TartanDrive</strong></td>
+    <td>オフロード走行(改造 Yamaha Viking ATV)</td>
+    <td>5 時間 / 630 軌道<br>学習 1,000・評価 251</td>
+    <td>学習 + 評価</td>
+    <td><code>tartan_drive</code></td>
+  </tr>
+  <tr>
+    <td><strong>HuRoN(SACSoN)</strong></td>
+    <td>屋内での人とのインタラクション(Roomba)</td>
+    <td>75 時間 / 5 環境 / 4,000 回の対人事象<br>学習 2,451・評価 613</td>
+    <td>学習 + 評価</td>
+    <td><strong><code>sacson</code></strong></td>
+  </tr>
+  <tr>
+    <td><strong>GO Stanford</strong></td>
+    <td>魚眼カメラの遠隔操作ロボット 2 種 / 27 棟以上</td>
+    <td>約 25 時間(低解像度)</td>
+    <td><strong>未知環境の評価のみ</strong></td>
+    <td><code>go_stanford</code></td>
+  </tr>
+  <tr>
+    <td><strong>Ego4D</strong></td>
+    <td>人間の一人称視点動画。歩行・ジョギング・買い物などナビを含むシナリオのみ抽出</td>
+    <td>1,619 本 / 908 時間以上</td>
+    <td><strong>ラベルなし学習のみ</strong>(行動は時間シフトだけ)</td>
+    <td>—</td>
+  </tr>
+</table>
+
+<div class="callout warn">
+<span class="callout-title">コードを読むときの注意 2 点</span>
+① <strong>HuRoN はコード上では <code>sacson</code></strong> という名前です。論文本文は HuRoN、
+データセットの別名が SACSoN で、<code>config/*.yaml</code> や <code>data_splits/</code> は後者を使っています。
+<br>
+② <strong>Ego4D の学習経路は公開コードに存在しません</strong>。
+<code>config/data_config.yaml</code> にエントリが無く、
+<code>models.py</code> の <code>c = t + time_emb + y</code> にも「行動なし」の分岐がありません
+(<a href="architecture.html#conditioning">アーキテクチャ編</a>参照)。
+論文 §4.5 と Table 4 の実験を再現するには、この 2 か所を自分で書き足す必要があります。
+</div>
+
+<h2 id="action">行動はどう作られるか — 生のオドメトリから 3 つのスカラーへ</h2>
+<p>
+ロボットデータセットに入っているのは <code>position</code> と <code>yaw</code> の時系列です。
+これが「行動」になるまでに、<strong>3 段階の変換</strong>を経ます。
+</p>
+
+<div class="codeblock">
+<div class="codehead"><span class="path">datasets.py</span> L129–159 <code>BaseDataset._compute_actions</code>
+<a href="https://github.com/facebookresearch/nwm/blob/3f6cd8e70d6f2d1e2b9684acff510710135f0f41/datasets.py#L129-L159" target="_blank" rel="noopener">GitHub ↗</a></div>
+<pre><code class="language-python">    def _compute_actions(self, traj_data, curr_time, goal_time):
+        start_index = curr_time
+        end_index = curr_time + self.len_traj_pred + 1
+        yaw = traj_data["yaw"][start_index:end_index]
+        positions = traj_data["position"][start_index:end_index]
+        goal_pos = traj_data["position"][goal_time]
+        goal_yaw = traj_data["yaw"][goal_time]
+        ...
+        waypoints_pos = to_local_coords(positions, positions[0], yaw[0])
+        waypoints_yaw = angle_difference(yaw[0], yaw)
+        actions = np.concatenate([waypoints_pos, waypoints_yaw.reshape(-1, 1)], axis=-1)
+        actions = actions[1:]
+
+        goal_pos = to_local_coords(goal_pos, positions[0], yaw[0])
+        goal_yaw = angle_difference(yaw[0], goal_yaw)
+
+        if self.normalize:
+            actions[:, :2] /= self.data_config["metric_waypoint_spacing"]
+            goal_pos[:, :2] /= self.data_config["metric_waypoint_spacing"]
+
+        goal_pos = np.concatenate([goal_pos, goal_yaw.reshape(-1, 1)], axis=-1)
+        return actions, goal_pos</code></pre>
+</div>
+
+<figure class="diagram" id="apl-fig" data-cycle-ms="16000" data-step-count="4">
+<svg viewBox="0 0 920 400" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="生の姿勢データが正規化された行動ベクトルになるまでの 4 段階">
+  <defs>
+    <marker id="arrN" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#8a93ad"/>
+    </marker>
+  </defs>
+
+  <g class="n1">
+    <rect x="14" y="48" width="200" height="126" rx="10" fill="#f2f4fa" stroke="#8a93ad" stroke-width="2"/>
+    <text x="114" y="72" font-size="12.5" font-weight="bold" text-anchor="middle" fill="#5b6478">① 生の姿勢</text>
+    <text x="114" y="94" font-size="10.5" text-anchor="middle" class="mono" fill="#5b6478">traj_data["position"]</text>
+    <text x="114" y="111" font-size="10.5" text-anchor="middle" class="mono" fill="#5b6478">traj_data["yaw"]</text>
+    <text x="114" y="134" font-size="10" text-anchor="middle" fill="#5b6478">世界座標系のメートル値</text>
+    <text x="114" y="152" font-size="10" text-anchor="middle" fill="#d43d51">そのままでは環境ごとに</text>
+    <text x="114" y="167" font-size="10" text-anchor="middle" fill="#d43d51">意味が違ってしまう</text>
+  </g>
+
+  <g class="n2">
+    <rect x="244" y="48" width="200" height="126" rx="10" fill="#e5eafc" stroke="#3556d4" stroke-width="2"/>
+    <text x="344" y="72" font-size="12.5" font-weight="bold" text-anchor="middle" fill="#3556d4">② 局所座標に回す</text>
+    <text x="344" y="94" font-size="10.5" text-anchor="middle" class="mono" fill="#5b6478">to_local_coords(p, p₀, yaw₀)</text>
+    <text x="344" y="111" font-size="10.5" text-anchor="middle" class="mono" fill="#5b6478">angle_difference(yaw₀, yaw)</text>
+    <text x="344" y="134" font-size="10" text-anchor="middle" fill="#5b6478">現在位置を原点、現在ヨーを</text>
+    <text x="344" y="150" font-size="10" text-anchor="middle" fill="#5b6478">正面に取り直す</text>
+    <text x="344" y="168" font-size="10" text-anchor="middle" fill="#3556d4">→ 一人称視点の量になる</text>
+  </g>
+
+  <g class="n3">
+    <rect x="474" y="48" width="212" height="126" rx="10" fill="#e0f5ec" stroke="#1e9e6a" stroke-width="2"/>
+    <text x="580" y="72" font-size="12.5" font-weight="bold" text-anchor="middle" fill="#1e9e6a">③ 歩幅で割る</text>
+    <text x="580" y="94" font-size="10.5" text-anchor="middle" class="mono" fill="#5b6478">/= metric_waypoint_spacing</text>
+    <text x="580" y="116" font-size="10" text-anchor="middle" fill="#5b6478">RECON 0.25 m / SCAND 0.38 m</text>
+    <text x="580" y="132" font-size="10" text-anchor="middle" fill="#5b6478">TartanDrive 0.72 m / HuRoN 0.255 m</text>
+    <text x="580" y="150" font-size="10" text-anchor="middle" fill="#1e9e6a">「1 歩ぶん = 1.0」に揃う</text>
+    <text x="580" y="167" font-size="10" text-anchor="middle" fill="#5b6478">→ ATV も Roomba も同じ行動空間へ</text>
+  </g>
+
+  <g class="n4">
+    <rect x="716" y="48" width="190" height="126" rx="10" fill="#efe6fb" stroke="#7b46c9" stroke-width="2"/>
+    <text x="811" y="72" font-size="12.5" font-weight="bold" text-anchor="middle" fill="#7b46c9">④ [−1, 1] に正規化</text>
+    <text x="811" y="94" font-size="10.5" text-anchor="middle" class="mono" fill="#5b6478">normalize_data(xy, stats)</text>
+    <text x="811" y="116" font-size="10" text-anchor="middle" class="mono" fill="#5b6478">min=[−2.5, −4]</text>
+    <text x="811" y="132" font-size="10" text-anchor="middle" class="mono" fill="#5b6478">max=[ 5.0,  4]</text>
+    <text x="811" y="152" font-size="10" text-anchor="middle" fill="#d43d51">xy だけ。ヨーはラジアンのまま</text>
+    <text x="811" y="168" font-size="10" text-anchor="middle" fill="#5b6478">前進の上限が後退の 2 倍</text>
+  </g>
+
+  <g fill="none" stroke="#8a93ad" stroke-width="2" marker-end="url(#arrN)">
+    <path class="flow-edge" d="M 214 111 L 242 111"/>
+    <path class="flow-edge" d="M 444 111 L 472 111"/>
+    <path class="flow-edge" d="M 686 111 L 714 111"/>
+  </g>
+
+  <rect x="14" y="212" width="892" height="76" rx="10" fill="#fbe4e8" stroke="#d43d51" stroke-width="2"/>
+  <text x="460" y="236" font-size="12.5" font-weight="bold" text-anchor="middle" fill="#d43d51">この 4 段階が「1 モデルで複数の身体を扱う」を成立させている</text>
+  <text x="460" y="258" font-size="11" text-anchor="middle" fill="#5b6478">論文 §4.1: “To standardize the step size across agents, we divide the distance agents travel between frames</text>
+  <text x="460" y="276" font-size="11" text-anchor="middle" fill="#5b6478">by their average step size in meters, ensuring the action space is similar for different agents.”</text>
+
+  <text x="14" y="318" font-size="11.5" fill="#5b6478">気づきにくい非対称: 正規化統計 <tspan class="mono">min=[-2.5, -4], max=[5, 4]</tspan> は、</text>
+  <text x="14" y="338" font-size="11.5" fill="#5b6478">前後方向 (Δx) だけ <tspan font-weight="bold">前進 5.0 に対して後退 -2.5</tspan> と非対称になっている。</text>
+  <text x="14" y="360" font-size="11.5" fill="#d43d51" font-weight="bold">論文 §4.1 の「後退はジッタが多いので除去した(following NoMaD)」と整合する設計。</text>
+  <text x="14" y="382" font-size="11" fill="#5b6478">左右 (Δy) は ±4 で対称 —— 左右の曲がりやすさに偏りはないので当然。</text>
+</svg>
+<figcaption>
+生の姿勢データが条件ベクトルになるまで。<strong>③ の「歩幅で割る」だけが NWM 固有</strong>で、
+①②④ は NoMaD / GNM 系のデータパイプライン(<code>visualnav-transformer</code>)から受け継いだ処理です。
+</figcaption>
+</figure>
+
+<div class="callout math">
+<span class="callout-title">なぜヨーだけ正規化しないのか</span>
+<code>normalize_data</code> が触るのは <code>[:, :2]</code>、つまり xy だけです。ヨーはラジアンのまま渡されます。
+これは<strong>ヨーがもともと有界(\([-\pi, \pi]\))で、スケールが環境に依存しない</strong>からです。
+<code>angle_difference</code> が \(2\pi\) の周期性を畳んで必ずこの範囲に収めるので、
+xy のように「データセットごとに違うメートル値」を揃える処理が要りません。
+<br><br>
+実際、デモノートブックの回転コマンドは <code>'Rotate Left': [0, 0, 0.5]</code> ——
+<strong>0.5 ラジアン(約 29°)</strong>という素直な物理量になっています。
+</div>
+
+<h2 id="goals">1 観測につきゴール 4 つ — 「行動と時間のもつれ」への対策</h2>
+<p>
+<a href="index.html#problem">概要編</a>で触れた「モデルが時間だけ見て行動を無視する」危険への対策が、
+データローダの <code>__getitem__</code> に埋め込まれています。
+</p>
+
+<div class="codeblock">
+<div class="codehead"><span class="path">datasets.py</span> L183–206 <code>TrainingDataset.__getitem__</code>
+<a href="https://github.com/facebookresearch/nwm/blob/3f6cd8e70d6f2d1e2b9684acff510710135f0f41/datasets.py#L183-L206" target="_blank" rel="noopener">GitHub ↗</a></div>
+<pre><code class="language-python">    def __getitem__(self, i: int) -> Tuple[torch.Tensor]:
+        f_curr, curr_time, min_goal_dist, max_goal_dist = self.index_to_data[i]
+        goal_offset = np.random.randint(min_goal_dist, max_goal_dist + 1, size=(self.goals_per_obs))
+        goal_time = (curr_time + goal_offset).astype('int')
+        rel_time = (goal_offset).astype('float')/(128.) # TODO: refactor, currently a fixed const
+
+        context_times = list(range(curr_time - self.context_size + 1, curr_time + 1))
+        context = [(f_curr, t) for t in context_times] + [(f_curr, t) for t in goal_time]
+
+        obs_image = torch.stack([self.transform(Image.open(get_data_path(self.data_folder, f, t))) for f, t in context])
+
+        # Load other trajectory data
+        curr_traj_data = self._get_trajectory(f_curr)
+
+        # Compute actions
+        _, goal_pos = self._compute_actions(curr_traj_data, curr_time, goal_time)
+        goal_pos[:, :2] = normalize_data(goal_pos[:, :2], self.ACTION_STATS)
+
+        return (
+            torch.as_tensor(obs_image, dtype=torch.float32),
+            torch.as_tensor(goal_pos, dtype=torch.float32),
+            torch.as_tensor(rel_time, dtype=torch.float32),
+        )</code></pre>
+</div>
+
+<p>
+返るテンソルの形は順に <code>obs_image: (8, 3, 224, 224)</code>、<code>goal_pos: (4, 3)</code>、
+<code>rel_time: (4,)</code> です。ここで押さえるべきは 3 点です。
+</p>
+<ul>
+  <li><strong>返る画像は 8 枚</strong> —— 文脈 4 枚(<code>context_times</code>)に続けてゴール 4 枚。
+  1 本のテンソルに連結されて返る</li>
+  <li><strong><code>goal_offset</code> は負にもなる</strong> ——
+  <code>min_dist_cat = -64</code> なので、<strong>「64 フレーム前に戻る」というサンプルも作られます</strong>。
+  時間シフトは未来だけでなく過去も含む</li>
+  <li><strong>行動は「1 手ずつ」ではなく「ゴールまでの相対姿勢」</strong> ——
+  モデルに渡されるのは <code>actions</code> ではなく <code>goal_pos</code> です。
+  これがまさに論文 Eq. (2) の総和 \(u_{\tau \to m}\) に相当します</li>
+</ul>
+
+<div class="callout warn">
+<span class="callout-title">マジックナンバー 128 の正体</span>
+<code>rel_time = goal_offset / 128.</code> にはコード自身が <code># TODO: refactor</code> を付けています。
+128 = 2 × 64 で、<code>min_dist_cat = -64</code> / <code>max_dist_cat = +64</code> と対応しており、
+<strong><code>rel_t</code> がちょうど \([-0.5, +0.5]\) に収まる</strong>ようになっています。
+4 FPS のデータなので ±64 フレーム = <strong>±16 秒</strong> —— 論文の
+“we allow time shifts of up to ±16 seconds” と一致します。
+<br><br>
+推論側(<code>isolated_nwm_infer.py</code> L75)でも
+<code>rel_t = (torch.ones(B) * (1./128.)) * num_timesteps</code> と、同じ 128 がハードコードされています。
+<strong>この定数を変えるなら 2 か所を同時に直す必要があります</strong>。
+</div>
+
+<h3 id="batch">学習ループでの展開 — バッチが 4 倍になる</h3>
+
+<div class="codeblock">
+<div class="codehead"><span class="path">train.py</span> L271–293
+<a href="https://github.com/facebookresearch/nwm/blob/3f6cd8e70d6f2d1e2b9684acff510710135f0f41/train.py#L271-L293" target="_blank" rel="noopener">GitHub ↗</a></div>
+<pre><code class="language-python">        for x, y, rel_t in loader:
+            x = x.to(device, non_blocking=True)
+            y = y.to(device, non_blocking=True)
+            rel_t = rel_t.to(device, non_blocking=True)
+
+            with torch.amp.autocast('cuda', enabled=bfloat_enable, dtype=torch.bfloat16):
+                with torch.no_grad():
+                    # Map input images to latent space + normalize latents:
+                    B, T = x.shape[:2]
+                    x = x.flatten(0,1)
+                    x = tokenizer.encode(x).latent_dist.sample().mul_(0.18215)
+                    x = x.unflatten(0, (B, T))
+
+                num_goals = T - num_cond
+                x_start = x[:, num_cond:].flatten(0, 1)
+                x_cond = x[:, :num_cond].unsqueeze(1).expand(B, num_goals, num_cond, x.shape[2], x.shape[3], x.shape[4]).flatten(0, 1)
+                y = y.flatten(0, 1)
+                rel_t = rel_t.flatten(0, 1)
+
+                t = torch.randint(0, diffusion.num_timesteps, (x_start.shape[0],), device=device)
+                model_kwargs = dict(y=y, x_cond=x_cond, rel_t=rel_t)
+                loss_dict = diffusion.training_losses(model, x_start, t, model_kwargs)
+                loss = loss_dict["loss"].mean()</code></pre>
+</div>
+
+<figure class="diagram" id="batch-fig" data-cycle-ms="12000" data-step-count="4">
+<svg viewBox="0 0 920 430" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="1 サンプルが 4 つの学習ペアに展開される様子">
+  <defs>
+    <marker id="arrG" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#8a93ad"/>
+    </marker>
+  </defs>
+
+  <text x="16" y="26" font-size="13" font-weight="bold" fill="#5b6478">データローダが返す 1 サンプル</text>
+  <rect x="16" y="38" width="212" height="136" rx="10" fill="#f2f4fa" stroke="#c2c9db" stroke-width="1.5"/>
+  <text x="26" y="58" font-size="9.5" fill="#5b6478">文脈 4 枚(τ−3 … τ)</text>
+  <rect x="26" y="64" width="42" height="28" rx="5" fill="#e9ecf5" stroke="#8a93ad"/>
+  <rect x="74" y="64" width="42" height="28" rx="5" fill="#e9ecf5" stroke="#8a93ad"/>
+  <rect x="122" y="64" width="42" height="28" rx="5" fill="#e9ecf5" stroke="#8a93ad"/>
+  <rect x="170" y="64" width="42" height="28" rx="5" fill="#e5eafc" stroke="#3556d4" stroke-width="1.8"/>
+  <text x="26" y="114" font-size="9.5" fill="#d43d51">ゴール 4 枚(別々の時刻)</text>
+  <rect x="26" y="120" width="42" height="28" rx="5" fill="#fbe4e8" stroke="#d43d51"/>
+  <rect x="74" y="120" width="42" height="28" rx="5" fill="#fbe4e8" stroke="#d43d51"/>
+  <rect x="122" y="120" width="42" height="28" rx="5" fill="#fbe4e8" stroke="#d43d51"/>
+  <rect x="170" y="120" width="42" height="28" rx="5" fill="#fbe4e8" stroke="#d43d51"/>
+  <text x="122" y="166" font-size="10" text-anchor="middle" class="mono" fill="#5b6478">x: (B, 8, 3, 224, 224)</text>
+
+  <path d="M 234 106 L 268 106" stroke="#8a93ad" stroke-width="2" fill="none" marker-end="url(#arrG)"/>
+  <text x="250" y="96" font-size="9.5" text-anchor="middle" fill="#5b6478">展開</text>
+
+  <g class="g1">
+    <rect x="278" y="30" width="360" height="60" rx="9" fill="#fff" stroke="#3556d4" stroke-width="2"/>
+    <rect x="290" y="42" width="34" height="24" rx="4" fill="#e9ecf5" stroke="#8a93ad"/>
+    <rect x="328" y="42" width="34" height="24" rx="4" fill="#e9ecf5" stroke="#8a93ad"/>
+    <rect x="366" y="42" width="34" height="24" rx="4" fill="#e9ecf5" stroke="#8a93ad"/>
+    <rect x="404" y="42" width="34" height="24" rx="4" fill="#e5eafc" stroke="#3556d4"/>
+    <text x="452" y="58" font-size="14" fill="#8a93ad">+</text>
+    <rect x="470" y="42" width="34" height="24" rx="4" fill="#fbe4e8" stroke="#d43d51"/>
+    <text x="628" y="50" font-size="9.5" text-anchor="end" class="mono" fill="#5b6478">y = (Δx,Δy,Δyaw)1</text>
+    <text x="628" y="66" font-size="9.5" text-anchor="end" class="mono" fill="#d43d51">rel_t = +12/128</text>
+    <text x="290" y="82" font-size="9" fill="#5b6478">ペア 1: 3 秒後のゴール</text>
+  </g>
+  <g class="g2">
+    <rect x="278" y="98" width="360" height="60" rx="9" fill="#fff" stroke="#3556d4" stroke-width="2"/>
+    <rect x="290" y="110" width="34" height="24" rx="4" fill="#e9ecf5" stroke="#8a93ad"/>
+    <rect x="328" y="110" width="34" height="24" rx="4" fill="#e9ecf5" stroke="#8a93ad"/>
+    <rect x="366" y="110" width="34" height="24" rx="4" fill="#e9ecf5" stroke="#8a93ad"/>
+    <rect x="404" y="110" width="34" height="24" rx="4" fill="#e5eafc" stroke="#3556d4"/>
+    <text x="452" y="126" font-size="14" fill="#8a93ad">+</text>
+    <rect x="470" y="110" width="34" height="24" rx="4" fill="#fbe4e8" stroke="#d43d51"/>
+    <text x="628" y="118" font-size="9.5" text-anchor="end" class="mono" fill="#5b6478">y = (Δx,Δy,Δyaw)2</text>
+    <text x="628" y="134" font-size="9.5" text-anchor="end" class="mono" fill="#d43d51">rel_t = +51/128</text>
+    <text x="290" y="150" font-size="9" fill="#5b6478">ペア 2: 約 13 秒後のゴール</text>
+  </g>
+  <g class="g3">
+    <rect x="278" y="166" width="360" height="60" rx="9" fill="#fff" stroke="#3556d4" stroke-width="2"/>
+    <rect x="290" y="178" width="34" height="24" rx="4" fill="#e9ecf5" stroke="#8a93ad"/>
+    <rect x="328" y="178" width="34" height="24" rx="4" fill="#e9ecf5" stroke="#8a93ad"/>
+    <rect x="366" y="178" width="34" height="24" rx="4" fill="#e9ecf5" stroke="#8a93ad"/>
+    <rect x="404" y="178" width="34" height="24" rx="4" fill="#e5eafc" stroke="#3556d4"/>
+    <text x="452" y="194" font-size="14" fill="#8a93ad">+</text>
+    <rect x="470" y="178" width="34" height="24" rx="4" fill="#fbe4e8" stroke="#d43d51"/>
+    <text x="628" y="186" font-size="9.5" text-anchor="end" class="mono" fill="#5b6478">y = (Δx,Δy,Δyaw)3</text>
+    <text x="628" y="202" font-size="9.5" text-anchor="end" class="mono" fill="#d43d51">rel_t = −20/128</text>
+    <text x="290" y="218" font-size="9" fill="#5b6478">ペア 3: <tspan font-weight="bold">5 秒前</tspan>のゴール(時間を巻き戻す)</text>
+  </g>
+  <g class="g4">
+    <rect x="278" y="234" width="360" height="60" rx="9" fill="#fff" stroke="#3556d4" stroke-width="2"/>
+    <rect x="290" y="246" width="34" height="24" rx="4" fill="#e9ecf5" stroke="#8a93ad"/>
+    <rect x="328" y="246" width="34" height="24" rx="4" fill="#e9ecf5" stroke="#8a93ad"/>
+    <rect x="366" y="246" width="34" height="24" rx="4" fill="#e9ecf5" stroke="#8a93ad"/>
+    <rect x="404" y="246" width="34" height="24" rx="4" fill="#e5eafc" stroke="#3556d4"/>
+    <text x="452" y="262" font-size="14" fill="#8a93ad">+</text>
+    <rect x="470" y="246" width="34" height="24" rx="4" fill="#fbe4e8" stroke="#d43d51"/>
+    <text x="628" y="254" font-size="9.5" text-anchor="end" class="mono" fill="#5b6478">y = (Δx,Δy,Δyaw)4</text>
+    <text x="628" y="270" font-size="9.5" text-anchor="end" class="mono" fill="#d43d51">rel_t = +4/128</text>
+    <text x="290" y="286" font-size="9" fill="#5b6478">ペア 4: 1 秒後のゴール</text>
+  </g>
+
+  <text x="662" y="52" font-size="11.5" fill="#5b6478">文脈は<tspan font-weight="bold">まったく同じもの</tspan>が</text>
+  <text x="662" y="70" font-size="11.5" fill="#5b6478">4 回複製される</text>
+  <text x="662" y="90" font-size="10.5" class="mono" fill="#7b46c9">.expand(B, 4, 4, ...)</text>
+  <text x="662" y="106" font-size="10.5" class="mono" fill="#7b46c9">.flatten(0, 1)</text>
+  <text x="662" y="132" font-size="11.5" fill="#5b6478">違うのは行動と時間だけ。</text>
+  <text x="662" y="158" font-size="11.5" fill="#d43d51" font-weight="bold">→ 「同じ景色から、</text>
+  <text x="662" y="176" font-size="11.5" fill="#d43d51" font-weight="bold">   違う行動で、違う場所へ」</text>
+  <text x="662" y="194" font-size="11.5" fill="#d43d51" font-weight="bold">   が 1 バッチの中に必ず並ぶ</text>
+  <text x="662" y="218" font-size="11" fill="#5b6478">= 論文のいう natural</text>
+  <text x="662" y="234" font-size="11" fill="#5b6478">counterfactuals。</text>
+  <text x="662" y="260" font-size="11" fill="#5b6478">時間だけを見て手を抜く戦略は</text>
+  <text x="662" y="276" font-size="11" fill="#5b6478">このバッチでは通用しない。</text>
+
+  <rect x="16" y="318" width="890" height="96" rx="10" fill="#e0f5ec" stroke="#1e9e6a" stroke-width="2"/>
+  <text x="461" y="342" font-size="12.5" font-weight="bold" text-anchor="middle" fill="#1e9e6a">バッチサイズの実際</text>
+  <text x="461" y="364" font-size="11" text-anchor="middle" fill="#5b6478">GPU あたり <tspan class="mono">batch_size: 16</tspan>(config)× 8 ノード × 8 GPU = <tspan font-weight="bold">1024</tspan></text>
+  <text x="461" y="384" font-size="11" text-anchor="middle" fill="#5b6478">× ゴール 4 つ = <tspan font-weight="bold">実効バッチ 4096</tspan>(論文 §4.1 の “a final total batch size of 4096”)</text>
+  <text x="461" y="404" font-size="10.5" text-anchor="middle" fill="#1e9e6a">VAE の符号化は展開<tspan font-weight="bold">前</tspan>に 1 回だけ走るので、画像を 4 回エンコードし直す無駄はない</text>
+</svg>
+<figcaption>
+1 サンプルが 4 つの学習ペアに展開される様子。<code>.expand()</code> はメモリをコピーしない
+ビュー操作なので、文脈を 4 倍にしても VRAM 上のコストは(<code>.flatten()</code> が実体化するまで)増えません。
+</figcaption>
+</figure>
+
+<div class="callout point">
+<span class="callout-title">アブレーションの数字(論文 Table 1)</span>
+ゴール数を 1 → 2 → 4 と増やしたときの、RECON での 4 秒先予測:
+<table>
+  <tr><th>ゴール数</th><th>LPIPS ↓</th><th>DreamSim ↓</th><th>PSNR ↑</th></tr>
+  <tr><td>1</td><td>0.312</td><td>0.098</td><td>15.044</td></tr>
+  <tr><td>2</td><td>0.305</td><td>0.096</td><td>15.154</td></tr>
+  <tr><td><strong>4</strong></td><td><strong>0.296</strong></td><td><strong>0.091</strong></td><td><strong>15.331</strong></td></tr>
+</table>
+“using 4 goals leads to <strong>significantly improved</strong> prediction performance in all metrics”。
+なお<strong>評価時は <code>goals_per_obs</code> が必ず 4 に固定されます</strong>
+(<code>train.py</code> L198: <code>goals_per_obs = 4 # standardize testing</code>)。
+</div>
+
+<h2 id="loss">拡散の学習 — 論文の式とコードの実装</h2>
+<p>
+論文 §3.2 は損失をこう書きます。
+</p>
+<div class="callout math">
+<span class="callout-title">論文の学習目的関数</span>
+順過程(ノイズを載せる):
+$$s^{(t)}_{\tau+1} = \sqrt{\alpha_t}\, s_{\tau+1} + \sqrt{1 - \alpha_t}\, \epsilon, \qquad \epsilon \sim \mathcal{N}(0, I)$$
+逆過程の学習目的:
+$$\mathcal{L}_{\text{simple}} = \mathbb{E}\left[\left\| s_{\tau+1} - F_\theta\!\left(s^{(t)}_{\tau+1} \mid \mathbf{s}_\tau, a_\tau, t\right) \right\|_2^2\right]$$
+加えて “we also predict the covariance matrix of the noise and supervise it with
+the <strong>variational lower bound loss</strong> \(\mathcal{L}_{\text{vlb}}\)” とあります。
+ノイズスケジュールとハイパーパラメータは DiT に従う、とも明記されています。
+</div>
+
+<figure class="diagram" id="diff-fig" data-cycle-ms="12000" data-step-count="4">
+<svg viewBox="0 0 900 400" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="拡散学習の 1 ステップ: ノイズを載せて予測して比較する">
+  <defs>
+    <marker id="arrD" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#8a93ad"/>
+    </marker>
+  </defs>
+
+  <g class="d1">
+    <rect x="16" y="46" width="176" height="106" rx="10" fill="#e0f5ec" stroke="#1e9e6a" stroke-width="2"/>
+    <text x="104" y="70" font-size="12" font-weight="bold" text-anchor="middle" fill="#1e9e6a">① 正解の潜在</text>
+    <text x="104" y="90" font-size="10.5" text-anchor="middle" class="mono" fill="#5b6478">x_start = s(τ+1)</text>
+    <text x="104" y="110" font-size="10" text-anchor="middle" fill="#5b6478">ゴール画像を VAE で</text>
+    <text x="104" y="126" font-size="10" text-anchor="middle" fill="#5b6478">符号化したもの</text>
+    <text x="104" y="145" font-size="10" text-anchor="middle" class="mono" fill="#5b6478">(N, 4, 28, 28)</text>
+  </g>
+
+  <g class="d2">
+    <rect x="222" y="46" width="198" height="106" rx="10" fill="#fdeeda" stroke="#e07b1f" stroke-width="2"/>
+    <text x="321" y="70" font-size="12" font-weight="bold" text-anchor="middle" fill="#e07b1f">② ノイズを載せる</text>
+    <text x="321" y="92" font-size="10.5" text-anchor="middle" class="mono" fill="#5b6478">t ~ U{0, …, 999}</text>
+    <text x="321" y="110" font-size="10.5" text-anchor="middle" class="mono" fill="#5b6478">x_t = √ᾱₜ·x₀ + √(1−ᾱₜ)·ε</text>
+    <text x="321" y="130" font-size="10" text-anchor="middle" fill="#5b6478">線形スケジュール・1000 ステップ</text>
+    <text x="321" y="146" font-size="10" text-anchor="middle" fill="#e07b1f">サンプルごとに別々の t を引く</text>
+  </g>
+
+  <g class="d3">
+    <rect x="450" y="46" width="210" height="106" rx="10" fill="#e5eafc" stroke="#3556d4" stroke-width="2"/>
+    <text x="555" y="70" font-size="12" font-weight="bold" text-anchor="middle" fill="#3556d4">③ CDiT に予測させる</text>
+    <text x="555" y="92" font-size="10.5" text-anchor="middle" class="mono" fill="#5b6478">model(x_t, t, y, x_cond, rel_t)</text>
+    <text x="555" y="112" font-size="10" text-anchor="middle" fill="#5b6478">出力 8ch を 2 つに割る:</text>
+    <text x="555" y="129" font-size="10" text-anchor="middle" fill="#d43d51">前半 4ch = ε の予測</text>
+    <text x="555" y="145" font-size="10" text-anchor="middle" fill="#7b46c9">後半 4ch = 分散の補間係数</text>
+  </g>
+
+  <g class="d4">
+    <rect x="690" y="46" width="196" height="106" rx="10" fill="#fbe4e8" stroke="#d43d51" stroke-width="2"/>
+    <text x="788" y="70" font-size="12" font-weight="bold" text-anchor="middle" fill="#d43d51">④ 2 本の損失を足す</text>
+    <text x="788" y="92" font-size="10.5" text-anchor="middle" class="mono" fill="#5b6478">mse = ‖ε − ε̂‖²</text>
+    <text x="788" y="110" font-size="10.5" text-anchor="middle" class="mono" fill="#5b6478">vb  = 変分下界</text>
+    <text x="788" y="130" font-size="10.5" text-anchor="middle" class="mono" fill="#d43d51">loss = mse + vb</text>
+    <text x="788" y="147" font-size="10" text-anchor="middle" fill="#5b6478">重み付けなしの単純な和</text>
+  </g>
+
+  <g fill="none" stroke="#8a93ad" stroke-width="2" marker-end="url(#arrD)">
+    <path class="flow-edge" d="M 192 99 L 220 99"/>
+    <path class="flow-edge" d="M 420 99 L 448 99"/>
+    <path class="flow-edge" d="M 660 99 L 688 99"/>
+  </g>
+
+  <rect x="16" y="186" width="870" height="92" rx="10" fill="#fff8e8" stroke="#e07b1f" stroke-width="2"/>
+  <text x="451" y="210" font-size="12.5" font-weight="bold" text-anchor="middle" fill="#e07b1f">⚠️ 論文の式とコードの既定値が食い違う 1 点</text>
+  <text x="451" y="232" font-size="11" text-anchor="middle" fill="#5b6478">論文の Lsimple は <tspan font-weight="bold">clean な状態 s(τ+1) との二乗誤差</tspan>として書かれている。</text>
+  <text x="451" y="252" font-size="11" text-anchor="middle" fill="#5b6478">一方 <tspan class="mono">create_diffusion</tspan> の既定は <tspan class="mono">predict_xstart=False</tspan> → <tspan class="mono">ModelMeanType.EPSILON</tspan>、</text>
+  <text x="451" y="270" font-size="11" text-anchor="middle" fill="#d43d51" font-weight="bold">つまり実装が回帰しているのは「載せたノイズ ε」のほう。</text>
+
+  <text x="16" y="308" font-size="11" fill="#5b6478">両者は <tspan class="mono">x₀ = (xₜ − √(1−ᾱₜ)·ε) / √ᾱₜ</tspan> で互いに変換でき、同じ後方平均を定めるので<tspan font-weight="bold">等価な定式化</tspan>です。</text>
+  <text x="16" y="330" font-size="11" fill="#5b6478">ただし損失としては <tspan font-weight="bold">t に依存する重みの分だけ違う</tspan>ため、学習の重み付けは同一ではありません。</text>
+  <text x="16" y="352" font-size="11" fill="#5b6478">論文の記述は「何を復元したいか」を述べたもの、コードは DiT の慣例(ε 予測)に従ったもの、と読むのが自然です。</text>
+  <text x="16" y="378" font-size="11" fill="#7b46c9">なお <tspan class="mono">create_diffusion</tspan> は <tspan class="mono">predict_xstart=True</tspan> も受け取れるので、論文の式どおりに学習することも可能です。</text>
+</svg>
+<figcaption>
+拡散学習の 1 ステップ。<code>diffusion/</code> 以下は DiT / ADM 由来のコードがほぼ無改変で使われており、
+<strong>NWM が手を入れたのは条件の与え方だけ</strong>です。
+</figcaption>
+</figure>
+
+<div class="codeblock">
+<div class="codehead"><span class="path">diffusion/__init__.py</span> L16–50 <code>create_diffusion</code>(抜粋)
+<a href="https://github.com/facebookresearch/nwm/blob/3f6cd8e70d6f2d1e2b9684acff510710135f0f41/diffusion/__init__.py#L16-L50" target="_blank" rel="noopener">GitHub ↗</a></div>
+<pre><code class="language-python">def create_diffusion(
+    timestep_respacing,
+    noise_schedule="linear",
+    use_kl=False,
+    sigma_small=False,
+    predict_xstart=False,     # ← 既定は ε 予測
+    learn_sigma=True,         # ← 分散も学習する
+    rescale_learned_sigmas=False,
+    diffusion_steps=1000
+):
+    ...
+    return SpacedDiffusion(
+        use_timesteps=space_timesteps(diffusion_steps, timestep_respacing),
+        betas=betas,
+        model_mean_type=(
+            gd.ModelMeanType.EPSILON if not predict_xstart else gd.ModelMeanType.START_X
+        ),
+        model_var_type=(
+            (
+                gd.ModelVarType.FIXED_LARGE
+                if not sigma_small
+                else gd.ModelVarType.FIXED_SMALL
+            )
+            if not learn_sigma
+            else gd.ModelVarType.LEARNED_RANGE
+        ),
+        loss_type=loss_type
+    )</code></pre>
+</div>
+
+<p>
+そして <code>training_losses</code>(<code>diffusion/gaussian_diffusion.py</code> L777–789)が、
+論文の 2 本立てをそのまま計算します。
+</p>
+<div class="codeblock">
+<div class="codehead"><span class="path">diffusion/gaussian_diffusion.py</span> L777–789
+<a href="https://github.com/facebookresearch/nwm/blob/3f6cd8e70d6f2d1e2b9684acff510710135f0f41/diffusion/gaussian_diffusion.py#L777-L789" target="_blank" rel="noopener">GitHub ↗</a></div>
+<pre><code class="language-python">            target = {
+                ModelMeanType.PREVIOUS_X: self.q_posterior_mean_variance(
+                    x_start=x_start, x_t=x_t, t=t
+                )[0],
+                ModelMeanType.START_X: x_start,
+                ModelMeanType.EPSILON: noise,
+            }[self.model_mean_type]
+            assert model_output.shape == target.shape == x_start.shape
+            terms["mse"] = mean_flat((target - model_output) ** 2)
+            if "vb" in terms:
+                terms["loss"] = terms["mse"] + terms["vb"]
+            else:
+                terms["loss"] = terms["mse"]</code></pre>
+</div>
+<p>
+<code>terms["loss"] = terms["mse"] + terms["vb"]</code> ——
+<strong>重み係数は付きません</strong>。論文の \(\mathcal{L}_{\text{simple}} + \mathcal{L}_{\text{vlb}}\) の
+文字どおりの実装です。なお <code>vb</code> の勾配が平均予測に流れ込まないよう、
+<code>model_output.detach()</code> で切り離されている(L764)のも DiT / IDDPM 由来の作法です。
+</p>
+
+<h2 id="hparams">ハイパーパラメータ</h2>
+<p>
+学習設定は <code>config/nwm_cdit_xl.yaml</code> と <code>train.py</code> の引数に散っています。
+論文 §4.1 と突き合わせると次のとおり。
+</p>
+
+<table>
+  <tr><th>項目</th><th>値</th><th>出どころ</th></tr>
+  <tr><td>モデル</td><td><code>CDiT-XL/2</code>(約 1B)</td><td>config <code>model</code></td></tr>
+  <tr><td>文脈長</td><td><strong>4 フレーム</strong></td><td>config <code>context_size</code></td></tr>
+  <tr><td>ゴール数</td><td><strong>4</strong></td><td>config <code>goals_per_obs</code>(データセットごと)</td></tr>
+  <tr><td>画像サイズ</td><td>224×224(4:3 中央切り出し後にリサイズ)</td><td>config <code>image_size</code> / <code>misc.transform</code></td></tr>
+  <tr><td>時間シフト範囲</td><td><strong>−64 〜 +64 フレーム(±16 秒)</strong></td><td>config <code>distance.min/max_dist_cat</code></td></tr>
+  <tr><td>最適化</td><td>AdamW, <code>weight_decay=0</code></td><td><code>train.py</code> L138</td></tr>
+  <tr><td>学習率</td><td><strong>8e-5</strong>(定数、ウォームアップなし)</td><td>config <code>lr</code> / 論文 §4.1</td></tr>
+  <tr><td>勾配クリップ</td><td>10.0</td><td>config <code>grad_clip_val</code></td></tr>
+  <tr><td>バッチ</td><td>16 / GPU × 64 GPU = 1024、実効 4096</td><td>config + 論文 §4.1</td></tr>
+  <tr><td>精度</td><td>bfloat16 autocast</td><td><code>--bfloat16 1</code></td></tr>
+  <tr><td>EMA 減衰</td><td><strong>0.9999</strong>(毎ステップ更新)</td><td><code>train.py</code> L46</td></tr>
+  <tr><td>拡散ステップ</td><td>学習 1000 / 推論 250</td><td><code>create_diffusion("")</code> vs <code>create_diffusion("250")</code></td></tr>
+  <tr><td>ハードウェア</td><td>H100 × 8 台 × 8 GPU</td><td>論文 §4.1</td></tr>
+  <tr><td>評価に使うチェックポイント</td><td><strong>10 万ステップ</strong>(<code>0100000.pth.tar</code>)</td><td>README の評価コマンド</td></tr>
+</table>
+
+<div class="callout point">
+<span class="callout-title">評価も生成もすべて EMA の重み</span>
+<code>train.py</code> の <code>evaluate()</code>、<code>isolated_nwm_infer.py</code>、<code>planning_eval.py</code>、
+デモノートブック —— <strong>推論側はすべて <code>ckp["ema"]</code> を読み込みます</strong>。
+生の <code>model</code> 重みが使われる場面は 1 か所もありません。
+減衰 0.9999 は「直近 1 万ステップぶんの移動平均」に相当する強い平滑化で、
+拡散モデルではサンプル品質に効くことが知られています。
+</div>
+
+<div class="callout warn">
+<span class="callout-title">実装の癖 — 2 つの小さな引っかかり</span>
+① <strong><code>opt.zero_grad()</code> の位置は 2025-07-29 に修正されたばかり</strong>です。
+それ以前は <code>if not bfloat_enable:</code> の内側にあり、
+<strong>bfloat16 で学習すると勾配が毎ステップ累積していく</strong>不具合がありました
+(コミット <a href="https://github.com/facebookresearch/nwm/commit/7782ade33153cebcde6c3cf3b870675190d66d94" target="_blank" rel="noopener"><code>7782ade</code></a> “fix zero_grad bug”)。
+古い fork を使う場合は要確認です。
+<br><br>
+② <strong>bfloat16 なのに <code>GradScaler</code> を使っています</strong>(L142)。
+勾配スケーリングは本来 float16 のアンダーフロー対策で、
+指数部が float32 と同じ bfloat16 では不要です。害はありませんが、
+<code>scaler.unscale_()</code> を挟んでから勾配クリップする流れは float16 前提の書き方が残ったものと読めます。
+</div>
+
+<h2 id="whatsmissing">学習コードに「無いもの」</h2>
+<p>
+このコードベースを読むうえで、<strong>拡散モデルの定番なのに存在しないもの</strong>を確認しておくと理解が早まります。
+</p>
+<table>
+  <tr><th>定番の要素</th><th>NWM では</th><th>理由(推測を含む)</th></tr>
+  <tr>
+    <td><strong>Classifier-Free Guidance のための条件ドロップアウト</strong></td>
+    <td><strong>無い</strong>。<code>train.py</code> L258 のコメント
+    “This enables embedding dropout for classifier-free guidance” は DiT からの残骸で、
+    <code>CDiT</code> にラベルドロップ機構は実装されていない</td>
+    <td>行動条件は「創造性」ではなく<strong>忠実さ</strong>が要る。
+    CFG で条件を強調する必要も、無条件生成を学ぶ必要もない</td>
+  </tr>
+  <tr>
+    <td><strong>学習率スケジューラ</strong></td>
+    <td>無い。定数 8e-5</td>
+    <td>データを足しても学習を再開しやすい(BAGEL の CT/SFT と同じ発想)</td>
+  </tr>
+  <tr>
+    <td><strong>重み減衰</strong></td>
+    <td><code>weight_decay=0</code></td>
+    <td>DiT の設定を踏襲</td>
+  </tr>
+  <tr>
+    <td><strong>複数ステージのカリキュラム</strong></td>
+    <td>無い。最初から最後まで同じ設定</td>
+    <td>単一の目的関数しかないので、段階を分ける動機が無い</td>
+  </tr>
+  <tr>
+    <td><strong>方策・報酬・価値関数</strong></td>
+    <td>無い</td>
+    <td><strong>そもそも学習していない</strong>。行動選択は推論時の最適化に置かれている</td>
+  </tr>
+</table>
+
+<h2 id="summary">この章のまとめ</h2>
+<div class="callout point">
+<span class="callout-title">NWM の学習を 4 点で</span>
+<ol>
+  <li><strong>損失は拡散の標準そのもの</strong>(\(\epsilon\) の MSE + 変分下界)。重み調整も段階分けも無い</li>
+  <li>工夫は<strong>サンプルの作り方</strong>に集中している ——
+  行動を局所座標に回して歩幅で割り、\([-1,1]\) に正規化する 4 段階</li>
+  <li><strong>1 観測につきゴール 4 つ</strong>。同じ文脈から違う行動・違う時刻へ分岐するペアを
+  必ずバッチに並べ、「時間だけ見る」ショートカットを塞ぐ</li>
+  <li>時間シフトは<strong>過去にも遡れる</strong>(−64 〜 +64 フレーム)。
+  「世界の時間軸を前後に動かす」ことまで学習対象に入っている</li>
+</ol>
+</div>
+<p>
+次章では、学習し終えたモデルをどう動かすか —— 2 つの生成モードと、
+その上に載る<strong>計画(planning)</strong>の実装を見ます。
+</p>
+
+<nav class="pager">
+  <a href="architecture.html"><span class="dir">← 前へ</span><span class="title">1. アーキテクチャ詳解</span></a>
+  <a class="next" href="inference.html"><span class="dir">次へ →</span><span class="title">3. 生成と計画</span></a>
+</nav>
+
+</main>
+
+<footer class="site-footer">
+  <p>引用コード: <a href="https://github.com/facebookresearch/nwm/tree/3f6cd8e70d6f2d1e2b9684acff510710135f0f41" target="_blank" rel="noopener">facebookresearch/nwm</a>(CC BY-NC 4.0)/
+  論文: <a href="https://arxiv.org/abs/2412.03572" target="_blank" rel="noopener">Navigation World Models</a>(arXiv:2412.03572, CVPR 2025 Oral)</p>
+</footer>
+
+<script>
+MathJax = { tex: { inlineMath: [['\\(', '\\)']], displayMath: [['$$', '$$']] } };
+</script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js" async></script>
+<script src="assets/diagram-controls.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-core.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-python.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-yaml.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-bash.min.js"></script>
+</body>
+</html>
