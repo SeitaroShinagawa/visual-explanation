@@ -1,0 +1,541 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BLM 評価と実験結果 — 表現・データ・世界モデル</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🔭</text></svg>">
+<link rel="stylesheet" href="assets/style.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/themes/prism-tomorrow.min.css">
+<style>
+/* ===== representation families: 3 (12s) ===== */
+@keyframes rep-turn {
+  0%, 2% { opacity: 0.24; }
+  6%, 30% { opacity: 1; }
+  34%, 100% { opacity: 0.24; }
+}
+#rep-fig .p1 { animation: rep-turn 12s ease-in-out infinite backwards; }
+#rep-fig .p2 { animation: rep-turn 12s ease-in-out infinite backwards; animation-delay: 4s; }
+#rep-fig .p3 { animation: rep-turn 12s ease-in-out infinite backwards; animation-delay: 8s; }
+
+/* ===== world model setup: 4 steps (14s) ===== */
+@keyframes wm-bright {
+  0%, 25%, 100% { opacity: 0.3; }
+  5%, 20% { opacity: 1; }
+}
+#wm-fig .w1 { animation: wm-bright 14s ease-in-out infinite backwards; }
+#wm-fig .w2 { animation: wm-bright 14s ease-in-out infinite backwards; animation-delay: 3.5s; }
+#wm-fig .w3 { animation: wm-bright 14s ease-in-out infinite backwards; animation-delay: 7s; }
+#wm-fig .w4 { animation: wm-bright 14s ease-in-out infinite backwards; animation-delay: 10.5s; }
+
+/* ===== world model results: 3 groups (12s) ===== */
+#res-fig .b1 { animation: rep-turn 12s ease-in-out infinite backwards; }
+#res-fig .b2 { animation: rep-turn 12s ease-in-out infinite backwards; animation-delay: 4s; }
+#res-fig .b3 { animation: rep-turn 12s ease-in-out infinite backwards; animation-delay: 8s; }
+
+@media (prefers-reduced-motion: reduce) {
+  #rep-fig .p1, #rep-fig .p2, #rep-fig .p3,
+  #wm-fig .w1, #wm-fig .w2, #wm-fig .w3, #wm-fig .w4,
+  #res-fig .b1, #res-fig .b2, #res-fig .b3 { opacity: 1; }
+}
+</style>
+</head>
+<body>
+
+<nav class="topnav">
+  <a class="home-link" href="../index.html">Visual Explanation</a><span class="sep">/</span>
+  <a href="./index.html">BLM 概要</a>
+  <a href="architecture.html">1. アーキテクチャ</a>
+  <a href="training.html">2. 学習と生成</a>
+  <a href="experiments.html" class="current">3. 評価と実験</a>
+  <a href="scaling.html">4. スケーリング則</a>
+</nav>
+
+<header class="page-header">
+  <h1>3. 評価方法と実験結果</h1>
+  <p>統一モデルの評価は「文章の上手さ」と「絵の上手さ」と「絵の読み取り能力」を
+  <strong>同時に</strong>測らなければ意味がありません。
+  本作が使う 7 つの指標と、視覚表現・データ・世界モデルという 3 つの実験群を追います。</p>
+</header>
+
+<main class="article">
+
+<h2 id="metrics">評価方法 — 7 つの指標で「全方位」を見る</h2>
+<p>
+設計を 1 つ変えたときに<strong>何かが良くなって何かが悪くなる</strong>のが統一モデルの常です。
+だから本作は、片方だけ見て喜べないように指標を並べます。
+</p>
+
+<table>
+  <tr><th>指標</th><th>何を測るか</th><th>向き</th><th>データ</th><th>役割</th></tr>
+  <tr>
+    <td><strong>DCLM PPL</strong></td>
+    <td>言語モデルとしての perplexity</td><td>↓</td>
+    <td>DCLM 検証セット</td>
+    <td rowspan="2">言語能力。<strong>「視覚を混ぜて壊れていないか」</strong>の番人</td>
+  </tr>
+  <tr>
+    <td><strong>Notes PPL</strong></td>
+    <td>同上(分布外)</td><td>↓</td>
+    <td>社内 “Notes” コーパス</td>
+  </tr>
+  <tr>
+    <td><strong>拡散損失</strong></td>
+    <td>flow matching の検証損失</td><td>↓</td>
+    <td>CC12M 検証セット</td>
+    <td>視覚モデリングの生の指標。ベンチマークより素直に動く</td>
+  </tr>
+  <tr>
+    <td><strong>DPGBench</strong></td>
+    <td>プロンプト忠実度(密な記述への追従)</td><td>↑</td>
+    <td>—</td>
+    <td rowspan="2">画像<strong>生成</strong>能力</td>
+  </tr>
+  <tr>
+    <td><strong>GenEval</strong></td>
+    <td>物体・数・位置関係などの合成性</td><td>↑</td>
+    <td>—</td>
+  </tr>
+  <tr>
+    <td><strong>COCO FID</strong></td>
+    <td>生成画像分布の実画像分布からの距離</td><td>↓</td>
+    <td>COCO</td>
+    <td>画質の「らしさ」</td>
+  </tr>
+  <tr>
+    <td><strong>平均 VQA 精度</strong></td>
+    <td>16 個の Cambrian ベンチマーク平均</td><td>↑</td>
+    <td>Cambrian-7M で 1 エポック fine-tune 後</td>
+    <td>画像<strong>理解</strong>能力</td>
+  </tr>
+</table>
+
+<div class="callout point">
+<span class="callout-title">評価プロトコルで押さえるべき 2 点</span>
+<strong>① 原則として instruction tuning なしの事前学習直後に測る。</strong>
+“Unless otherwise specified, we evaluate at the end of pretraining (without any instruction tuning)”。
+事前学習で何が身についたのかを見たいので、後付けの調整を挟みません。
+<br><br>
+<strong>② VQA だけは例外で、必ず fine-tune してから測る。</strong>
+事前学習直後のモデルは指示に従えないので、
+<strong>Cambrian-7M で 1 エポック</strong>だけ揃えて fine-tune します
+(64 GPU、ピーク学習率 1×10⁻⁵)。
+テキストのみのベースラインには<strong>ビジョンアダプタのウォームアップ</strong>を別途行い、
+「視覚を見たことがない」ことによる不当な不利を減らしています(§F.5)。
+</div>
+
+<h2 id="repr">実験① 視覚表現 — VAE は本当に必要か(§3)</h2>
+<p>
+統一モデルの世界では、<strong>「理解には意味エンコーダ、生成には VAE」</strong>という住み分けが定説でした。
+<a href="../BAGEL/index.html">BAGEL</a> の二重エンコーダはその代表例です。
+本作はこの定説を正面から検証します。
+</p>
+
+<figure class="diagram" id="rep-fig" data-cycle-ms="12000" data-step-count="3">
+<svg viewBox="0 0 900 400" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="3 つの視覚表現ファミリの比較">
+  <text x="16" y="26" font-size="13" font-weight="bold" fill="#5b6478">同じ 256 トークン・同じ計算量で、エンコーダだけを差し替える</text>
+
+  <g class="p1">
+    <rect x="16" y="40" width="278" height="196" rx="10" fill="#e9ecf5" stroke="#8a93ad" stroke-width="2"/>
+    <text x="155" y="64" font-size="12" font-weight="bold" text-anchor="middle" fill="#5b6478">① 生ピクセル</text>
+    <text x="155" y="84" font-size="10" text-anchor="middle" fill="#5b6478">14×14 のパッチに切るだけ</text>
+    <rect x="40" y="96" width="60" height="60" rx="4" fill="#fff" stroke="#8a93ad"/>
+    <g stroke="#c2c9db" stroke-width="0.8">
+      <line x1="55" y1="96" x2="55" y2="156"/><line x1="70" y1="96" x2="70" y2="156"/><line x1="85" y1="96" x2="85" y2="156"/>
+      <line x1="40" y1="111" x2="100" y2="111"/><line x1="40" y1="126" x2="100" y2="126"/><line x1="40" y1="141" x2="100" y2="141"/>
+    </g>
+    <text x="196" y="112" font-size="10.5" fill="#1e9e6a">テキスト PPL は<tspan font-weight="bold">最良</tspan></text>
+    <text x="196" y="130" font-size="10.5" fill="#d43d51">生成は意味エンコーダに劣る</text>
+    <text x="196" y="148" font-size="10.5" fill="#5b6478">VQA の差は<tspan font-weight="bold">わずか</tspan></text>
+    <text x="40" y="180" font-size="10" fill="#5b6478">VQA 精度: <tspan font-weight="bold">29.4</tspan>(x 予測なら 30.7)</text>
+    <text x="40" y="200" font-size="10" fill="#8a93ad">論文: “direct pixel learning remains</text>
+    <text x="40" y="216" font-size="10" fill="#8a93ad">promising given sufficient compute”</text>
+  </g>
+
+  <g class="p2">
+    <rect x="310" y="40" width="278" height="196" rx="10" fill="#e0f5ec" stroke="#1e9e6a" stroke-width="2.5"/>
+    <text x="449" y="64" font-size="12" font-weight="bold" text-anchor="middle" fill="#1e9e6a">② RAE(意味エンコーダ)</text>
+    <text x="449" y="84" font-size="10" text-anchor="middle" fill="#5b6478">SigLIP 2 / DINOv2-L / WebSSL-L</text>
+    <rect x="334" y="96" width="60" height="60" rx="4" fill="#c9ecdb" stroke="#1e9e6a"/>
+    <text x="364" y="132" font-size="18" text-anchor="middle">🧠</text>
+    <text x="410" y="112" font-size="10.5" fill="#1e9e6a" font-weight="bold">理解も生成も VAE に勝つ</text>
+    <text x="410" y="130" font-size="10.5" fill="#5b6478">高次元潜在の上で直接拡散</text>
+    <text x="410" y="148" font-size="10.5" fill="#5b6478">既製の RAE 復号器で画素へ</text>
+    <text x="334" y="180" font-size="10" fill="#5b6478">VQA 精度: SigLIP 2 <tspan font-weight="bold">40.3</tspan> /</text>
+    <text x="334" y="197" font-size="10" fill="#5b6478">WebSSL-L 33.9 / DINOv2-L 32.2</text>
+    <text x="334" y="219" font-size="10.5" fill="#1e9e6a" font-weight="bold">← 本作の既定に採用</text>
+  </g>
+
+  <g class="p3">
+    <rect x="604" y="40" width="280" height="196" rx="10" fill="#fbe4e8" stroke="#d43d51" stroke-width="2"/>
+    <text x="744" y="64" font-size="12" font-weight="bold" text-anchor="middle" fill="#d43d51">③ VAE</text>
+    <text x="744" y="84" font-size="10" text-anchor="middle" fill="#5b6478">SD-VAE / FLUX.1</text>
+    <rect x="628" y="96" width="60" height="60" rx="4" fill="#e6a0aa" stroke="#d43d51"/>
+    <text x="658" y="132" font-size="18" text-anchor="middle">🗜️</text>
+    <text x="704" y="112" font-size="10.5" fill="#d43d51">「生成には VAE」という</text>
+    <text x="704" y="130" font-size="10.5" fill="#d43d51" font-weight="bold">定説が崩れた</text>
+    <text x="704" y="148" font-size="10.5" fill="#5b6478">生成でも SigLIP 2 に負ける</text>
+    <text x="628" y="180" font-size="10" fill="#5b6478">VQA 精度: SD-VAE <tspan font-weight="bold">30.1</tspan> /</text>
+    <text x="628" y="197" font-size="10" fill="#5b6478">FLUX.1 <tspan font-weight="bold">30.5</tspan></text>
+    <text x="628" y="219" font-size="10" fill="#d43d51">スパース性を上げても拡散損失が飽和</text>
+  </g>
+
+  <rect x="16" y="256" width="868" height="128" rx="10" fill="#f2f4fa" stroke="#3556d4" stroke-width="2"/>
+  <text x="450" y="280" font-size="12.5" font-weight="bold" text-anchor="middle" fill="#3556d4">3 つの結論</text>
+  <text x="30" y="306" font-size="11" fill="#5b6478">・<tspan font-weight="bold">テキスト性能はどの表現でもほぼ変わらない</tspan> —— テキストのみのベースラインと同等か、わずかに良い。</text>
+  <text x="46" y="324" font-size="11" fill="#5b6478">  つまり「エンコーダ選びで言語が壊れる」心配はしなくてよい。</text>
+  <text x="30" y="346" font-size="11" fill="#5b6478">・<tspan font-weight="bold">意味エンコーダが理解でも生成でも VAE を上回る</tspan> —— DPGBench・GenEval・VQA のすべてで。</text>
+  <text x="30" y="368" font-size="11" fill="#1e9e6a" font-weight="bold">・したがって単一のエンコーダで足りる。BAGEL 流の二重エンコーダは、少なくともこの設定では不要。</text>
+</svg>
+<figcaption>
+視覚表現ファミリの比較(論文 §3・Figure 2、VQA 数値は Figure 19)。
+<strong>意味エンコーダの潜在は「生成には粗すぎる」と長く信じられてきた</strong>のですが、
+RAE の復号器が用意されたことで、その前提が崩れました。
+</figcaption>
+</figure>
+
+<h3>VQA での比較(論文 Figure 19)</h3>
+<p>
+520B テキスト + 520B マルチモーダルで事前学習してから VQA を fine-tune した場合(濃)と、
+520B のテキストのみで事前学習した場合(淡)の比較です。
+</p>
+<table>
+  <tr><th>エンコーダ</th><th>マルチモーダル事前学習</th><th>テキストのみ事前学習</th><th>差</th></tr>
+  <tr><td><strong>SigLIP 2</strong></td><td><strong>40.3</strong></td><td>27.8</td><td><strong>+12.5</strong></td></tr>
+  <tr><td>WebSSL-L</td><td>33.9</td><td>26.0</td><td>+7.9</td></tr>
+  <tr><td>DINOv2-L</td><td>32.2</td><td>27.4</td><td>+4.8</td></tr>
+  <tr><td>FLUX.1</td><td>30.5</td><td>27.7</td><td>+2.8</td></tr>
+  <tr><td>Pixel(x 予測)</td><td>30.7</td><td>27.7</td><td>+3.0</td></tr>
+  <tr><td>SD-VAE</td><td>30.1</td><td>29.9</td><td>+0.2</td></tr>
+  <tr><td>Pixel</td><td>29.4</td><td>29.6</td><td><strong>−0.2</strong></td></tr>
+</table>
+<div class="callout math">
+<span class="callout-title">この表の読みどころ</span>
+<strong>マルチモーダル事前学習の恩恵は、エンコーダによって桁違いに違います。</strong>
+SigLIP 2 では +12.5 ポイントも伸びるのに、SD-VAE では +0.2、生ピクセルに至っては<strong>わずかに下がって</strong>います。
+<br><br>
+素直な解釈はこうです —— <strong>意味的に整った潜在空間を持つエンコーダほど、
+事前学習で得た知識を VQA へ運べる</strong>。
+VAE 潜在は「画素を圧縮したもの」であって意味の構造を持たないので、
+いくら事前学習しても下流タスクへの転移が起きにくい。
+<a href="scaling.html#wise">スケーリング則編</a>で見る WISE(世界知識)の結果も、同じ方向を指しています。
+</div>
+
+<h2 id="data">実験② データ — モダリティ競合は本当にあるのか(§4)</h2>
+
+<h3 id="composition">データ構成を変える</h3>
+<p>
+3 つの混合を比較します。すべて<strong>約 1T トークン(テキスト 520B + マルチモーダル 520B)</strong>で、
+テキストのみのベースライン(520B)と並べます。
+</p>
+<table>
+  <tr><th>混合</th><th>DCLM PPL</th><th>Notes PPL</th><th>視覚能力</th></tr>
+  <tr>
+    <td><strong>Text + Video</strong>(注釈なし動画)</td>
+    <td><strong>最良</strong>。テキストのみのベースラインすら上回る</td>
+    <td><strong>最良</strong></td>
+    <td>I/T 対が無いので画像生成は測定対象外</td>
+  </tr>
+  <tr>
+    <td>Text + MetaCLIP(I/T 対)</td>
+    <td><strong>最悪</strong></td>
+    <td>最悪</td>
+    <td>生成・理解が立ち上がる</td>
+  </tr>
+  <tr>
+    <td>Text + Video + MetaCLIP + Action(全部)</td>
+    <td>わずかに劣化するだけ</td>
+    <td>わずかに劣化</td>
+    <td><strong>VQA は全構成中で最良</strong></td>
+  </tr>
+</table>
+<p>
+※ 論文 Figure 3・4 は棒グラフのみで、数値の表は付いていません。上表は本文の記述に基づく順序関係です。
+</p>
+
+<div class="callout point">
+<span class="callout-title">犯人は「視覚」ではなく「キャプションの分布」</span>
+純粋な動画を混ぜたモデルが<strong>テキストのみのベースラインより DCLM PPL が良い</strong> ——
+これは「視覚データが言語を壊す」という通説への反証です。論文の言い方:
+“suggesting that <strong>vision itself is not the primary cause of modality competition</strong>”。
+<br><br>
+一方で悪化するのは I/T 対を入れたときだけ。そこで §4.2 は仮説を立てます ——
+<strong>画像キャプションの文体が、事前学習テキストの分布から離れているのではないか</strong>。
+</div>
+
+<h3 id="caption">キャプションの分布シフトを測る</h3>
+<p>
+3 種類の I/T ソースについて、キャプションの埋め込み重心が DCLM からどれだけ離れているかを測ります
+(Qwen3-Embedding-8B で 10 万件をサンプリングし、重心間のコサイン距離)。
+</p>
+<table>
+  <tr><th></th><th>MetaCLIP(Web クロール)</th><th>MetaCLIP 再キャプション(合成)</th><th>SSTK(高審美性・社内)</th></tr>
+  <tr><td>DCLM とのコサイン距離 ↓</td><td><strong>0.196</strong></td><td>0.286</td><td>0.215</td></tr>
+  <tr><td>perplexity への影響</td><td>最小</td><td><strong>最大の劣化</strong></td><td>中間</td></tr>
+  <tr><td>得意なこと</td><td>—</td><td><strong>VQA(理解)を改善</strong></td><td><strong>生成を改善</strong></td></tr>
+</table>
+<div class="callout math">
+<span class="callout-title">距離と劣化がきれいに対応する</span>
+コサイン距離の大小(0.196 &lt; 0.215 &lt; 0.286)が、そのまま perplexity 劣化の大小に対応します。
+<strong>「視覚が言語を壊す」のではなく、「Web テキストと文体の違うキャプションを混ぜると言語が引きずられる」</strong>
+というのが正確な診断です。
+<br><br>
+そして論文はここから実務的な処方箋を引き出します ——
+<strong>ソースごとに得意分野が違うので、用途別に使い分ければよい</strong>。
+実際 <strong>MetaCLIP を I2T(理解)に、SSTK を T2I(生成)に</strong>割り当てた構成が、
+両方の良いところを取ります(Figure 5)。
+“suggesting that <strong>data can be independently chosen per capability</strong>.”
+</div>
+
+<h3 id="synergy">相乗効果 — 足すと両方が良くなる</h3>
+<p>
+ここからが本節のハイライトです。
+<strong>「干渉しない」を通り越して「積極的に助け合う」</strong>ことが示されます。
+</p>
+<ul>
+  <li><strong>言語 → 視覚</strong>:
+  視覚トークン量を固定してテキストを 0 → 100B と足していくと、
+  <strong>拡散損失も GenEval も一貫して改善</strong>し、マルチモーダルのみのベースラインを超えます(Figure 6)。
+  論文の解釈は素直で、「生成ベンチマークはテキスト条件付きなので、
+  言語モデリングが良くなればテキストと画像の整合も良くなる」</li>
+  <li><strong>視覚 → 言語</strong>:
+  逆向きは「ほぼ影響なし」(DCLM は微改善、Notes は微劣化)(Figure 18)</li>
+</ul>
+
+<p>
+理解タスクでも同じことが起きます。<strong>VQA データ 20B に、無関係な一般データ 80B を足す</strong>実験です。
+</p>
+<table>
+  <tr><th>学習構成</th><th>平均 VQA 精度 ↑</th><th>備考</th></tr>
+  <tr><td>VQA 20B のみ</td><td>34.6</td><td>ベースライン</td></tr>
+  <tr><td>VQA 20B + <strong>動画</strong> 80B</td><td>36.1</td><td rowspan="3">いずれも<strong>ドメイン内データは 5 分の 1</strong></td></tr>
+  <tr><td>VQA 20B + <strong>画像テキスト</strong> 80B</td><td>36.9</td></tr>
+  <tr><td>VQA 20B + <strong>テキスト</strong> 80B</td><td><strong>37.9</strong></td></tr>
+  <tr><td>VQA 100B(ドメイン内で 5 倍にスケール)</td><td>35.7</td><td>負ける</td></tr>
+</table>
+<div class="callout point">
+<span class="callout-title">この表の主張</span>
+<strong>ドメイン内データを 5 倍に増やすより、無関係な一般データを混ぜたほうが強い。</strong>
+とくに<strong>純粋なテキストを足したものが最良(37.9)</strong>というのが効いています ——
+VQA は画像の問題なのに、<strong>テキストを足すのが一番効く</strong>。
+<br><br>
+論文の言葉: “showing that <strong>diverse pretraining provides a stronger foundation
+than task-specific scaling</strong>.”
+これは次節(世界モデル)の伏線でもあります。
+</div>
+
+<h2 id="world">実験③ 世界モデル — 専用モデルは要らないのか(§5)</h2>
+<p>
+ここで <a href="../NWM/index.html">NWM</a> が登場します。
+問いはこうです ——
+<strong>「世界モデル能力は、専用のアーキテクチャと専用のデータから来るのか?
+それとも、一般的なマルチモーダル事前学習から創発するのか?」</strong>
+</p>
+
+<figure class="diagram" id="wm-fig" data-cycle-ms="14000" data-step-count="4">
+<svg viewBox="0 0 920 440" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="NWM の設定を汎用モデルで解くための変換">
+  <defs>
+    <marker id="arrW" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#8a93ad"/>
+    </marker>
+  </defs>
+
+  <g class="w1">
+    <text x="16" y="26" font-size="12.5" font-weight="bold" fill="#e07b1f">① NWM のやり方(専用設計)</text>
+    <rect x="16" y="38" width="410" height="106" rx="10" fill="#fdeeda" stroke="#e07b1f" stroke-width="2"/>
+    <rect x="32" y="54" width="52" height="40" rx="5" fill="#fff" stroke="#e07b1f"/>
+    <rect x="90" y="54" width="52" height="40" rx="5" fill="#fff" stroke="#e07b1f"/>
+    <rect x="148" y="54" width="52" height="40" rx="5" fill="#fff" stroke="#e07b1f"/>
+    <rect x="206" y="54" width="52" height="40" rx="5" fill="#fff" stroke="#e07b1f"/>
+    <text x="145" y="110" font-size="9.5" text-anchor="middle" fill="#5b6478">文脈 4 フレーム</text>
+    <rect x="276" y="54" width="134" height="40" rx="7" fill="#fbe4e8" stroke="#d43d51" stroke-width="1.8"/>
+    <text x="343" y="70" font-size="9.5" text-anchor="middle" fill="#d43d51" font-weight="bold">専用の行動埋め込み</text>
+    <text x="343" y="85" font-size="9" text-anchor="middle" class="mono" fill="#5b6478">sin-cos → MLP → ξ</text>
+    <text x="276" y="112" font-size="9.5" fill="#d43d51">連続ベクトルとして注入</text>
+    <text x="276" y="128" font-size="9.5" fill="#d43d51">(AdaLN で全層に配る)</text>
+  </g>
+
+  <g class="w2">
+    <text x="470" y="26" font-size="12.5" font-weight="bold" fill="#1e9e6a">② 本作のやり方(汎用のまま)</text>
+    <rect x="470" y="38" width="434" height="106" rx="10" fill="#e0f5ec" stroke="#1e9e6a" stroke-width="2.5"/>
+    <rect x="486" y="54" width="44" height="40" rx="5" fill="#fff" stroke="#1e9e6a"/>
+    <rect x="536" y="54" width="44" height="40" rx="5" fill="#fff" stroke="#1e9e6a"/>
+    <rect x="586" y="54" width="44" height="40" rx="5" fill="#fff" stroke="#1e9e6a"/>
+    <rect x="636" y="54" width="44" height="40" rx="5" fill="#fff" stroke="#1e9e6a"/>
+    <text x="583" y="110" font-size="9.5" text-anchor="middle" fill="#5b6478">文脈 4 フレーム</text>
+    <rect x="694" y="54" width="196" height="40" rx="7" fill="#e9ecf5" stroke="#8a93ad" stroke-width="1.8"/>
+    <text x="792" y="70" font-size="9" text-anchor="middle" class="mono" fill="#5b6478">"action: dx=+1.338,</text>
+    <text x="792" y="85" font-size="9" text-anchor="middle" class="mono" fill="#5b6478">dy=-0.659, dyaw=-0.707, …"</text>
+    <text x="694" y="112" font-size="9.5" fill="#1e9e6a" font-weight="bold">ただのテキストトークン</text>
+    <text x="694" y="128" font-size="9.5" fill="#5b6478">= 既存の語彙で書ける</text>
+  </g>
+
+  <g class="w3">
+    <rect x="16" y="164" width="888" height="94" rx="10" fill="#f2f4fa" stroke="#7b46c9" stroke-width="2"/>
+    <text x="460" y="188" font-size="12.5" font-weight="bold" text-anchor="middle" fill="#7b46c9">③ 課題を I + T → I の予測に読み替える</text>
+    <text x="460" y="212" font-size="11" text-anchor="middle" fill="#5b6478">“Unlike NWM, which encodes actions as specialized continuous vectors, we represent actions</text>
+    <text x="460" y="230" font-size="11" text-anchor="middle" fill="#5b6478">directly as <tspan font-weight="bold">text tokens</tspan> (i.e. numerical strings)… We introduce <tspan font-weight="bold">no action-specific adapters</tspan></text>
+    <text x="460" y="248" font-size="11" text-anchor="middle" fill="#5b6478">or architectural modifications.”(論文 §5)</text>
+  </g>
+
+  <g class="w4">
+    <rect x="16" y="278" width="434" height="146" rx="10" fill="#e5eafc" stroke="#3556d4" stroke-width="2"/>
+    <text x="233" y="302" font-size="12" font-weight="bold" text-anchor="middle" fill="#3556d4">④ 評価は NWM のプロトコルをそのまま</text>
+    <text x="32" y="326" font-size="10.5" fill="#5b6478">・学習データ: SCAND / RECON(自己中心視点のナビ)</text>
+    <text x="32" y="346" font-size="10.5" fill="#5b6478">・1 サンプル = 文脈 4 枚 + 行動 + 目標フレーム</text>
+    <text x="32" y="366" font-size="10.5" fill="#5b6478">・<tspan font-weight="bold">ゼロショットの CEM 計画</tspan>(N=120、8 手先)</text>
+    <text x="32" y="386" font-size="10.5" fill="#5b6478">・LPIPS でスコア付け、上位 K=5 の行動を平均</text>
+    <text x="32" y="408" font-size="10.5" fill="#3556d4" font-weight="bold">・指標は ATE / RPE —— NWM と同じ土俵</text>
+
+    <rect x="470" y="278" width="434" height="146" rx="10" fill="#fbe4e8" stroke="#d43d51" stroke-width="2"/>
+    <text x="687" y="302" font-size="12" font-weight="bold" text-anchor="middle" fill="#d43d51">おまけ: 自然言語でも操縦できる</text>
+    <text x="486" y="326" font-size="10.5" fill="#5b6478">行動を文字列で書くようにした副産物として、</text>
+    <text x="486" y="346" font-size="10.5" fill="#5b6478"><tspan font-weight="bold">学習時に無かった指示</tspan>にもゼロショットで反応する。</text>
+    <text x="486" y="368" font-size="10.5" fill="#d43d51" font-weight="bold">例: “get out of the shadow!”(影から出て!)</text>
+    <text x="486" y="386" font-size="10.5" fill="#d43d51" font-weight="bold">   “go closer to the house” / “go on the road”</text>
+    <text x="486" y="408" font-size="10.5" fill="#5b6478">WASD キー操作への写像も定義されている(§I.1)</text>
+  </g>
+
+  <g fill="none" stroke="#8a93ad" stroke-width="2" marker-end="url(#arrW)">
+    <path class="flow-edge" d="M 430 90 L 466 90"/>
+  </g>
+</svg>
+<figcaption>
+NWM の設定を汎用モデルで解くための変換。
+<strong>行動を「文字列」にするだけで、専用のアダプタも構造変更も不要になります</strong>。
+NWM 側の詳細(CEM・ATE / RPE)は<a href="../NWM/inference.html">NWM 生成と計画編</a>を参照してください。
+</figcaption>
+</figure>
+
+<h3 id="wm-results">結果 — 一般データのほうが効く</h3>
+<p>
+NWM データ 50B に、別種のデータ 50B を足したモデル群を、
+<strong>NWM データだけで 100B に増やしたモデル</strong>と比較します。
+</p>
+
+<figure class="diagram" id="res-fig" data-cycle-ms="12000" data-step-count="3">
+<svg viewBox="0 0 900 400" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="世界モデル実験の ATE / RPE 結果">
+  <text x="16" y="24" font-size="12.5" font-weight="bold" fill="#5b6478">ATE(絶対軌道誤差、低いほど良い) —— 全モデル 100B トークン</text>
+  <line x1="230" y1="36" x2="230" y2="250" stroke="#c2c9db" stroke-width="1.5"/>
+  <text x="232" y="268" font-size="9" fill="#8a93ad">0</text>
+  <line x1="370" y1="36" x2="370" y2="250" stroke="#eef0f6"/>
+  <text x="372" y="268" font-size="9" fill="#8a93ad">0.5</text>
+  <line x1="510" y1="36" x2="510" y2="250" stroke="#eef0f6"/>
+  <text x="512" y="268" font-size="9" fill="#8a93ad">1.0</text>
+  <line x1="650" y1="36" x2="650" y2="250" stroke="#eef0f6"/>
+  <text x="652" y="268" font-size="9" fill="#8a93ad">1.5</text>
+  <line x1="790" y1="36" x2="790" y2="250" stroke="#eef0f6"/>
+  <text x="792" y="268" font-size="9" fill="#8a93ad">2.0</text>
+
+  <g class="b1">
+    <text x="16" y="58" font-size="10.5" fill="#1e9e6a" font-weight="bold">+ 動画 50B</text>
+    <rect x="230" y="44" width="395" height="20" rx="3" fill="#1e9e6a"/>
+    <text x="635" y="59" font-size="10" fill="#1e9e6a" font-weight="bold">1.410 ← 最良</text>
+    <text x="16" y="88" font-size="10.5" fill="#1e9e6a">+ テキスト行動 50B</text>
+    <rect x="230" y="74" width="405" height="20" rx="3" fill="#4fbb8e"/>
+    <text x="645" y="89" font-size="10" fill="#1e9e6a">1.448</text>
+  </g>
+
+  <g class="b2">
+    <text x="16" y="118" font-size="10.5" fill="#5b6478">+ テキスト 50B</text>
+    <rect x="230" y="104" width="464" height="20" rx="3" fill="#8a93ad"/>
+    <text x="704" y="119" font-size="10" fill="#5b6478">1.657</text>
+    <text x="16" y="148" font-size="10.5" fill="#3556d4">NWM データ 100B(倍増)</text>
+    <rect x="230" y="134" width="467" height="20" rx="3" fill="#7b96f0"/>
+    <text x="707" y="149" font-size="10" fill="#3556d4">1.669</text>
+    <text x="16" y="178" font-size="10.5" fill="#5b6478">+ 画像テキスト 50B</text>
+    <rect x="230" y="164" width="504" height="20" rx="3" fill="#b9c1d6"/>
+    <text x="744" y="179" font-size="10" fill="#5b6478">1.801</text>
+  </g>
+
+  <g class="b3">
+    <text x="16" y="208" font-size="10.5" fill="#d43d51">NWM データ 50B のみ</text>
+    <rect x="230" y="194" width="553" height="20" rx="3" fill="#e6a0aa"/>
+    <text x="793" y="209" font-size="10" fill="#d43d51">1.974</text>
+    <text x="16" y="238" font-size="10" fill="#8a93ad">(参考)RPE も同じ順序:</text>
+    <text x="230" y="238" font-size="10" fill="#5b6478">動画 0.414 / テキスト行動 <tspan font-weight="bold">0.407</tspan> / テキスト 0.448 / NWM 100B 0.450 / 画像テキスト 0.503 / NWM 50B 0.516</text>
+  </g>
+
+  <rect x="16" y="284" width="868" height="106" rx="10" fill="#e0f5ec" stroke="#1e9e6a" stroke-width="2"/>
+  <text x="450" y="308" font-size="12.5" font-weight="bold" text-anchor="middle" fill="#1e9e6a">読み取れること</text>
+  <text x="30" y="332" font-size="11" fill="#5b6478">・<tspan font-weight="bold">ドメイン内データを倍にする(50B→100B)より、別種のデータを足すほうが効く</tspan>。1.974 → 1.669 に対し、動画は 1.410。</text>
+  <text x="30" y="352" font-size="11" fill="#5b6478">・とくに効くのが<tspan font-weight="bold">注釈なしの動画</tspan>。行動ラベルも報酬もない、ただの映像がいちばん効いている。</text>
+  <text x="30" y="372" font-size="11" fill="#1e9e6a" font-weight="bold">・画像テキスト対だけは NWM 100B に負ける —— 静止画のペアには「動きの物理」が入っていないから、と読める。</text>
+</svg>
+<figcaption>
+世界モデル実験の結果(論文 Figure 8)。RPE の順序は ATE とほぼ一致しますが、
+<strong>RPE だけはテキスト行動データ(0.407)が動画(0.414)をわずかに上回ります</strong>。
+</figcaption>
+</figure>
+
+<div class="callout math">
+<span class="callout-title">決定打 —— ドメイン内データは 1% で足りる</span>
+総予算を 200B トークンに固定し、そのうち NWM データの割合を <strong>0.1% から 25% まで</strong>振ります。
+結果(Figure 9): <strong>わずか 1% で ATE も RPE も飽和します</strong>。
+それ以上足しても、ほとんど良くなりません。
+<br><br>
+論文の結論: “reinforcing that capabilities such as navigation and VQA are
+<strong>primarily acquired during general pretraining</strong>.”
+<br><br>
+<strong>NWM を読んだ直後にこれを読むと、なかなか衝撃的です。</strong>
+NWM は CDiT という専用アーキテクチャを設計し、行動を専用ベクトルで埋め込み、
+1B パラメータをナビゲーションデータだけで学習しました。
+本作は「行動を文字列で書いて、残り 99% は無関係なデータで学習する」だけで、同じ土俵に立ってしまう。
+<br><br>
+もっとも、両者は<strong>直接比較されていません</strong>(モデル規模も学習量も評価対象データセットも異なります)。
+本作の主張は「NWM より強い」ではなく<strong>「世界モデル能力の出どころは専用データではない」</strong>という点にあります。
+</div>
+
+<div class="callout point">
+<span class="callout-title">副産物 — 自然言語での操縦</span>
+行動を文字列にした結果、<strong>学習時に定義していない指示にもゼロショットで反応します</strong>。
+論文が挙げる例は “get out of the shadow!”(影から出て!)。
+生成フレームは<strong>視覚的な一貫性を保ったまま、命じられた動作を実行する</strong>と報告されています(§I.2)。
+<br><br>
+NWM の行動空間は \((\Delta x, \Delta y, \Delta\text{yaw}, k)\) という 4 つの数値に閉じていました。
+本作は同じ情報を文字列で書くことで、<strong>その外側(自然言語)へ勝手にはみ出せる</strong>ようになっています。
+これは「専用の表現を捨てて汎用の表現に載せ替える」ことの、分かりやすい利得です。
+</div>
+
+<h2 id="summary">この章のまとめ</h2>
+<div class="callout point">
+<span class="callout-title">3 つの実験群から言えること</span>
+<ol>
+  <li><strong>視覚表現は 1 つでよい</strong> —— 意味エンコーダ(RAE)が理解でも生成でも VAE に勝つ。
+  マルチモーダル事前学習の恩恵も、意味的な潜在空間を持つエンコーダほど大きい(SigLIP 2 で VQA +12.5)</li>
+  <li><strong>モダリティ競合は「視覚のせい」ではない</strong> ——
+  純粋な動画はむしろ言語を助ける。劣化の原因は画像キャプションの分布シフトで、
+  コサイン距離ときれいに対応する。しかも<strong>言語 → 視覚には正の転移</strong>がある</li>
+  <li><strong>世界モデル能力は一般事前学習から創発する</strong> ——
+  専用データは全体の 1% で飽和し、注釈なし動画を足すほうがドメイン内データを倍にするより効く</li>
+</ol>
+</div>
+<p>
+残る問いは<strong>「これは規模を上げても成り立つのか」</strong>です。
+次章では IsoFLOP 分析によるスケーリング則と、そこで見つかった<strong>視覚と言語の非対称性</strong>を見ます。
+</p>
+
+<nav class="pager">
+  <a href="training.html"><span class="dir">← 前へ</span><span class="title">2. 学習と生成の仕組み</span></a>
+  <a class="next" href="scaling.html"><span class="dir">次へ →</span><span class="title">4. スケーリング則と議論</span></a>
+</nav>
+
+</main>
+
+<footer class="site-footer">
+  <p>論文: <em>Beyond Language Modeling: An Exploration of Multimodal Pretraining</em>(ICML 2026, PMLR 306)/
+  <a href="https://arxiv.org/abs/2603.03276" target="_blank" rel="noopener">arXiv:2603.03276</a> /
+  <a href="https://beyond-llms.github.io/" target="_blank" rel="noopener">プロジェクトページ</a>(実装コードは未公開)</p>
+</footer>
+
+<script>
+MathJax = { tex: { inlineMath: [['\\(', '\\)']], displayMath: [['$$', '$$']] } };
+</script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js" async></script>
+<script src="assets/diagram-controls.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-core.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-python.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-yaml.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-bash.min.js"></script>
+</body>
+</html>
