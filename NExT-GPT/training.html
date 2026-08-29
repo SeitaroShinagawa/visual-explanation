@@ -227,7 +227,7 @@ $$\mathcal{L}_{\text{cap}} = \frac{1}{N L}\sum_{i=1}^{N}\sum_{\ell=1}^{L}
 <div class="codeblock">
 <div class="codehead"><span class="path">nextgpt/model/language_model/nextgpt_llama.py</span> L318–345(抜粋)
 <a href="https://github.com/NExT-GPT/NExT-GPT/blob/60d618b067ee4cb0d70e7075ae79852780b34fc2/nextgpt/model/language_model/nextgpt_llama.py#L318-L345" target="_blank" rel="noopener">GitHub ↗</a></div>
-<pre><code class="language-python"># labels の中からシグナルトークン区間 [<image_00> … <image_03>] を探す
+<pre><code class="language-python"># labels の中からシグナルトークン区間 [&lt;image_00&gt; … &lt;image_03&gt;] を探す
 start_pos = (labels == image_signal_token_indices[0][1]).nonzero(as_tuple=False).tolist()
 end_pos   = (labels == image_signal_token_indices[-1][1]).nonzero(as_tuple=False).tolist()
 ...
