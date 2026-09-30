@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>育休・有給 最適化シミュレーター</title>
+<style>
+:root{--bg:#f5f7fb;--panel:#fff;--text:#172033;--muted:#667085;--line:#d9dee8;--accent:#2563eb;--weekend:#f2f4f7;--holiday:#ede9fe;--paid:#dcfce7;--papa:#dbeafe;--regular:#fef3c7;--fixed:#bbf7d0}
+*{box-sizing:border-box}body{margin:0;font-family:system-ui,-apple-system,"Segoe UI","Noto Sans JP",sans-serif;background:var(--bg);color:var(--text)}
+.app{max-width:1500px;margin:auto;padding:20px}h1{font-size:26px;margin:0 0 6px}.sub{color:var(--muted);margin-bottom:18px;line-height:1.6}.grid{display:grid;grid-template-columns:370px 1fr;gap:16px;align-items:start}@media(max-width:980px){.grid{grid-template-columns:1fr}}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:16px;box-shadow:0 1px 3px #10182812}.panel h2{font-size:17px;margin:0 0 12px}label{display:block;font-size:13px;color:#344054;margin:10px 0 5px}input,button{font:inherit}input[type=number],input[type=date]{width:100%;padding:9px 10px;border:1px solid #cfd5df;border-radius:9px;background:#fff}.two{display:grid;grid-template-columns:1fr 1fr;gap:10px}.check{display:flex;gap:8px;align-items:center;font-size:13px;margin-top:10px;color:#344054}.check input{width:auto}button{border:0;border-radius:9px;padding:10px 12px;cursor:pointer;font-weight:700}.primary{background:var(--accent);color:#fff}.secondary{background:#eef2f7;color:#344054}.danger{background:#fff1f0;color:#b42318}.small{padding:7px 9px;font-size:12px}.actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}.note{font-size:12px;line-height:1.55;color:var(--muted);margin-top:10px}hr{border:0;border-top:1px solid var(--line);margin:16px 0}summary{cursor:pointer;font-weight:700;font-size:14px}
+.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:14px}@media(max-width:1100px){.kpis{grid-template-columns:repeat(2,1fr)}}.kpi{background:#fff;border:1px solid var(--line);border-radius:14px;padding:13px}.kpi .t{font-size:12px;color:var(--muted)}.kpi .v{font-size:22px;font-weight:800;margin-top:4px}.kpi .s{font-size:11px;color:var(--muted);margin-top:3px}
+.toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px}.mode{border:1px solid var(--line);background:#fff;color:#344054}.mode.active{background:#172033;color:#fff}.legend{display:flex;gap:10px;flex-wrap:wrap;font-size:12px;color:#475467;margin:8px 0 12px}.sw{width:13px;height:13px;border-radius:3px;display:inline-block;border:1px solid #0001;vertical-align:-2px;margin-right:4px}.months{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}@media(max-width:900px){.months{grid-template-columns:1fr}}
+.month{border:1px solid var(--line);border-radius:14px;overflow:hidden;background:#fff}.month-title{text-align:center;font-weight:800;padding:10px;background:#fafbfc;border-bottom:1px solid var(--line)}.weekrow,.days{display:grid;grid-template-columns:repeat(7,1fr)}.weekrow div{text-align:center;font-size:11px;color:var(--muted);padding:6px 2px;border-bottom:1px solid var(--line)}.day{min-height:78px;padding:6px;border-right:1px solid #eef0f4;border-bottom:1px solid #eef0f4;position:relative;cursor:pointer;background:#fff}.day.blank{cursor:default;background:#fafafa}.day.out-range{opacity:.43}.day.weekend{background:var(--weekend)}.day.company{background:var(--holiday)}
+.day.public-holiday{background:var(--public)}.day.paid{background:var(--paid)}.day.paid.fixed{background:var(--fixed);box-shadow:inset 0 0 0 2px #22c55e}.day.papa{background:var(--papa)}.day.regular{background:var(--regular)}.daynum{font-weight:800;font-size:13px}.badge{display:block;font-size:10px;line-height:1.2;margin-top:4px;padding:2px 4px;border-radius:4px;background:#ffffffaa}.month-end:after{content:"月末";position:absolute;right:4px;top:4px;font-size:9px;background:#172033;color:#fff;border-radius:4px;padding:1px 3px}
+.table-wrap{overflow:auto}table{border-collapse:collapse;width:100%;font-size:13px}th,td{padding:9px 8px;border-bottom:1px solid #eaecf0;text-align:right;white-space:nowrap}th:first-child,td:first-child{text-align:left}th{color:#475467;background:#fafbfc}.good{color:#067647;font-weight:800}.bad{color:#b42318;font-weight:800}.status{font-size:12px;border-radius:8px;padding:8px 10px;margin:10px 0;background:#f8fafc;color:#475467}.status.err{background:#fff1f0;color:#b42318}.range-list{font-size:12px;margin-top:8px}.range-item{display:flex;justify-content:space-between;gap:8px;padding:5px 0;border-bottom:1px dashed #e5e7eb}.footer{margin-top:16px;font-size:11px;color:var(--muted);line-height:1.65}.barwrap{display:grid;gap:7px;margin-top:8px}.barrow{display:grid;grid-template-columns:115px 1fr 90px;gap:8px;align-items:center;font-size:12px}.bar{height:10px;background:#eef2f6;border-radius:20px;overflow:hidden}.bar>span{display:block;height:100%;background:#667085;border-radius:20px}
+.helpbox{margin-top:7px;padding:9px 10px;border:1px solid #e3e8ef;border-radius:9px;background:#f8fafc;font-size:11.5px;line-height:1.6;color:#475467}
+.helpbox b{color:#344054}.inline-input{display:grid;grid-template-columns:1fr auto;gap:7px;align-items:center}.inline-input button{white-space:nowrap}
+.calcbox{margin-top:10px;padding:10px;border-radius:10px;background:#f8fafc;border:1px solid #e3e8ef;font-size:12px;line-height:1.65}
+.calcbox .calcgrid{display:grid;grid-template-columns:1fr auto;gap:3px 12px}.calcbox .calcgrid span:nth-child(even){font-weight:700;text-align:right}
+
+.tax-slider-row{display:grid;grid-template-columns:1fr 150px;gap:10px;align-items:center}.tax-slider-row input[type="range"]{width:100%}.tax-preview{margin-top:7px;padding:8px 10px;border-radius:9px;background:#f8fafc;border:1px solid #e3e8ef;font-size:12px;line-height:1.6}</style>
+</head>
+<body><div class="app">
+<h1>育休・有給 最適化シミュレーター</h1>
+<div class="sub">月給 <b>X</b> と有給 <b>N日</b>、会社休日・有給固定期間を入力し、約2か月の休業期間で手取りが残りやすい育休配置を探索します。カレンダーをクリックして会社休日や有給固定日を指定できます。</div>
+<div class="status" style="margin-top:-6px;margin-bottom:16px"><b>公開用ダミーデータ：</b>年収600万円（賞与なし・月給50万円）を初期値にしています。社会保険料・源泉所得税・住民税・年間課税所得も説明用の概算値です。</div>
+<div class="grid">
+<section class="panel">
+<h2>1. 基本条件</h2>
+<label>月給 X（総支給・賞与除く）</label><input id="salary" type="number" min="0" step="1000" value="500000">
+<div class="two"><div><label>出生予定日</label><input id="birth" type="date" value="2026-11-04"><div class="note">実際の出生日が変わった場合は再入力してください。</div></div><div><label>使用可能な有給 N日</label><input id="paidN" type="number" min="0" max="60" value="20"></div></div>
+<div class="two"><div><label>休業シミュレーション開始</label><input id="simStart" type="date" value="2026-11-04"></div><div><label>休業シミュレーション終了</label><input id="simEnd" type="date" value="2026-12-31"></div></div>
+<label class="check"><input id="weekends" type="checkbox" checked> 土日を所定休日として扱う</label>
+<label class="check"><input id="spouseEligible" type="checkbox" checked> 出生後休業支援給付の配偶者要件を満たす／例外に該当</label>
+<hr><h2>2. 有給期間を固定</h2>
+<div class="two"><div><label>開始</label><input id="paidStart" type="date"></div><div><label>終了</label><input id="paidEnd" type="date"></div></div>
+<div class="actions"><button id="addPaidRange" class="secondary small">この期間を有給固定</button><button id="clearPaid" class="danger small">固定有給をクリア</button></div><div id="paidRanges" class="range-list"></div>
+<hr><details open><summary>金額・制度パラメータ</summary>
+<div class="helpbox"><b>入力の考え方：</b>給与明細に実額がある項目は、その実額を使うのが最も正確です。給与だけでは健康保険・源泉所得税・住民税は一意に決まりません。そのため、このアプリでは「実額入力」と「給与からの概算」を併用できます。</div>
+<div class="actions"><button id="autoAll" class="primary small">給与・2026制度値からまとめて概算</button><button id="set2026" class="secondary small">2026制度値に戻す</button></div>
+
+<label>通常月の健康保険＋厚生年金等（本人負担）</label>
+<div class="inline-input"><input id="monthlySI" type="number" min="0" value="71075"><button id="autoSI" class="secondary small">給与から概算</button></div>
+<div class="helpbox"><b>どこを見る？</b> 給与明細の「健康保険料」「厚生年金保険料」「子ども・子育て支援金」「介護保険料（40〜64歳の場合）」の合計を入力してください。<b>雇用保険料はここに含めません。</b><br><b>概算式：</b>健康保険 ≒ 標準報酬月額×健康保険料率÷2、厚生年金 ≒ 標準報酬月額×18.3%÷2、子ども・子育て支援金 ≒ 標準報酬月額×0.23%÷2、40〜64歳なら介護保険 ≒ 標準報酬月額×1.62%÷2。自動計算では月給を標準報酬月額の近似として使うため、給与明細の実額より誤差が出ます。</div>
+<div class="two">
+  <div><label>健康保険料率（全体、%）</label><input id="healthRatePct" type="number" step="0.01" value="9.90"><div class="note">協会けんぽは都道府県ごとに異なります。9.90%は2026年度の全国平均相当の初期値です。</div></div>
+  <div><label>介護保険</label><label class="check"><input id="careApplicable" type="checkbox"> 40〜64歳として1.62%を加算</label></div>
+</div>
+
+<div class="two">
+  <div>
+    <label>雇用保険率（本人負担）</label>
+    <div class="inline-input"><input id="empRate" type="number" step="0.0001" value="0.005"><button id="autoEmp" class="secondary small">2026一般事業</button></div>
+    <div class="helpbox"><b>どこを見る？</b> 給与明細の雇用保険料 ÷ 総支給額でも確認できます。2026年度の一般事業の本人負担は0.5%（0.005）です。<br><b>式：</b>雇用保険料 ≒ 支給給与 × 雇用保険率。</div>
+  </div>
+  <div>
+    <label>通常月の源泉所得税（給与明細）</label>
+    <div class="inline-input"><input id="monthlyIncomeTax" type="number" min="0" value="25736"><button id="autoTaxRate" class="secondary small">実効率を計算</button></div>
+    <div class="helpbox"><b>どこを見る？</b> 給与明細の「所得税」を入力してください。正確な源泉税は扶養人数・甲乙欄等で決まるため給与だけでは一意に計算できません。<br><b>このアプリの近似式：</b>実効税率 = 通常月所得税 ÷ (月給 − 通常月社会保険料)。</div>
+  </div>
+</div>
+
+<label>所得税概算率（自動計算可）</label><input id="incomeTaxRate" type="number" step="0.0001" value="0.0600">
+<label>本人の年間課税所得（通常勤務時・所得控除後）</label>
+<div class="tax-slider-row"><input id="annualTaxableSlider" type="range" min="0" max="20000000" step="100000" value="3000000"><input id="annualTaxableIncome" type="number" min="0" max="100000000" step="100000" value="3000000"></div>
+<div id="taxPreview" class="tax-preview"></div>
+<div class="helpbox"><b>何を入力？</b> 所得税の「課税される所得金額」の通常勤務時の見込み額です。確定申告書なら「課税される所得金額」、概算なら年間所得から社会保険料控除・基礎控除・配偶者控除などを差し引いた金額を入力してください。育休で給与と社会保険料が変わった分をこの金額から差し引き、2026年の5〜45%の累進税率で所得税を再計算します。</div>
+
+<div class="two">
+  <div><label>月額住民税</label><input id="residentMonthly" type="number" min="0" value="25000"><div class="helpbox"><b>どこを見る？</b> 給与明細の「住民税」または自治体の特別徴収税額通知書。住民税は前年所得ベースなので、現在の月給だけからは自動計算しません。</div></div>
+  <div><label>翌年度住民税の限界税率</label><input id="residentRate" type="number" step="0.001" value="0.10"><div class="helpbox"><b>式：</b>翌年度住民税の減少効果 ≒ 課税所得の減少額 × 10% と簡易計算します。均等割等は含めません。</div></div>
+</div>
+
+<div class="two"><div><label>育休給付率</label><input id="benefitRate" type="number" step="0.01" value="0.67"></div><div><label>出生後上乗せ率</label><input id="supportRate" type="number" step="0.01" value="0.13"></div></div>
+<div class="helpbox"><b>2026制度値：</b>育児休業給付は原則67%、出生後休業支援給付は要件を満たすと13%上乗せ（合計80%、最大28日）。</div>
+
+<label>休業開始時賃金日額 上限（2026/8/1〜2027/7/31）</label>
+<div class="inline-input"><input id="dailyCap" type="number" min="0" value="16540"><button id="updateDerived" class="secondary small">給与から計算</button></div>
+<div class="helpbox"><b>概算式：</b>休業開始時賃金日額 ≒ 月給 ÷ 30。ただし制度上限を超える場合は上限額を使用します。実際には原則として育休開始前6か月の賃金から算定されます。</div>
+
+<div id="derivedBox" class="calcbox"></div>
+<label class="check"><input id="futureResident" type="checkbox" checked> 翌年度住民税の減少効果も「最終経済価値」に含める</label>
+<div class="note">給与の日割りは「各月の所定労働日数」で概算します。実際の給与規程が暦日割・欠勤控除方式の場合は結果が変わります。</div>
+</details>
+<div class="actions"><button id="optimize" class="primary">最適化して計算</button><button id="reset" class="secondary">初期設定に戻す</button></div><div id="status" class="status">カレンダーを編集してから「最適化して計算」を押してください。</div>
+</section>
+<main><div id="kpis" class="kpis"></div>
+<section class="panel"><div class="toolbar"><b>カレンダー編集：</b><button class="mode active small" data-mode="holiday">会社休日</button><button class="mode small" data-mode="public">祝日</button><button class="mode small" data-mode="paid">有給固定日</button><button id="resetPublic" class="secondary small">祝日を公式設定に戻す</button><button id="recalcCalendar" class="secondary small">カレンダー再生成</button></div>
+<div class="legend"><span><i class="sw" style="background:var(--weekend)"></i>土日</span><span><i class="sw" style="background:var(--public)"></i>祝日</span><span><i class="sw" style="background:var(--holiday)"></i>会社休日</span><span><i class="sw" style="background:var(--fixed)"></i>有給固定</span><span><i class="sw" style="background:var(--paid)"></i>有給（自動）</span><span><i class="sw" style="background:var(--papa)"></i>産後パパ育休</span><span><i class="sw" style="background:var(--regular)"></i>通常育休</span></div><div id="months" class="months"></div></section>
+<section class="panel" style="margin-top:16px"><h2>比較結果</h2><div id="bars" class="barwrap"></div><div class="table-wrap" style="margin-top:12px"><table id="resultTable"></table></div><div id="blocks" style="margin-top:14px"></div></section>
+<section class="panel" style="margin-top:16px"><h2>計算上の注意</h2><div class="note">このアプリは意思決定用の概算です。育児休業給付は実際には支給単位期間（原則30日）や休業期間中の賃金支払いによる調整があり、給与の欠勤控除方式も勤務先ごとに異なります。社会保険料免除は、月末を含む育児休業等、または同一月内の短期育休で14日以上などの要件を簡易判定しています。「産後パパ育休」は出生後8週間以内・通算28日以内・2回まで、「通常育休」は原則2回までとして探索します。休日だけから成る育休ブロックは作らず、最適化では育休開始日を所定労働日に限定する保守的な設定です。</div><div class="footer">祝日は内閣府公表の2026年・2027年「国民の祝日・休日」を初期値として内蔵し、カレンダーの「祝日」編集モードで解除・追加できます。2028年以降は未登録です。<br>
+          制度参照：<a href="https://www.mhlw.go.jp/stf/seisakunitsuite/bunya/0000158500.html" target="_blank">厚生労働省「Q&amp;A～育児休業等給付～」</a> ／ <a href="https://www.nenkin.go.jp/shinsei/kounen/tekiyo/menjo/20140403-01.html" target="_blank">日本年金機構「育児休業等期間中の保険料免除」</a> ／ <a href="https://shussan.ikukyu-simu.mhlw.go.jp/faq/" target="_blank">厚生労働省「産休・育休中の経済的支援 かんたん試算ツール」</a></div></section>
+</main></div></div>
+<script>
+(()=>{"use strict";
+const $=id=>document.getElementById(id),pad=n=>String(n).padStart(2,"0"),iso=d=>`${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
+const parseDate=s=>{const[y,m,d]=s.split("-").map(Number);return new Date(y,m-1,d,12)},addDays=(d,n)=>{const x=new Date(d);x.setDate(x.getDate()+n);return x},daysBetween=(a,b)=>Math.round((b-a)/86400000),yen=n=>"¥"+Math.round(n).toLocaleString("ja-JP");
+const officialPublicHolidays=new Map([
+["2026-01-01","元日"],["2026-01-12","成人の日"],["2026-02-11","建国記念の日"],["2026-02-23","天皇誕生日"],
+["2026-03-20","春分の日"],["2026-04-29","昭和の日"],["2026-05-03","憲法記念日"],["2026-05-04","みどりの日"],
+["2026-05-05","こどもの日"],["2026-05-06","振替休日"],["2026-07-20","海の日"],["2026-08-11","山の日"],
+["2026-09-21","敬老の日"],["2026-09-22","国民の休日"],["2026-09-23","秋分の日"],["2026-10-12","スポーツの日"],
+["2026-11-03","文化の日"],["2026-11-23","勤労感謝の日"],
+["2027-01-01","元日"],["2027-01-11","成人の日"],["2027-02-11","建国記念の日"],["2027-02-23","天皇誕生日"],
+["2027-03-21","春分の日"],["2027-03-22","振替休日"],["2027-04-29","昭和の日"],["2027-05-03","憲法記念日"],
+["2027-05-04","みどりの日"],["2027-05-05","こどもの日"],["2027-07-19","海の日"],["2027-08-11","山の日"],
+["2027-09-20","敬老の日"],["2027-09-23","秋分の日"],["2027-10-11","スポーツの日"],["2027-11-03","文化の日"],
+["2027-11-23","勤労感謝の日"]
+]);
+let editMode="holiday",customHolidays=new Set(["2026-12-29","2026-12-30","2026-12-31"]),disabledOfficialHolidays=new Set(),customPublicHolidays=new Map(),fixedPaid=new Set(),paidRangeLabels=[],plan=null;
+function monthKey(d){return `${d.getFullYear()}-${pad(d.getMonth()+1)}`}
+function isWeekend(d){return $("weekends").checked&&(d.getDay()===0||d.getDay()===6)}
+function isPublicHoliday(d){const id=iso(d);return customPublicHolidays.has(id)||(officialPublicHolidays.has(id)&&!disabledOfficialHolidays.has(id))}
+function publicHolidayName(d){const id=iso(d);if(customPublicHolidays.has(id))return customPublicHolidays.get(id);if(officialPublicHolidays.has(id)&&!disabledOfficialHolidays.has(id))return officialPublicHolidays.get(id)||"";return ""}
+function isCompanyHoliday(d){return customHolidays.has(iso(d))}
+function isWorkday(d){return !isWeekend(d)&&!isPublicHoliday(d)&&!isCompanyHoliday(d)}
+function togglePublicHoliday(d){const id=iso(d);if(customPublicHolidays.has(id)){customPublicHolidays.delete(id)}else if(officialPublicHolidays.has(id)){if(disabledOfficialHolidays.has(id))disabledOfficialHolidays.delete(id);else disabledOfficialHolidays.add(id)}else{customPublicHolidays.set(id,"祝日（手動）")}if(isPublicHoliday(d)){customHolidays.delete(id);fixedPaid.delete(id)}}function inRange(d,a,b){return d>=a&&d<=b}function monthEnd(d){return addDays(d,1).getMonth()!==d.getMonth()}
+function allDates(a,b){const arr=[];for(let d=new Date(a);d<=b;d=addDays(d,1))arr.push(new Date(d));return arr}
+function getFullCalendarBounds(){const s=parseDate($("simStart").value),e=parseDate($("simEnd").value);return[new Date(s.getFullYear(),s.getMonth(),1,12),new Date(e.getFullYear(),e.getMonth()+1,0,12)]}
+function touchedMonths(){const s=parseDate($("simStart").value),e=parseDate($("simEnd").value),out=[];let d=new Date(s.getFullYear(),s.getMonth(),1,12);while(d<=e){out.push(`${d.getFullYear()}-${pad(d.getMonth()+1)}`);d=new Date(d.getFullYear(),d.getMonth()+1,1,12)}return out}
+function monthWorkdays(key){const[y,m]=key.split("-").map(Number),a=new Date(y,m-1,1,12),b=new Date(y,m,0,12);return allDates(a,b).filter(isWorkday).length}
+function renderCalendar(){const wrap=$("months");wrap.innerHTML="";if(!$("simStart").value||!$("simEnd").value)return;const simS=parseDate($("simStart").value),simE=parseDate($("simEnd").value),[a,b]=getFullCalendarBounds();let cur=new Date(a);while(cur<=b){const y=cur.getFullYear(),m=cur.getMonth(),box=document.createElement("div");box.className="month";box.innerHTML=`<div class="month-title">${y}年 ${m+1}月</div><div class="weekrow">${["日","月","火","水","木","金","土"].map(x=>`<div>${x}</div>`).join("")}</div>`;const days=document.createElement("div");days.className="days";const first=new Date(y,m,1,12);for(let i=0;i<first.getDay();i++){const z=document.createElement("div");z.className="day blank";days.appendChild(z)}const last=new Date(y,m+1,0,12);for(let n=1;n<=last.getDate();n++){const d=new Date(y,m,n,12),id=iso(d),cell=document.createElement("div");cell.className="day";if(!inRange(d,simS,simE))cell.classList.add("out-range");if(isWeekend(d))cell.classList.add("weekend");if(isPublicHoliday(d))cell.classList.add("public-holiday");else if(isCompanyHoliday(d))cell.classList.add("company");if(monthEnd(d))cell.classList.add("month-end");const action=plan?.actions?.[id];if(action==="P"&&!isPublicHoliday(d)&&!isCompanyHoliday(d)){cell.classList.add("paid");if(fixedPaid.has(id))cell.classList.add("fixed")}else if(action==="A")cell.classList.add("papa");else if(action==="R")cell.classList.add("regular");else if(fixedPaid.has(id))cell.classList.add("paid","fixed");let badge="";if(isPublicHoliday(d)){badge=`祝日：${publicHolidayName(d)}`}else if(isCompanyHoliday(d)){badge="会社休日"}else{if(action==="P")badge=fixedPaid.has(id)?"有給（固定）":"有給（自動）";if(action==="A")badge="産後パパ育休";if(action==="R")badge="通常育休"}cell.innerHTML=`<span class="daynum">${n}</span>${badge?`<span class="badge">${badge}</span>`:""}`;cell.title=editMode==="holiday"?"クリック：会社休日を切替":editMode==="public"?"クリック：祝日を切替":"クリック：有給固定日を切替";cell.addEventListener("click",()=>{if(!inRange(d,simS,simE)&&editMode==="paid")return;
+if(editMode==="public"){togglePublicHoliday(d)}
+else if(editMode==="holiday"){if(isPublicHoliday(d)){$("status").className="status";$("status").textContent=`${id} は現在「${publicHolidayName(d)}」です。祝日編集モードで解除してから会社休日を指定してください。`;return}if(customHolidays.has(id)){customHolidays.delete(id)}else{customHolidays.add(id);fixedPaid.delete(id)}}
+else{if(isPublicHoliday(d)){$("status").className="status";$("status").textContent=`${id} は現在「${publicHolidayName(d)}」です。祝日編集モードで解除してから有給を指定してください。`;return}if(fixedPaid.has(id)){fixedPaid.delete(id)}else{fixedPaid.add(id);customHolidays.delete(id)}}plan=null;renderCalendar();renderPaidRanges();clearResults()});days.appendChild(cell)}box.appendChild(days);wrap.appendChild(box);cur=new Date(y,m+1,1,12)}}
+function renderPaidRanges(){const el=$("paidRanges"),fixed=[...fixedPaid].sort(),rangeText=paidRangeLabels.length?paidRangeLabels.map(r=>`<div class="range-item"><span>${r[0]} ～ ${r[1]}</span><span>期間指定</span></div>`).join(""):"",clickText=fixed.length?`<div class="range-item"><span>固定日 合計</span><b>${fixed.length}暦日（休日含む）</b></div>`:"";el.innerHTML=rangeText+clickText}
+function clearResults(){$("kpis").innerHTML="";$("resultTable").innerHTML="";$("bars").innerHTML="";$("blocks").innerHTML=""}
+function stateKey(s){return[s.paid,s.pb,s.rb,s.pd,s.ed,s.cur,s.mask].join(",")}function pushState(map,s){const k=stateKey(s),old=map.get(k);if(!old||s.score>old.score)map.set(k,s)}
+function optimizePlan(targetPaid){const simS=parseDate($("simStart").value),simE=parseDate($("simEnd").value),birth=parseDate($("birth").value);if(simE<simS)throw new Error("終了日は開始日以降にしてください。");if(daysBetween(simS,simE)>100)throw new Error("この版では探索期間を100日以内にしてください。");const dates=allDates(simS,simE),eligibleEnd=addDays(birth,56),salary=+$("salary").value||0,dailyCap=+$("dailyCap").value||0,dailyWage=Math.min(salary/30,dailyCap),br=+$("benefitRate").value||0,sr=+$("supportRate").value||0,dailyBenefit=dailyWage*br,si=+$("monthlySI").value||0,months=touchedMonths(),monthIndex=new Map(months.map((x,i)=>[x,i])),monthlyWd=Object.fromEntries(months.map(k=>[k,Math.max(1,monthWorkdays(k))])),forced=[...fixedPaid].filter(x=>{const d=parseDate(x);return inRange(d,simS,simE)&&isWorkday(d)});if(forced.length>targetPaid)throw new Error(`固定有給が${forced.length}勤務日あり、有給上限${targetPaid}日を超えています。`);let states=new Map();const init={paid:0,pb:0,rb:0,pd:0,ed:0,cur:0,mask:0,score:0,acts:""};states.set(stateKey(init),init);const MAX_STATES=2500;
+for(let idx=0;idx<dates.length;idx++){const d=dates[idx],id=iso(d),work=isWorkday(d),forcedP=fixedPaid.has(id)&&work,elig=inRange(d,birth,eligibleEnd),mkey=monthKey(d),mi=monthIndex.get(mkey),me=monthEnd(d),salaryDay=salary/monthlyWd[mkey];let next=new Map();for(const s of states.values()){const add=(action)=>{let ns={...s,acts:s.acts+action};if(action==="P"){if(!work||s.paid>=targetPaid)return;ns.paid=s.paid+1;ns.cur=0;ns.score=s.score+salaryDay}else if(action==="O"){if(work)return;ns.cur=0}else{if(action==="A"){if(!elig)return;const startBlock=s.cur!==1;if(startBlock&&s.pb>=2)return;if(s.pd>=28)return;ns.pb=s.pb+(startBlock?1:0);ns.pd=s.pd+1;ns.cur=1}else{const startBlock=s.cur!==2;if(startBlock&&s.rb>=2)return;ns.rb=s.rb+(startBlock?1:0);ns.cur=2}ns.ed=Math.min(28,s.ed+(elig?1:0));ns.score=s.score+dailyBenefit;if(me&&mi!==undefined&&!(s.mask&(1<<mi))){ns.mask=s.mask|(1<<mi);ns.score+=si}}pushState(next,ns)};if(forcedP){add("P");continue}if(work){if(s.paid<targetPaid)add("P");add("A");add("R")}else{add("O");if(s.cur===1)add("A");if(s.cur===2)add("R")}}if(next.size>MAX_STATES){const arr=[...next.values()].sort((a,b)=>b.score-a.score).slice(0,MAX_STATES);next=new Map(arr.map(s=>[stateKey(s),s]))}states=next}
+const spouse=$("spouseEligible").checked;let finals=[...states.values()].filter(s=>s.paid===targetPaid);if(!finals.length)throw new Error("指定条件では有給日数・分割回数の制約を満たすプランが見つかりません。固定有給日やN日を調整してください。");for(const s of finals){const support=spouse&&s.ed>=14?dailyWage*sr*Math.min(28,s.ed):0;s.finalScore=s.score+support}finals.sort((a,b)=>b.finalScore-a.finalScore);const best=finals[0],actions={};dates.forEach((d,i)=>actions[iso(d)]=best.acts[i]);return{actions,raw:best,dailyWage,dailyBenefit,eligibleEnd}}
+function planBlocks(actions){const keys=Object.keys(actions).sort(),blocks=[];let cur=null;for(const id of keys){const a=actions[id],type=(a==="A"||a==="R")?a:null;if(type){if(!cur||cur.type!==type||daysBetween(parseDate(cur.end),parseDate(id))!==1){if(cur)blocks.push(cur);cur={type,start:id,end:id}}else cur.end=id}else if(cur){blocks.push(cur);cur=null}}if(cur)blocks.push(cur);return blocks}
+function annualIncomeTax(taxable){taxable=Math.floor(Math.max(0,taxable)/1000)*1000;let base=0;if(taxable<=1949000)base=taxable*.05;else if(taxable<=3299000)base=taxable*.10-97500;else if(taxable<=6949000)base=taxable*.20-427500;else if(taxable<=8999000)base=taxable*.23-636000;else if(taxable<=17999000)base=taxable*.33-1536000;else if(taxable<=39999000)base=taxable*.40-2796000;else base=taxable*.45-4796000;return Math.floor(Math.max(0,base)*1.021/100)*100}
+function marginalTaxRate(taxable){if(taxable<=1949000)return .05;if(taxable<=3299000)return .10;if(taxable<=6949000)return .20;if(taxable<=8999000)return .23;if(taxable<=17999000)return .33;if(taxable<=39999000)return .40;return .45}
+function updateTaxPreview(){const x=+$('annualTaxableIncome').value||0,rate=marginalTaxRate(x),tax=annualIncomeTax(x);$('taxPreview').innerHTML=`通常勤務時の年間所得税＋復興特別所得税：<b>${yen(tax)}</b> ／ 現在の限界税率：<b>${Math.round(rate*100)}%</b>（復興特別所得税を別途加算）`}
+function evaluate(actions){const salary=+$('salary').value||0,si=+$('monthlySI').value||0,emp=+$('empRate').value||0,tax=+$('incomeTaxRate').value||0,resident=+$('residentMonthly').value||0,rr=+$('residentRate').value||0,dailyCap=+$('dailyCap').value||0,br=+$('benefitRate').value||0,sr=+$('supportRate').value||0,birth=parseDate($('birth').value),eligEnd=addDays(birth,56),spouse=$('spouseEligible').checked,months=touchedMonths(),simS=parseDate($('simStart').value),simE=parseDate($('simEnd').value),dailyWage=Math.min(salary/30,dailyCap);let gross=0,benefitDays=0,eligDays=0,papaDays=0,paidDays=0,exemptMonths=[];
+for(const mk of months){const totalWd=Math.max(1,monthWorkdays(mk)),[y,m]=mk.split('-').map(Number),ma=new Date(y,m-1,1,12),mb=new Date(y,m,0,12);let unpaidWd=0,monthLeaveDays=0,monthEndLeave=false;for(const d of allDates(ma,mb)){const id=iso(d),a=actions[id];if(inRange(d,simS,simE)&&isWorkday(d)&&(a==='A'||a==='R'))unpaidWd++;if(a==='P'&&isWorkday(d))paidDays++;if(a==='A'||a==='R'){monthLeaveDays++;if(monthEnd(d))monthEndLeave=true}}gross+=salary*(1-unpaidWd/totalWd);if(monthEndLeave||monthLeaveDays>=14)exemptMonths.push(mk)}
+for(const[id,a]of Object.entries(actions)){if(a==='A'||a==='R'){benefitDays++;const d=parseDate(id);if(inRange(d,birth,eligEnd))eligDays++;if(a==='A')papaDays++}}
+const baseBenefit=dailyWage*br*benefitDays,supportBenefit=(spouse&&eligDays>=14)?dailyWage*sr*Math.min(28,eligDays):0,benefits=baseBenefit+supportBenefit,siPaid=si*(months.length-exemptMonths.length),empPaid=gross*emp,incomeTax=Math.max(0,gross-siPaid)*tax,residentPaid=resident*months.length,cashNet=gross+benefits-siPaid-empPaid-incomeTax-residentPaid,baselineGross=salary*months.length,baselineSI=si*months.length,baselineEmp=baselineGross*emp,baselineTax=Math.max(0,baselineGross-baselineSI)*tax,baselineResident=resident*months.length,baselineCash=baselineGross-baselineSI-baselineEmp-baselineTax-baselineResident,grossDrop=baselineGross-gross,siSaving=baselineSI-siPaid,empSaving=baselineEmp-empPaid,taxableDrop=Math.max(0,grossDrop-siSaving-empSaving),futureResidentSaving=$('futureResident').checked?taxableDrop*rr:0;
+const annualTaxable=+$('annualTaxableIncome').value||0,annualTaxBaseline=annualIncomeTax(annualTaxable),annualTaxScenario=annualIncomeTax(Math.max(0,annualTaxable-taxableDrop)),annualTaxSaving=Math.max(0,annualTaxBaseline-annualTaxScenario),simpleTaxSaving=Math.max(0,baselineTax-incomeTax),taxAdjustment=annualTaxSaving-simpleTaxSaving,finalValue=cashNet+futureResidentSaving+taxAdjustment;
+return{gross,benefitDays,eligDays,papaDays,paidDays,baseBenefit,supportBenefit,benefits,siPaid,empPaid,incomeTax,residentPaid,cashNet,exemptMonths,baselineCash,futureResidentSaving,finalValue,diffFinal:finalValue-baselineCash,taxableDrop,annualTaxBaseline,annualTaxScenario,annualTaxSaving,taxAdjustment}}
+function fullLeaveActions(){const s=parseDate($("simStart").value),e=parseDate($("simEnd").value),birth=parseDate($("birth").value),eligEnd=addDays(birth,56),acts={};let papaUsed=0;for(const d of allDates(s,e)){const id=iso(d);if(d>=birth&&d<=eligEnd&&papaUsed<28){acts[id]="A";papaUsed++}else acts[id]="R"}return acts}
+function baselineEval(){const months=touchedMonths(),salary=+$("salary").value||0,si=+$("monthlySI").value||0,emp=+$("empRate").value||0,tax=+$("incomeTaxRate").value||0,resident=+$("residentMonthly").value||0,gross=salary*months.length,siPaid=si*months.length,empPaid=gross*emp,incomeTax=Math.max(0,gross-siPaid)*tax,residentPaid=resident*months.length,cashNet=gross-siPaid-empPaid-incomeTax-residentPaid;return{gross,benefits:0,siPaid,empPaid,incomeTax,residentPaid,cashNet,futureResidentSaving:0,finalValue:cashNet}}
+function renderResults(){
+const ev=evaluate(plan.actions),base=baselineEval(),full=evaluate(fullLeaveActions());
+const delta=ev.finalValue-base.finalValue;
+const fullDelta=full.finalValue-base.finalValue;
+
+const cards=[
+["期間中の給与",yen(ev.gross),`通常勤務なら ${yen(base.gross)}`],
+["育休給付（概算）",yen(ev.benefits),`${ev.benefitDays}暦日 / 上乗せ対象 ${Math.min(28,ev.eligDays)}日`],
+["最終経済価値",yen(ev.finalValue),`翌年度住民税効果 ${yen(ev.futureResidentSaving)}`],
+["通常勤務との手取り差",`${delta>=0?"+":""}${yen(delta)}`,`通常勤務 ${yen(base.finalValue)}`]
+];
+$("kpis").innerHTML=cards.map((c,i)=>`<div class="kpi"><div class="t">${c[0]}</div><div class="v ${i===3?(delta>=0?"good":"bad"):""}">${c[1]}</div><div class="s">${c[2]}</div></div>`).join("");
+
+const rows=[
+["給与",base.gross,ev.gross,full.gross],
+["育休給付",0,ev.benefits,full.benefits],
+["社会保険料",base.siPaid,ev.siPaid,full.siPaid],
+["雇用保険料",base.empPaid,ev.empPaid,full.empPaid],
+["源泉所得税（期間中概算）",base.incomeTax,ev.incomeTax,full.incomeTax],["年間所得税の減少効果",0,ev.annualTaxSaving,full.annualTaxSaving],
+["住民税（期間中）",base.residentPaid,ev.residentPaid,full.residentPaid],
+["期間中キャッシュ手取り",base.cashNet,ev.cashNet,full.cashNet],
+["翌年度住民税減少効果",0,ev.futureResidentSaving,full.futureResidentSaving],
+["最終経済価値",base.finalValue,ev.finalValue,full.finalValue],
+["通常勤務との手取り差",0,delta,fullDelta]
+];
+$("resultTable").innerHTML=`<thead><tr><th>項目</th><th>通常勤務</th><th>今回の最適化</th><th>有給なしフル育休</th></tr></thead><tbody>${
+rows.map((r,i)=>`<tr><td>${r[0]}</td><td>${yen(r[1])}</td><td class="${i===10?(r[2]>=0?"good":"bad"):""}">${i===10&&r[2]>=0?"+":""}${yen(r[2])}</td><td class="${i===10?(r[3]>=0?"good":"bad"):""}">${i===10&&r[3]>=0?"+":""}${yen(r[3])}</td></tr>`).join("")
+}</tbody>`;
+
+const vals=[["通常勤務",base.finalValue],["最適化",ev.finalValue],["フル育休",full.finalValue]],mx=Math.max(...vals.map(x=>x[1]),1);
+$("bars").innerHTML=vals.map(x=>`<div class="barrow"><span>${x[0]}</span><div class="bar"><span style="width:${100*x[1]/mx}%"></span></div><b>${yen(x[1])}</b></div>`).join("");
+
+const blocks=planBlocks(plan.actions);
+$("blocks").innerHTML=`<h2 style="margin-top:0">最適化された休業ブロック</h2>
+<div class="table-wrap"><table><thead><tr><th>制度</th><th>開始</th><th>終了</th><th>暦日数</th></tr></thead><tbody>
+${blocks.map(b=>`<tr><td>${b.type==="A"?"産後パパ育休":"通常育休"}</td><td>${b.start}</td><td>${b.end}</td><td>${daysBetween(parseDate(b.start),parseDate(b.end))+1}日</td></tr>`).join("")}
+</tbody></table></div>
+<div class="note">社会保険料免除（簡易判定）：${ev.exemptMonths.length?ev.exemptMonths.join("、"):"該当なし"}。有給使用 ${ev.paidDays}勤務日、育休給付対象 ${ev.benefitDays}暦日。所得税は通常勤務時課税所得 ${yen(+$("annualTaxableIncome").value||0)} から課税所得減少 ${yen(ev.taxableDrop)} を差し引き、年間税額の減少 ${yen(ev.annualTaxSaving)} を最終手取りに反映しています。</div>`;
+
+$("status").className="status";
+$("status").innerHTML=`最適化完了。有給 ${ev.paidDays}日を使用。通常勤務との手取り差は <b class="${delta>=0?"good":"bad"}">${delta>=0?"+":""}${yen(delta)}</b>（概算）です。`;
+}
+function run(){
+  try{
+    const n=Math.max(0,Math.floor(+$("paidN").value||0));
+    plan=optimizePlan(n);
+    renderCalendar();
+    renderResults();
+  }catch(e){
+    plan=null;
+    renderCalendar();
+    clearResults();
+    $("status").className="status err";
+    $("status").textContent=e.message||String(e);
+  }
+}
+function set2026Values(){$("empRate").value="0.005";$("benefitRate").value="0.67";$("supportRate").value="0.13";$("dailyCap").value="16540";$("residentRate").value="0.10";updateDerivedBox()}
+function autoCalcSI(){const salary=+$("salary").value||0,healthRate=(+$("healthRatePct").value||0)/100,healthStd=Math.min(Math.max(salary,0),1390000),pensionStd=Math.min(Math.max(salary,0),650000),health=healthStd*healthRate/2,pension=pensionStd*.183/2,child=healthStd*.0023/2,care=$("careApplicable").checked?healthStd*.0162/2:0;$("monthlySI").value=Math.round(health+pension+child+care);updateDerivedBox()}
+function autoCalcTaxRate(){const salary=+$("salary").value||0,si=+$("monthlySI").value||0,tax=+$("monthlyIncomeTax").value||0,base=Math.max(1,salary-si);$("incomeTaxRate").value=(tax/base).toFixed(4);updateDerivedBox()}
+function updateDerivedBox(){const salary=+$("salary").value||0,si=+$("monthlySI").value||0,emp=+$("empRate").value||0,cap=+$("dailyCap").value||0,healthRate=(+$("healthRatePct").value||0)/100,healthStd=Math.min(Math.max(salary,0),1390000),pensionStd=Math.min(Math.max(salary,0),650000),health=healthStd*healthRate/2,pension=pensionStd*.183/2,child=healthStd*.0023/2,care=$("careApplicable").checked?healthStd*.0162/2:0,empAmt=salary*emp,wageDay=Math.min(salary/30,cap),taxRate=+$("incomeTaxRate").value||0,taxApprox=Math.max(0,salary-si)*taxRate;$("derivedBox").innerHTML=`<b>現在の入力からの自動計算</b><div class="calcgrid"><span>休業開始時賃金日額（概算・上限適用）</span><span>${yen(wageDay)}</span><span>雇用保険料（月額概算）</span><span>${yen(empAmt)}</span><span>所得税（月額概算）</span><span>${yen(taxApprox)}</span><span>社会保険料の給与ベース概算</span><span>${yen(health+pension+child+care)}</span></div><div class="note">社会保険料の内訳概算：健康保険 ${yen(health)} ／ 厚生年金 ${yen(pension)} ／ 子ども・子育て支援金 ${yen(child)}${$("careApplicable").checked?` ／ 介護保険 ${yen(care)}`:""}。給与明細の実額がある場合は実額を優先してください。</div>`}
+function autoAll(){set2026Values();autoCalcSI();autoCalcTaxRate();updateDerivedBox();plan=null;clearResults();$("status").className="status";$("status").textContent="給与と2026制度値から概算しました。社会保険料・所得税は給与明細の実額がある場合、そちらを優先してください。"}
+document.querySelectorAll(".mode").forEach(btn=>btn.addEventListener("click",()=>{document.querySelectorAll(".mode").forEach(x=>x.classList.remove("active"));btn.classList.add("active");editMode=btn.dataset.mode;renderCalendar()}));
+$("resetPublic").addEventListener("click",()=>{disabledOfficialHolidays.clear();customPublicHolidays.clear();plan=null;renderCalendar();clearResults();$("status").className="status";$("status").textContent="祝日を内閣府公表の2026・2027年公式設定に戻しました。"});
+$("autoSI").addEventListener("click",()=>{autoCalcSI();plan=null;clearResults()});
+$("autoEmp").addEventListener("click",()=>{$("empRate").value="0.005";updateDerivedBox();plan=null;clearResults()});
+$("autoTaxRate").addEventListener("click",()=>{autoCalcTaxRate();plan=null;clearResults()});
+$("updateDerived").addEventListener("click",updateDerivedBox);
+$("set2026").addEventListener("click",()=>{set2026Values();plan=null;clearResults();$("status").className="status";$("status").textContent="2026年度の制度値を設定しました。健康保険料率は加入先に合わせて確認してください。"});
+$("autoAll").addEventListener("click",autoAll);
+["salary","monthlySI","empRate","incomeTaxRate","monthlyIncomeTax","residentMonthly","residentRate","benefitRate","supportRate","dailyCap","healthRatePct"].forEach(id=>$(id).addEventListener("input",updateDerivedBox));
+$("careApplicable").addEventListener("change",updateDerivedBox);
+$("annualTaxableSlider").addEventListener("input",()=>{$("annualTaxableIncome").value=$("annualTaxableSlider").value;updateTaxPreview();if(plan)renderResults()});
+$("annualTaxableIncome").addEventListener("input",()=>{const v=Math.max(0,+$("annualTaxableIncome").value||0);$("annualTaxableSlider").value=Math.min(20000000,v);updateTaxPreview();if(plan)renderResults()});
+
+$("addPaidRange").addEventListener("click",()=>{const a=$("paidStart").value,b=$("paidEnd").value;if(!a||!b||parseDate(b)<parseDate(a)){alert("有効な開始日・終了日を入力してください。");return}paidRangeLabels.push([a,b]);for(const d of allDates(parseDate(a),parseDate(b))){const id=iso(d);if(isPublicHoliday(d))continue;fixedPaid.add(id);customHolidays.delete(id)}plan=null;renderPaidRanges();renderCalendar();clearResults()});
+$("clearPaid").addEventListener("click",()=>{fixedPaid.clear();paidRangeLabels=[];plan=null;renderPaidRanges();renderCalendar();clearResults()});$("recalcCalendar").addEventListener("click",()=>{plan=null;renderCalendar();clearResults()});$("optimize").addEventListener("click",run);
+$("reset").addEventListener("click",()=>{$("salary").value=500000;$("birth").value="2026-11-04";$("paidN").value=20;$("simStart").value="2026-11-04";$("simEnd").value="2026-12-31";$("monthlySI").value=71075;$("healthRatePct").value=9.90;$("careApplicable").checked=false;$("empRate").value=.005;$("monthlyIncomeTax").value=25736;$("incomeTaxRate").value=.0600;$("annualTaxableSlider").value=3000000;$("annualTaxableIncome").value=3000000;$("residentMonthly").value=25000;$("residentRate").value=.10;$("benefitRate").value=.67;$("supportRate").value=.13;$("dailyCap").value=16540;$("weekends").checked=true;$("spouseEligible").checked=true;$("futureResident").checked=true;customHolidays=new Set(["2026-12-29","2026-12-30","2026-12-31"]);disabledOfficialHolidays.clear();customPublicHolidays.clear();fixedPaid.clear();paidRangeLabels=[];plan=null;renderPaidRanges();renderCalendar();updateDerivedBox();updateTaxPreview();clearResults();$("status").className="status";$("status").textContent="初期設定に戻しました。"});
+["simStart","simEnd","birth"].forEach(id=>$(id).addEventListener("change",()=>{plan=null;renderCalendar();clearResults()}));$("weekends").addEventListener("change",()=>{plan=null;renderCalendar();clearResults()});renderPaidRanges();renderCalendar();updateDerivedBox();updateTaxPreview();
+})();
+</script></body></html>
