@@ -88,6 +88,17 @@ a.card:hover {
   color: var(--muted);
 }
 
+.ai-notice {
+  margin: 0 0 2rem;
+  padding: 0.9rem 1.2rem;
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--accent);
+  border-radius: 8px;
+  background: var(--card-bg);
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
 .site-footer {
   text-align: center;
   padding: 2rem 1rem 3rem;
