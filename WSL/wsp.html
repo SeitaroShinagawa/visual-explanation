@@ -287,6 +287,14 @@ WSP はそこに 4 つ目の書き手(読み手)を加える提案だと整理�
 <strong>限られた回数の forward pass</strong>(モデルに問題を解かせて結果を見る)が与えられます。
 学習ループと勾配は禁止です。
 </p>
+<div class="callout warn">
+<span class="callout-title">「forward pass 1 回」はバッチ単位の要求 1 回</span>
+記事の “forward pass” は、評価ツールへの<strong>要求 1 回</strong>を数えたものです。
+実験 8 では 1 回で<strong>最大 512 問を解かせる</strong>か<strong>最大 1,024 本のテキストを読ませる</strong>
+(記事の Setup: “a forward pass: the model answers up to 512 problems, or reads up to 1,024 texts”、平均バッチは 64 系列)、
+実験 6 では 1 回で<strong>最大 128 局の対局</strong>か 256 局面の出力です。
+したがって「50 回」は、モデルの実行回数としてはその数十〜数百倍に当たり、得られるフィードバックも 50 サンプルよりずっと多い点に注意してください。
+</div>
 
 <figure class="diagram" id="loop-fig" data-cycle-ms="14000" data-step-count="4">
 <svg viewBox="0 0 960 330" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="LLM が仮説を立て重みを編集し forward pass で検証するループ">
@@ -324,8 +332,9 @@ WSP はそこに 4 つ目の書き手(読み手)を加える提案だと整理�
     <text x="600" y="28" font-size="13" font-weight="bold" text-anchor="middle" fill="#7b46c9">③ 最小限の編集</text>
     <text x="600" y="70" font-size="10.5" text-anchor="middle" fill="#5b6478">各層 64 個の出力列から</text>
     <text x="600" y="88" font-size="10.5" text-anchor="middle" fill="#5b6478">方向 u を差し引く</text>
-    <text x="600" y="122" font-size="12" text-anchor="middle" font-style="italic" fill="#7b46c9">W ← W − u (uᵀ W)</text>
-    <text x="600" y="140" font-size="9.5" text-anchor="middle" fill="#8a93ad">(式は解説者による定式化)</text>
+    <text x="600" y="118" font-size="12" text-anchor="middle" font-style="italic" fill="#7b46c9">W<tspan baseline-shift="sub" font-size="75%">S</tspan> ← W<tspan baseline-shift="sub" font-size="75%">S</tspan> − u (uᵀ W<tspan baseline-shift="sub" font-size="75%">S</tspan>)</text>
+    <text x="600" y="134" font-size="9.5" text-anchor="middle" fill="#8a93ad">W<tspan baseline-shift="sub" font-size="75%">S</tspan>: 選んだ 64 列 / ‖u‖ = 1</text>
+    <text x="600" y="148" font-size="9.5" text-anchor="middle" fill="#8a93ad">(式は解説者による定式化)</text>
     <text x="600" y="172" font-size="11" text-anchor="middle" fill="#7b46c9" font-weight="bold">131,072 重み = 全体の 0.016%</text>
     <text x="600" y="200" font-size="10" text-anchor="middle" fill="#5b6478">式 (12) θ̃ = θ + Δ(θ) の</text>
     <text x="600" y="216" font-size="10" text-anchor="middle" fill="#5b6478">Δ を学習でなく推論で決める</text>
@@ -351,7 +360,7 @@ WSP はそこに 4 つ目の書き手(読み手)を加える提案だと整理�
 </svg>
 <figcaption>
 実験 8 の編集ループ(記事の本文から再構成)。「方向を差し引く」操作の具体的な式は記事に示されていないため、
-③ の \(W \leftarrow W - u(u^\top W)\) は<strong>解説者による一つの読み方</strong>(射影による方向の除去)です。
+③ の \(W_S \leftarrow W_S - u(u^\top W_S)\)(\(W_S\) は各層で選んだ 64 個の出力列だけからなる部分行列、\(u\) は単位ベクトル)は<strong>解説者による一つの読み方</strong>(射影による方向の除去)です。
 正確な操作は公開ログ(<a href="https://github.com/RikiyaT/lm_understand-logs" target="_blank" rel="noopener">RikiyaT/lm_understand-logs</a>)で確認してください。
 </figcaption>
 </figure>
