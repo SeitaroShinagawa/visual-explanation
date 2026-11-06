@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>EG2 埋め込みの生成と推論 — 接頭辞・切り詰め・視覚トークン予算・量子化</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🧭</text></svg>">
+<link rel="stylesheet" href="assets/style.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/themes/prism-tomorrow.min.css">
+<style>
+/* ===== retrieval flow: 5 steps (15s) ===== */
+@keyframes rt-bright {
+  0%, 20%, 100% { opacity: 0.28; }
+  4%, 16% { opacity: 1; }
+}
+#rt-fig .r1 { animation: rt-bright 15s ease-in-out infinite backwards; }
+#rt-fig .r2 { animation: rt-bright 15s ease-in-out infinite backwards; animation-delay: 3s; }
+#rt-fig .r3 { animation: rt-bright 15s ease-in-out infinite backwards; animation-delay: 6s; }
+#rt-fig .r4 { animation: rt-bright 15s ease-in-out infinite backwards; animation-delay: 9s; }
+#rt-fig .r5 { animation: rt-bright 15s ease-in-out infinite backwards; animation-delay: 12s; }
+
+/* ===== vision budget chart: highlight 4 budgets (12s) ===== */
+@keyframes vb-band {
+  0%, 2% { opacity: 0; }
+  5%, 23% { opacity: 1; }
+  26%, 100% { opacity: 0; }
+}
+#vb-fig .b1, #vb-fig .n1 { animation: vb-band 12s ease-in-out infinite backwards; }
+#vb-fig .b2, #vb-fig .n2 { animation: vb-band 12s ease-in-out infinite backwards; animation-delay: 3s; }
+#vb-fig .b3, #vb-fig .n3 { animation: vb-band 12s ease-in-out infinite backwards; animation-delay: 6s; }
+#vb-fig .b4, #vb-fig .n4 { animation: vb-band 12s ease-in-out infinite backwards; animation-delay: 9s; }
+/* 折れ線を描き出す */
+@keyframes vb-draw {
+  0% { stroke-dashoffset: 600; }
+  70%, 100% { stroke-dashoffset: 0; }
+}
+#vb-fig .line { stroke-dasharray: 600; animation: vb-draw 12s ease-out infinite backwards; }
+
+@media (prefers-reduced-motion: reduce) {
+  #rt-fig .r1, #rt-fig .r2, #rt-fig .r3, #rt-fig .r4, #rt-fig .r5 { opacity: 1; }
+  #vb-fig .b1, #vb-fig .b2, #vb-fig .b3, #vb-fig .b4 { opacity: 0; }
+  #vb-fig .n1, #vb-fig .n2, #vb-fig .n3, #vb-fig .n4 { opacity: 0; }
+  #vb-fig .line { stroke-dasharray: none; }
+}
+</style>
+</head>
+<body>
+
+<nav class="topnav">
+  <a class="home-link" href="../index.html">Visual Explanation</a><span class="sep">/</span>
+  <a href="./index.html">EG2 概要</a>
+  <a href="architecture.html">1. アーキテクチャ</a>
+  <a href="training.html">2. 学習の仕組み</a>
+  <a href="inference.html" class="current">3. 埋め込みの生成</a>
+  <a href="evaluation.html">4. 評価と議論</a>
+</nav>
+
+<header class="page-header">
+  <h1>3. 埋め込みの生成と推論</h1>
+  <p>埋め込みモデルにとっての「生成」とは、<strong>入力からベクトルを 1 本作ること</strong>です。
+  そのときに利用者が選べるつまみ —— <strong>タスク接頭辞・出力次元・視覚トークン予算・量子化</strong> —— が、
+  品質とコストをどう動かすのかを、論文の付録 A・§3.4・Table 1 から読みます。</p>
+</header>
+
+<main class="article">
+
+<h2 id="flow">埋め込みが作られて、使われるまで</h2>
+
+<figure class="diagram" id="rt-fig" data-cycle-ms="15000" data-step-count="5">
+<svg viewBox="0 0 940 420" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="検索における埋め込みの生成と利用の流れ">
+  <defs>
+    <marker id="arrT" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#8a93ad"/>
+    </marker>
+  </defs>
+
+  <g class="r1">
+    <text x="16" y="26" font-size="12.5" font-weight="bold" fill="#3556d4">① ターゲット側に接頭辞をつける(オフライン)</text>
+    <rect x="16" y="38" width="290" height="30" rx="6" fill="#fff" stroke="#3556d4"/>
+    <text x="26" y="58" font-size="10.5" class="mono">title: ギター入門 | text: コードの押さえ方…</text>
+    <rect x="16" y="74" width="290" height="30" rx="6" fill="#fff" stroke="#3556d4"/>
+    <text x="26" y="94" font-size="10.5" class="mono">title: none | text: 🖼️ [弦の写真]</text>
+    <rect x="16" y="110" width="290" height="30" rx="6" fill="#fff" stroke="#3556d4"/>
+    <text x="26" y="130" font-size="10.5" class="mono">title: none | text: 🔊 [和音の録音]</text>
+  </g>
+  <g class="r2">
+    <rect x="356" y="54" width="170" height="72" rx="10" fill="#fff" stroke="#1c2333" stroke-width="2"/>
+    <text x="441" y="84" font-size="12" text-anchor="middle" font-weight="bold">② EmbeddingGemma 2</text>
+    <text x="441" y="104" font-size="10" text-anchor="middle" fill="#5b6478">式 (1) で 1 本ずつ</text>
+    <rect x="576" y="38" width="160" height="102" rx="8" fill="#e0f5ec" stroke="#1e9e6a" stroke-width="2"/>
+    <text x="656" y="62" font-size="11.5" text-anchor="middle" font-weight="bold" fill="#1e9e6a">ベクトル索引</text>
+    <text x="656" y="84" font-size="10" text-anchor="middle" class="mono">p₁ ∈ ℝ^768</text>
+    <text x="656" y="102" font-size="10" text-anchor="middle" class="mono">p₂ ∈ ℝ^768</text>
+    <text x="656" y="120" font-size="10" text-anchor="middle" class="mono">p₃ ∈ ℝ^768</text>
+    <text x="790" y="72" font-size="10" fill="#5b6478">必要なら</text>
+    <text x="790" y="88" font-size="10" fill="#5b6478">先頭 256 次元に</text>
+    <text x="790" y="104" font-size="10" fill="#5b6478">切って保存(MRL)</text>
+  </g>
+  <g class="r3">
+    <text x="16" y="200" font-size="12.5" font-weight="bold" fill="#e07b1f">③ クエリ側に「タスク」を書く(オンライン)</text>
+    <rect x="16" y="212" width="330" height="30" rx="6" fill="#fff" stroke="#e07b1f"/>
+    <text x="26" y="232" font-size="10.5" class="mono">task: search result | query: 開放弦の音は?</text>
+    <text x="16" y="264" font-size="10" fill="#5b6478">クエリとターゲットで<tspan font-weight="bold">書式が違う</tspan>= 非対称タスク</text>
+  </g>
+  <g class="r4">
+    <rect x="390" y="196" width="150" height="62" rx="10" fill="#fff" stroke="#1c2333" stroke-width="2"/>
+    <text x="465" y="222" font-size="11.5" text-anchor="middle" font-weight="bold">④ 同じモデル</text>
+    <text x="465" y="242" font-size="10" class="mono" text-anchor="middle">→ q ∈ ℝ^768</text>
+  </g>
+  <g class="r5">
+    <rect x="576" y="186" width="348" height="104" rx="10" fill="#fbe4e8" stroke="#d43d51" stroke-width="2"/>
+    <text x="750" y="210" font-size="12" text-anchor="middle" font-weight="bold" fill="#d43d51">⑤ 内積で上位 k 件(ANN 可)</text>
+    <text x="596" y="236" font-size="10.5" class="mono">q·p₃ = 0.71  🔊 和音の録音</text>
+    <text x="596" y="256" font-size="10.5" class="mono">q·p₂ = 0.58  🖼️ 弦の写真</text>
+    <text x="596" y="276" font-size="10.5" class="mono">q·p₁ = 0.44  📝 ギター入門</text>
+  </g>
+  <g fill="none" stroke="#8a93ad" stroke-width="2" marker-end="url(#arrT)">
+    <path class="flow-edge" d="M 308 90 L 352 90"/>
+    <path class="flow-edge" d="M 528 90 L 572 90"/>
+    <path class="flow-edge" d="M 348 227 L 386 227"/>
+    <path class="flow-edge" d="M 542 227 L 572 227"/>
+    <path class="flow-edge" d="M 656 142 L 690 182"/>
+  </g>
+  <rect x="16" y="316" width="908" height="88" rx="10" fill="#f2f4fa" stroke="#3556d4" stroke-width="1.5"/>
+  <text x="32" y="342" font-size="11.5" fill="#5b6478">単位ノルムなので<tspan font-weight="bold">内積 = コサイン類似度</tspan>。テキストのクエリで音声や画像が直接引ける(cross-modal)。</text>
+  <text x="32" y="364" font-size="11.5" fill="#5b6478">スプレッドアウト正則化のおかげで空間が等方的になり、ANN(近似最近傍)索引と相性がよい(<tspan font-weight="bold">学習編</tspan>)。</text>
+  <text x="32" y="386" font-size="10.5" fill="#8a93ad">※ 図中の文書例と類似度の数値は説明用の架空のもので、論文の実験値ではありません。</text>
+</svg>
+<figcaption>
+検索での使われ方。ターゲット(文書・画像・音声・動画)は事前に埋め込んで索引にし、クエリだけをオンラインで埋め込みます。
+接頭辞の書式は論文の付録 A(Table 12)のものです。
+</figcaption>
+</figure>
+
+<h2 id="prefix">タスク接頭辞 — 7 種類の「指示」(付録 A, Table 12)</h2>
+<table>
+  <tr><th>用途</th><th>クエリ側の接頭辞</th><th>ターゲット側の接頭辞</th></tr>
+  <tr><td>Web / 文書検索</td><td><code>task: search result | query: {text}</code></td><td rowspan="4"><code>title: {title} | text: {text}</code><br><small>(タイトルがなければ <code>title: none</code>)</small></td></tr>
+  <tr><td>質問応答</td><td><code>task: question answering | query: {text}</code></td></tr>
+  <tr><td>事実確認</td><td><code>task: fact checking | query: {text}</code></td></tr>
+  <tr><td>コード検索</td><td><code>task: code retrieval | query: {text}</code></td></tr>
+  <tr><td>分類</td><td><code>task: classification | query: {text}</code></td><td rowspan="3">クエリと同じ(対称タスク)</td></tr>
+  <tr><td>クラスタリング</td><td><code>task: clustering | query: {text}</code></td></tr>
+  <tr><td>意味的類似度</td><td><code>task: sentence similarity | query: {text}</code></td></tr>
+</table>
+<p>
+上 4 つは<strong>非対称タスク</strong>(短いクエリで長い文書を引く)で、クエリとターゲットに別の書式を使います。
+下 3 つは<strong>対称タスク</strong>で、すべての入力に同じ接頭辞を付けます。
+評価もこの 7 種類の指示で行われます(§4.1)。
+接頭辞はテキストですが、続く <code>{text}</code> の位置には画像・音声・動画のソフトトークンも入れられます
+(<a href="architecture.html#input">アーキテクチャ編の系列化</a>)。
+</p>
+
+<div class="codeblock pseudo">
+<div class="codehead"><span class="path">⚠️ 擬似コード — 論文の式 (1)・付録 A・§2.2 から再構成(配布ライブラリの実際の API ではありません)</span></div>
+<pre><code class="language-python"># 公開モデルの呼び出し方(ライブラリ名・関数名)は論文に書かれていないため、
+# ここでは `model.embed()` という架空の関数で手続きだけを示します。
+import numpy as np
+
+QUERY  = "task: search result | query: {}"
+TARGET = "title: {} | text: {}"
+
+# ① オフライン: ターゲットを埋め込んで索引化(画像・音声は text の位置に差し込まれる)
+docs = [TARGET.format("none", image_of_strings),           # 🖼️
+        TARGET.format("none", audio_of_chord),             # 🔊
+        TARGET.format("ギター入門", "コードの押さえ方…")]   # 📝
+P = np.stack([model.embed(d) for d in docs])               # [N, 768], 各行 ‖·‖=1
+
+# ② 次元を節約したいなら先頭を切って再正規化 (MRL: 768/512/256/128)
+k = 256
+P_k = P[:, :k] / np.linalg.norm(P[:, :k], axis=1, keepdims=True)
+
+# ③ オンライン: クエリを埋め込み、内積で上位を返す
+q = model.embed(QUERY.format("開放弦の音は?"))[:k]
+q /= np.linalg.norm(q)
+top = np.argsort(-(P_k @ q))[:10]</code></pre>
+</div>
+
+<h2 id="mrl-use">出力次元を選ぶ — どこまで切り詰めてよいか</h2>
+<p>
+MRL で学習しているので、1 つのモデルから 4 通りの次元の埋め込みが得られます。
+論文の各ベンチマーク表から、EmbeddingGemma 2 自身の次元別スコアを抜き出すと次の通りです。
+</p>
+<table>
+  <tr><th>ベンチマーク(指標)</th><th>768</th><th>512</th><th>256</th><th>128</th><th>出典</th></tr>
+  <tr><td>MTEB(Multilingual, v2) Mean(Task)</td><td>61.4</td><td>61.2</td><td>60.4</td><td>57.9</td><td>Table 13</td></tr>
+  <tr><td>MTEB(English, v2) Mean(Task)</td><td>68.5</td><td>68.4</td><td>67.8</td><td>65.7</td><td>Table 14</td></tr>
+  <tr><td>MTEB(Code) Mean(Task)</td><td>78.7</td><td>77.2</td><td>76.2</td><td>71.4</td><td>Table 7</td></tr>
+  <tr><td>MMEB-v2 Mean(Task)</td><td>59.0</td><td>58.4</td><td>56.2</td><td><strong>45.6</strong></td><td>Table 8</td></tr>
+  <tr><td>MIEB(lite) Mean(Task)</td><td>60.2</td><td>59.9</td><td>58.6</td><td>54.2</td><td>Table 9</td></tr>
+  <tr><td>MAEB Mean(Task)</td><td>49.9</td><td>49.8</td><td>49.1</td><td>47.3</td><td>Table 10</td></tr>
+  <tr><td>MSEB(Retrieval) Overall MRR@10</td><td>69.54</td><td>69.18</td><td>66.76</td><td><strong>56.71</strong></td><td>Table 11</td></tr>
+</table>
+<div class="callout point">
+<span class="callout-title">読み取れること</span>
+<strong>256 次元までは、ほとんどのベンチマークで 1〜3 点程度の低下</strong>に収まります(MTEB(Code) は 768 → 256 で −2.5)。
+論文も “the model's truncated representations degrade minimally, especially down to 256 dimensions” と述べています(§4.2)。
+一方 <strong>128 次元では MMEB-v2(−13.4)と MSEB(−12.8)が大きく崩れます</strong>。
+動画・文書画像・多言語音声検索のように情報量の多いタスクほど、低次元の影響を受けやすいと読めます。
+ただし論文は同時に、MIEB(lite) では <strong>128 次元でも他のすべての 1B 未満モデル(フル次元)を上回る</strong>と強調しています(§4.3)。
+</div>
+
+<h2 id="budget">視覚トークン予算 — 推論時に「解像度」を選ぶ(§3.4, Table 5)</h2>
+<p>
+学習時は<strong>画像 280・動画フレーム 140</strong> トークンですが、Gemma 4 の視覚エンコーダは <strong>70〜1120</strong> の予算に対応しています。
+では推論時に予算を変えると何が起きるか。中間チェックポイント(学習 280 / 140)で評価予算を振った結果が次の図です。
+</p>
+
+<figure class="diagram" id="vb-fig" data-cycle-ms="12000" data-step-count="4">
+<svg viewBox="0 0 900 380" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="推論時の視覚トークン予算と MMEB-v2 スコア">
+  <!-- highlight bands -->
+  <rect class="b1" x="105" y="30" width="50" height="270" fill="#e5eafc"/>
+  <rect class="b2" x="245" y="30" width="50" height="270" fill="#e5eafc"/>
+  <rect class="b3" x="385" y="30" width="50" height="270" fill="#e5eafc"/>
+  <rect class="b4" x="525" y="30" width="50" height="270" fill="#e5eafc"/>
+  <!-- axes -->
+  <g stroke="#dde2ee">
+    <line x1="90" y1="300" x2="590" y2="300"/>
+    <line x1="90" y1="40" x2="590" y2="40" stroke-dasharray="3 3"/>
+    <line x1="90" y1="100" x2="590" y2="100" stroke-dasharray="3 3"/>
+    <line x1="90" y1="160" x2="590" y2="160" stroke-dasharray="3 3"/>
+    <line x1="90" y1="220" x2="590" y2="220" stroke-dasharray="3 3"/>
+    <line x1="90" y1="280" x2="590" y2="280" stroke-dasharray="3 3"/>
+  </g>
+  <g font-size="10" fill="#5b6478" text-anchor="end">
+    <text x="84" y="44">70</text><text x="84" y="104">64</text><text x="84" y="164">58</text><text x="84" y="224">52</text><text x="84" y="284">46</text>
+  </g>
+  <g font-size="11" fill="#5b6478" text-anchor="middle">
+    <text x="130" y="320">70</text><text x="270" y="320">140</text><text x="410" y="320">280</text><text x="550" y="320">560</text>
+  </g>
+  <text x="340" y="344" font-size="11" text-anchor="middle" fill="#5b6478">推論時の視覚トークン予算(1 画像 / 1 フレームあたり)</text>
+  <text x="410" y="22" font-size="9.5" text-anchor="middle" fill="#8a93ad">↓ 学習時の画像予算</text>
+  <text x="270" y="22" font-size="9.5" text-anchor="middle" fill="#8a93ad">↓ 学習時の動画予算</text>
+
+  <!-- lines: y = 300 - (v-44)*10 -->
+  <g fill="none" stroke-width="2.6">
+    <polyline class="line" points="130,223.9 270,104 410,106.2 550,63.8" stroke="#7b46c9"/>
+    <polyline class="line" points="130,239.3 270,186.3 410,178.5 550,169.8" stroke="#1c2333"/>
+    <polyline class="line" points="130,231 270,204.2 410,188.5 550,187.9" stroke="#e07b1f"/>
+    <polyline class="line" points="130,276.7 270,260.1 410,254.9 550,274.8" stroke="#1e9e6a"/>
+  </g>
+  <g>
+    <circle cx="130" cy="223.9" r="4" fill="#7b46c9"/><circle cx="270" cy="104" r="4" fill="#7b46c9"/><circle cx="410" cy="106.2" r="4" fill="#7b46c9"/><circle cx="550" cy="63.8" r="4" fill="#7b46c9"/>
+    <circle cx="130" cy="239.3" r="4" fill="#1c2333"/><circle cx="270" cy="186.3" r="4" fill="#1c2333"/><circle cx="410" cy="178.5" r="4" fill="#1c2333"/><circle cx="550" cy="169.8" r="4" fill="#1c2333"/>
+    <circle cx="130" cy="231" r="4" fill="#e07b1f"/><circle cx="270" cy="204.2" r="4" fill="#e07b1f"/><circle cx="410" cy="188.5" r="4" fill="#e07b1f"/><circle cx="550" cy="187.9" r="4" fill="#e07b1f"/>
+    <circle cx="130" cy="276.7" r="4" fill="#1e9e6a"/><circle cx="270" cy="260.1" r="4" fill="#1e9e6a"/><circle cx="410" cy="254.9" r="4" fill="#1e9e6a"/><circle cx="550" cy="274.8" r="4" fill="#1e9e6a"/>
+  </g>
+  <g font-size="11" font-weight="bold">
+    <text x="560" y="62" fill="#7b46c9">VisDoc</text>
+    <text x="560" y="166" fill="#1c2333">Overall</text>
+    <text x="560" y="192" fill="#e07b1f">Image</text>
+    <text x="560" y="272" fill="#1e9e6a">Video</text>
+  </g>
+
+  <!-- side notes, one per budget -->
+  <g transform="translate(640,40)">
+    <g class="n1">
+      <text x="0" y="14" font-size="13" font-weight="bold" fill="#3556d4">予算 70</text>
+      <text x="0" y="40" font-size="11" fill="#5b6478">Overall 50.07</text>
+      <text x="0" y="60" font-size="11" fill="#5b6478">VisDoc が <tspan font-weight="bold" fill="#7b46c9">51.61</tspan> と大きく落ちる。</text>
+      <text x="0" y="80" font-size="11" fill="#5b6478">文書の細かい文字が潰れる。</text>
+    </g>
+    <g class="n2">
+      <text x="0" y="14" font-size="13" font-weight="bold" fill="#3556d4">予算 140</text>
+      <text x="0" y="40" font-size="11" fill="#5b6478">Overall 55.37(+5.3)</text>
+      <text x="0" y="60" font-size="11" fill="#5b6478">VisDoc 63.60 へ急回復。</text>
+      <text x="0" y="80" font-size="11" fill="#5b6478">評価本番(§4)は動画 140 を使う。</text>
+    </g>
+    <g class="n3">
+      <text x="0" y="14" font-size="13" font-weight="bold" fill="#3556d4">予算 280</text>
+      <text x="0" y="40" font-size="11" fill="#5b6478">Overall 56.15</text>
+      <text x="0" y="60" font-size="11" fill="#5b6478">Image 55.15 — ほぼ<tspan font-weight="bold">飽和</tspan>。</text>
+      <text x="0" y="80" font-size="11" fill="#5b6478">Video は 48.51 で最高。</text>
+    </g>
+    <g class="n4">
+      <text x="0" y="14" font-size="13" font-weight="bold" fill="#3556d4">予算 560</text>
+      <text x="0" y="40" font-size="11" fill="#5b6478">Overall 57.02(最高)</text>
+      <text x="0" y="60" font-size="11" fill="#5b6478">VisDoc <tspan font-weight="bold" fill="#7b46c9">67.62</tspan> と学習予算超えでも伸びる。</text>
+      <text x="0" y="80" font-size="11" fill="#5b6478">Video は <tspan font-weight="bold" fill="#d43d51">46.52 に低下</tspan>。</text>
+    </g>
+  </g>
+</svg>
+<figcaption>
+Table 5(上段)の数値を折れ線にしたもの。縦軸は MMEB-v2 のスコア(Overall / Image Hit@1 / Video Hit@1 / VisDoc NDCG@5)。
+評価では全タスクに同じ予算を使っています。<strong>モダリティごとに最適な予算が違う</strong>のが要点です。
+</figcaption>
+</figure>
+
+<p>
+論文の解釈(§3.4)は 3 つに分かれます。
+</p>
+<ul>
+  <li><strong>文書画像</strong>は細部に敏感で、<strong>学習時の予算(280)を超えても伸び続ける</strong>(560 で 67.62)</li>
+  <li><strong>一般画像</strong>は集計では 280 で頭打ち(個別タスクではまだ伸びるものもある)</li>
+  <li><strong>動画</strong>は 280 → 560 で<strong>むしろ劣化</strong>。理由として
+  “the excessive sequence lengths <strong>dilute attention and mean-pooled representations</strong>” を挙げます。
+  平均プーリングは全トークンを等しく平均するので、フレームあたりのトークンが増えるほど 1 トークンの寄与は薄まります</li>
+</ul>
+
+<h3 id="budget-train">学習時の動画予算を下げると、低予算推論は救えるか</h3>
+<table>
+  <tr><th>学習予算(画像 / 動画)</th><th>評価予算</th><th>Overall</th><th>Image</th><th>Video</th><th>VisDoc</th></tr>
+  <tr><td>280 / 70</td><td>70</td><td>49.62</td><td>50.56</td><td><strong>46.60</strong></td><td>50.49</td></tr>
+  <tr><td>280 / 140</td><td>70</td><td><strong>49.76</strong></td><td><strong>50.76</strong></td><td>45.79</td><td><strong>51.25</strong></td></tr>
+  <tr><td>280 / 70</td><td>140</td><td>54.66</td><td>53.29</td><td>47.16</td><td>62.33</td></tr>
+  <tr><td>280 / 140</td><td>140</td><td><strong>55.46</strong></td><td><strong>54.67</strong></td><td><strong>47.82</strong></td><td><strong>62.37</strong></td></tr>
+</table>
+<p>
+Table 5(下段)。動画を 70 トークンで学習すると、<strong>70 で評価したときの動画だけは良くなる</strong>(46.60 vs 45.79)。
+しかし<strong>画像・文書画像は下がり</strong>、140 で評価すると<strong>全モダリティで負けます</strong>。
+論文の説明は、(a) 単一画像タスクは 280 で学習されており 70 トークンの動画フレームから恩恵を受けない別モダリティ扱いになる、
+(b) 粗い動画表現は<strong>一般的な視覚表現に転移するはずの空間的ディテールを捨ててしまう</strong>、の 2 点。
+結論として<strong>学習は 140 のままが両方の評価条件で好ましい</strong>とし、
+学習予算をさらに上げる余地はあるものの「収穫逓減かつ大きな計算コスト」と見ています。
+</p>
+
+<div class="callout warn">
+<span class="callout-title">この節の数値は中間レシピのもの</span>
+Table 5 の上段と下段は<strong>別の中間レシピ</strong>で回された実験で、最終モデルの数値でもありません。
+また最終評価(§4)は<strong>画像 280・動画フレーム 140・最大 32 フレーム</strong>という「現実的な使い方」で測られており、
+論文は「より大きな予算なら特に文書画像でさらに伸びうる」と注記しています(§4.1)。
+</div>
+
+<h2 id="quant">量子化チェックポイント — int4 でどこまで保てるか(Table 1)</h2>
+<table>
+  <tr><th rowspan="2">モデル</th><th rowspan="2">精度</th><th colspan="2">MTEB(Multi, v2)</th><th colspan="2">MTEB(Eng, v2)</th><th>MTEB(Code)</th><th colspan="2">MIEB(lite)‡</th><th colspan="3">MSEB(Retrieval)‡</th></tr>
+  <tr><th>Task</th><th>Type</th><th>Task</th><th>Type</th><th>Task</th><th>Task</th><th>Type</th><th>Overall</th><th>In</th><th>Cross</th></tr>
+  <tr><td rowspan="3"><strong>EG 2</strong></td><td>bfloat16</td><td>61.36</td><td>53.82</td><td>68.46</td><td>63.86</td><td>78.68</td><td>60.17</td><td>65.67</td><td>69.54</td><td>71.63</td><td>67.68</td></tr>
+  <tr><td>int4 (Q4_0)*</td><td>60.96</td><td>53.47</td><td>68.48</td><td>63.91</td><td>76.85</td><td>56.59</td><td>61.95</td><td>64.99</td><td>68.56</td><td>61.80</td></tr>
+  <tr><td>int4 (Q4_C)†</td><td>60.84</td><td>53.36</td><td>68.49</td><td>63.93</td><td>76.70</td><td>56.71</td><td>62.26</td><td>63.92</td><td>67.93</td><td>60.33</td></tr>
+  <tr><td rowspan="2">EG 1</td><td>bfloat16</td><td>61.15</td><td>54.31</td><td>69.67</td><td>65.11</td><td>68.76</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
+  <tr><td>int4 (Q4_0)*</td><td>60.62</td><td>53.61</td><td>69.31</td><td>64.65</td><td>67.99</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
+</table>
+<p style="font-size:0.85rem;color:var(--muted)">
+* ブロック単位 int4 / † チャネル単位 int4 / ‡ float と量子化版で評価ハーネスが異なる(論文の注記)。
+</p>
+<ul>
+  <li><strong>テキストはほぼ無傷</strong> —— MTEB English は int4 のほうがわずかに高いほど(68.46 → 68.49)。
+  尾部パッチ段の QAT が「特に MTEB(English, v2)で float との差を縮めた」という §2.4 の記述と一致します</li>
+  <li><strong>画像・音声は 3〜6 点落ちる</strong> —— MIEB(lite) −3.5 前後、MSEB −4.6〜−5.6。ただし‡の通り評価ハーネスが違うので、差をそのまま量子化の影響と読むのは注意が要ります</li>
+  <li><strong>端末メモリ</strong>(Q4_C、Pixel 11 Pro、ピーク): テキストのみ <strong>191 MB</strong>、テキスト + 視覚 <strong>447 MB</strong>、フル構成 <strong>567 MB</strong></li>
+</ul>
+
+<nav class="pager">
+  <a href="training.html"><span class="dir">← 前へ</span><span class="title">2. 学習の仕組み</span></a>
+  <a class="next" href="evaluation.html"><span class="dir">次へ →</span><span class="title">4. 評価方法と議論</span></a>
+</nav>
+
+</main>
+
+<footer class="site-footer">
+  <p>論文: <em>EmbeddingGemma 2: Unified and Efficient Multimodal Representations</em>(Google DeepMind, 2026)/
+  <a href="https://arxiv.org/abs/2610.37364" target="_blank" rel="noopener">arXiv:2610.37364</a></p>
+  <p>このサイトのコンテンツはAIとの協働で作成しています。記述されている内容には間違いが含まれることがあるので、正確性については一次資料をチェックしてください。</p>
+</footer>
+
+<script>
+MathJax = { tex: { inlineMath: [['\\(', '\\)']], displayMath: [['$$', '$$']] } };
+</script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js" async></script>
+<script src="assets/diagram-controls.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-core.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-python.min.js"></script>
+</body>
+</html>
