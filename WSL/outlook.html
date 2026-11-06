@@ -57,6 +57,7 @@
   <a href="generation.html">3. 生成 (WSG)</a>
   <a href="benchmarks.html">4. 評価とベンチマーク</a>
   <a href="outlook.html" class="current">5. 応用・トレンド・課題</a>
+  <a href="wsp.html">6. 発展: WSP</a>
 </nav>
 
 <header class="page-header">
@@ -252,6 +253,14 @@ WSL の 6 つの応用分野(§5, Table 3)。どの分野でも、従来は<stro
   <tr><td>⑤ 表現と生成の統合</td><td>“The next frontier lies in cross-architecture, self-supervised, and generative representations that <strong>unify understanding and creation</strong> within weight space”(§3.3)、“integrating structural invariances from WSR into WSG”(§4.3)</td></tr>
 </table>
 
+<div class="callout point">
+<span class="callout-title">サーベイ後の新しい動き — Weight-Space Programming(2026 年 11 月)</span>
+トレンド ③(LLM との接続)をさらに推し進めた例として、ブログ記事
+“Sparks of Weight-Space Programming”(Takehi, Teoh, Zhang, Khattab, 2026)があります。
+重みを出力するよう<strong>学習した</strong> LLM ではなく、<strong>汎用 LLM をそのまま</strong>使い、推論で重みを読み・直し・書くという主張です。
+サーベイの枠組みへの位置づけは<a href="wsp.html">発展編</a>で詳しく扱います。
+</div>
+
 <h2 id="open">未解決問題(§7)</h2>
 <p>
 “Despite rapid progress, Weight Space Learning remains in its <strong>early stages</strong>.”
@@ -363,7 +372,7 @@ WSL では重みそのものが主要なデータモダリティになるため�
 その部分空間を<strong>構造をまたいで共通に</strong>扱えれば汎用学習器になる(§7.1)→
 しかし重みを直接生成・編集できるようになるほど、<strong>出てきた重みが何をするか</strong>を保証・監査する手段が必要になる(§7.3)→
 その監査には、タスク性能だけでなく<strong>対称性の保存や機能的性質を測る評価</strong>が要る(§3.3, §4.3)。
-WSR(重みを見て振る舞いを予測する)が、WSG の安全性を担保する道具になる —— という循環が、この分野の次の数年の姿かもしれません。
+WSR(重みを見て振る舞いを予測する)が、WSG の安全性を担保する道具になる —— という循環が、この分野の次の数年の姿かもしれません。<br><br>なお、汎用 LLM に重みを読ませて監査する(“auditing without evaluation”)という別のアプローチも現れています(→ <a href="wsp.html#discussion">発展編</a>)。
 </div>
 
 <h2 id="summary">全体まとめ</h2>
@@ -381,11 +390,12 @@ not only as functions we train, but as entities we can <strong>analyze, represen
   <tr><td><a href="generation.html">3. 生成 (WSG)</a></td><td>タスク損失(ハイパーネット)か zoo の分布(生成モデル)から、重みを直接作る</td><td>\(\theta = H(x)\) / \(W \sim p_\phi(W)\)</td></tr>
   <tr><td><a href="benchmarks.html">4. 評価</a></td><td>model zoo が土台。だがタスク性能以外を測る標準指標はまだない</td><td>—</td></tr>
   <tr><td>5. 応用・課題</td><td>内側ループを「重みの生成」で置き換える流れが各分野で進行中。壁は大規模化と安全性</td><td>—</td></tr>
+  <tr><td><a href="wsp.html">6. 発展: WSP</a></td><td>専用のメタモデルを学習せず、汎用 LLM が推論で重みを読み・直し・書く(サーベイ後の 2026 年 11 月のブログ)</td><td>\(\tilde\theta = \theta + \Delta\)(Δ を推論で決める)</td></tr>
 </table>
 
 <nav class="pager">
   <a href="benchmarks.html"><span class="dir">← 前へ</span><span class="title">4. 評価方法とベンチマーク</span></a>
-  <a class="next" href="index.html"><span class="dir">最初に戻る →</span><span class="title">WSL 概要</span></a>
+  <a class="next" href="wsp.html"><span class="dir">次へ →</span><span class="title">6. 発展: Weight-Space Programming</span></a>
 </nav>
 
 </main>

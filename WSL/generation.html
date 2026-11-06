@@ -59,6 +59,7 @@
   <a href="generation.html" class="current">3. 生成 (WSG)</a>
   <a href="benchmarks.html">4. 評価とベンチマーク</a>
   <a href="outlook.html">5. 応用・トレンド・課題</a>
+  <a href="wsp.html">6. 発展: WSP</a>
 </nav>
 
 <header class="page-header">
@@ -541,6 +542,13 @@ for t in reversed(range(1, T + 1)):
     z = denoise_step(f_phi, z, t, c)          # p_φ(z_{t-1} | z_t)
 theta_new = unflatten(D(z))                   # θ₀ = D(f_φ(θ_T, c))
 acc = evaluate(target_arch.load(theta_new))   # 勾配降下なしで得たモデルを評価</code></pre>
+</div>
+
+<div class="callout point">
+<span class="callout-title">関連: 重みを「学習した生成器」でなく汎用 LLM が書く</span>
+NeuroGen・T2W は重みを出力するように LLM を学習させましたが、
+Weight-Space Programming のブログ記事(Takehi+, 2026)は、汎用 LLM が<strong>重みの例を見ずに</strong>
+ゲームのルールから方策ネットワークをゼロから書く実験を報告しています(→ <a href="wsp.html#position">発展編</a>)。
 </div>
 
 <h2 id="usecases">技術レベルのユースケース(§4.2)</h2>

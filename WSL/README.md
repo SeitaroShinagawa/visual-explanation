@@ -7,7 +7,8 @@
 学習済みニューラルネットの**重みそのものを学習の対象(データ)として扱う**研究領域 Weight Space Learning (WSL) を、
 初めて統一的な分類体系で整理したサーベイ。本シリーズで初めて扱う**サーベイ論文**である。
 本解説は、サーベイの 3 次元(理解 WSU・表現 WSR・生成 WSG)と、評価・応用・課題を、
-サーベイの数式・本文の引用とアニメーション図解で読み解く 6 ページ構成の日本語解説である。
+サーベイの数式・本文の引用とアニメーション図解で読み解き、さらにサーベイ後のブログ記事
+「Sparks of Weight-Space Programming」(Takehi, Teoh, Zhang, Khattab, 2026-11)をその枠組みに位置づける 7 ページ構成の日本語解説である。
 
 | ページ | 内容 |
 |---|---|
@@ -17,6 +18,7 @@
 | `generation.html` | 式 (13)〜(22)、Table 2、ハイパーネットの二段階最適化と**パラメータ数計算機**、設計 4 軸、生成モデル 4 系統(AE / GAN / 自己回帰 / 拡散)、潜在拡散の流れと擬似コード、6 つのユースケース、§4.3 の議論 |
 | `benchmarks.html` | model zoo の作り方、Table 4 の転記、MLP → CNN → RNN → Transformer、各タスクの評価方法、サーベイによる評価の批判 |
 | `outlook.html` | 6 つの応用分野(Table 3)、近年の 5 つのトレンド(解説者の整理)、§7 の 3 つの未解決問題、考察と全体まとめ |
+| `wsp.html` | 発展編: [Weight-Space Programming](https://rikiyat.github.io/blog/weight-space-programming/)(汎用 LLM が推論で重みを読む・直す・書く)を、重みの読み手・書き手の 4 類型と WSR / WSG / WSU の論点(対称性、Model-based / Model-free の補完性、大規模化、安全性・評価)に対応づけて解説。記事の数値は本文・表から転記し、対応づけ・考察は解説者のものと明記 |
 
 - 参照した一次資料: 提供された PDF(本文 39 ページ + 参考文献、全 51 ページ)を通読。
   付随リポジトリ [Zehong-Wang/Awesome-Weight-Space-Learning](https://github.com/Zehong-Wang/Awesome-Weight-Space-Learning) は論文リスト
@@ -69,6 +71,9 @@
 | outlook | 6 つの応用分野 | 6 / 15s |
 | outlook | 5 つのトレンド | 5 / 15s |
 | outlook | 3 つの未解決問題 | 3 / 12s |
+| wsp | 重みの読み手・書き手の 4 類型 | 4 / 14s |
+| wsp | 8 実験の読む・直す・書く | 3 / 12s |
+| wsp | 実験 8 の編集ループ | 4 / 14s |
 
 すべて `figure.diagram[data-cycle-ms][data-step-count]` を持ち、
 `assets/diagram-controls.js` が自動再生の ON/OFF と 1 ステップ送りのボタンを付与する。

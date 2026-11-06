@@ -62,6 +62,7 @@
   <a href="generation.html">3. 生成 (WSG)</a>
   <a href="benchmarks.html">4. 評価とベンチマーク</a>
   <a href="outlook.html">5. 応用・トレンド・課題</a>
+  <a href="wsp.html">6. 発展: WSP</a>
 </nav>
 
 <header class="page-header">
@@ -303,6 +304,13 @@ directly to collections of trained models?</strong>”
 (例えば HyperNetworks は 2017 年と早いが、「生成」という視点の代表として ④ に置かれている)。
 </figcaption>
 </figure>
+
+<div class="callout warn">
+<span class="callout-title">サーベイ以後の動き</span>
+サーベイ公開(2026 年 3 月)の後、<strong>専用に学習したメタモデルではなく汎用 LLM が重みを直接読み書きする</strong>
+「Weight-Space Programming」という主張がブログ記事として現れました(Takehi, Teoh, Zhang, Khattab, 2026 年 11 月)。
+視点の転換の「⑤ 段階目」になり得るものとして、<a href="wsp.html">発展編</a>で位置づけます。
+</div>
 
 <h3>既存サーベイとの違い</h3>
 <p>
@@ -553,6 +561,8 @@ WSL の 3 次元(サーベイ Figure 2 を再構成)。
   本解説は提供された PDF(本文 39 ページ + 参考文献、全 51 ページ)を通読して書いています</li>
   <li><strong>論文リスト</strong>: <a href="https://github.com/Zehong-Wang/Awesome-Weight-Space-Learning" target="_blank" rel="noopener">Awesome-Weight-Space-Learning</a></li>
   <li>引用中の文献表記(例: “Navon et al., 2023”)はサーベイの表記に従っています</li>
+  <li><strong>発展編の参考資料</strong>: Takehi, Teoh, Zhang, Khattab.
+  <a href="https://rikiyat.github.io/blog/weight-space-programming/" target="_blank" rel="noopener">“Sparks of Weight-Space Programming: LLMs can natively read &amp; write neural network weights”</a>(ブログ, 2026-11-02)</li>
 </ul>
 
 <h2 id="chapters">章立て</h2>
@@ -581,6 +591,11 @@ WSL の 3 次元(サーベイ Figure 2 を再構成)。
     <span class="num">CHAPTER 5</span>
     <h3>応用・トレンド・課題</h3>
     <p>6 つの応用分野(Table 3)、近年のトレンド、大規模化・安全性などの未解決問題(§7)と全体まとめ</p>
+  </a>
+  <a class="chapter-card" href="wsp.html">
+    <span class="num">CHAPTER 6 — 発展</span>
+    <h3>Weight-Space Programming</h3>
+    <p>サーベイ後に現れた「汎用 LLM が推論で重みを読み・直し・書く」という主張(Takehi+, 2026 のブログ)を、WSR / WSG の枠組みに位置づける</p>
   </a>
 </div>
 

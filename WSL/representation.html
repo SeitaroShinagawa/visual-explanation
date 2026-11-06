@@ -65,6 +65,7 @@
   <a href="generation.html">3. 生成 (WSG)</a>
   <a href="benchmarks.html">4. 評価とベンチマーク</a>
   <a href="outlook.html">5. 応用・トレンド・課題</a>
+  <a href="wsp.html">6. 発展: WSP</a>
 </nav>
 
 <header class="page-header">
@@ -538,6 +539,13 @@ WSR の 3 つのユースケース。いずれも<strong>元の学習データ�
   <td>Dravid+ 2024 / Schürholt+ 2024 は埋め込み空間の小さな摂動で狙った振る舞いを変更。
   Kofinas+ 2024a / Lim+ 2024 / Zhou+ 2023a,b は重み空間の置換同変変換で INR を編集</td></tr>
 </table>
+
+<div class="callout point">
+<span class="callout-title">関連: 学習していない汎用 LLM による「読む」「直す」</span>
+性能予測・編集をメタモデルの学習なしに汎用 LLM の推論で行う試みとして、Weight-Space Programming があります。
+重みだけで判定できなかった実験が、自作のプローブ(テキスト)への注意パターンを見ると成功した例は、
+本章の Model-based と Model-free の補完性をよく表しています(→ <a href="wsp.html#experiments">発展編</a>)。
+</div>
 
 <h2 id="discussion">議論 — WSR の強みと限界(§3.3)</h2>
 <div class="callout point">
