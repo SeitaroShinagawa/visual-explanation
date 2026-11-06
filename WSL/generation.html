@@ -394,8 +394,8 @@ pi-GAN はマッピングネットワークで周波数と位相シフトを通�
 <div class="callout math">
 <span class="callout-title">式 (20)</span>
 重みを離散トークンまたは連続チャンクの系列 \(\mathcal{S} = \{s_1, \dots, s_L\}\) に分解し、
-$$ p_\phi(\theta) = \prod_{t=1}^{L} p_\phi(s_t \mid s_{<t}, c) \tag{20} $$
-\(s_{<t}\) は生成済みの重みトークン、\(c\) は任意の条件(タスク埋め込みなど)。
+$$ p_\phi(\theta) = \prod_{t=1}^{L} p_\phi(s_t \mid s_{\lt t}, c) \tag{20} $$
+\(s_{\lt t}\) は生成済みの重みトークン、\(c\) は任意の条件(タスク埋め込みなど)。
 </div>
 <p>
 IGPG は層ごとに、それまでの生成履歴で条件付けて構造的一貫性を保ち、RPG は再帰機構とトークン化した重み表現で大きな CNN まで拡大。
