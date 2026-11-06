@@ -1,0 +1,641 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WSL 生成編 — ハイパーネットと重みの生成モデル</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🧬</text></svg>">
+<link rel="stylesheet" href="assets/style.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/themes/prism-tomorrow.min.css">
+<style>
+/* ===== hypernetwork training loop: 4 stages (14s) ===== */
+@keyframes hy-bright {
+  0%, 25%, 100% { opacity: 0.25; }
+  4%, 21% { opacity: 1; }
+}
+#hyper-fig .h1 { animation: hy-bright 14s ease-in-out infinite backwards; }
+#hyper-fig .h2 { animation: hy-bright 14s ease-in-out infinite backwards; animation-delay: 3.5s; }
+#hyper-fig .h3 { animation: hy-bright 14s ease-in-out infinite backwards; animation-delay: 7s; }
+#hyper-fig .h4 { animation: hy-bright 14s ease-in-out infinite backwards; animation-delay: 10.5s; }
+
+/* ===== generative families: 4 stages (14s) ===== */
+#fam-fig .f1 { animation: hy-bright 14s ease-in-out infinite backwards; }
+#fam-fig .f2 { animation: hy-bright 14s ease-in-out infinite backwards; animation-delay: 3.5s; }
+#fam-fig .f3 { animation: hy-bright 14s ease-in-out infinite backwards; animation-delay: 7s; }
+#fam-fig .f4 { animation: hy-bright 14s ease-in-out infinite backwards; animation-delay: 10.5s; }
+/* autoregressive tokens appear one by one */
+@keyframes ar-appear {
+  0%, 8% { opacity: 0; }
+  14%, 100% { opacity: 1; }
+}
+#fam-fig .tok { animation: ar-appear 3.5s linear infinite backwards; }
+
+/* ===== weight diffusion: 4 stages (14s) ===== */
+#diff-fig .d1 { animation: hy-bright 14s ease-in-out infinite backwards; }
+#diff-fig .d2 { animation: hy-bright 14s ease-in-out infinite backwards; animation-delay: 3.5s; }
+#diff-fig .d3 { animation: hy-bright 14s ease-in-out infinite backwards; animation-delay: 7s; }
+#diff-fig .d4 { animation: hy-bright 14s ease-in-out infinite backwards; animation-delay: 10.5s; }
+/* noise level of the latent strip: noisy -> clean */
+@keyframes dn-clean {
+  0%, 15% { opacity: 0.15; }
+  85%, 100% { opacity: 1; }
+}
+#diff-fig .clean { animation: dn-clean 3.5s ease-in-out infinite alternate; }
+
+@media (prefers-reduced-motion: reduce) {
+  #hyper-fig .h1, #hyper-fig .h2, #hyper-fig .h3, #hyper-fig .h4,
+  #fam-fig .f1, #fam-fig .f2, #fam-fig .f3, #fam-fig .f4, #fam-fig .tok,
+  #diff-fig .d1, #diff-fig .d2, #diff-fig .d3, #diff-fig .d4, #diff-fig .clean { opacity: 1; }
+}
+</style>
+</head>
+<body>
+
+<nav class="topnav">
+  <a class="home-link" href="../index.html">Visual Explanation</a><span class="sep">/</span>
+  <a href="./index.html">WSL 概要</a>
+  <a href="understanding.html">1. 理解 (WSU)</a>
+  <a href="representation.html">2. 表現 (WSR)</a>
+  <a href="generation.html" class="current">3. 生成 (WSG)</a>
+  <a href="benchmarks.html">4. 評価とベンチマーク</a>
+  <a href="outlook.html">5. 応用・トレンド・課題</a>
+</nav>
+
+<header class="page-header">
+  <h1>3. 重み空間の生成 (WSG)</h1>
+  <p>“If network weights can be represented, can they also be generated?” ——
+  勾配降下で重みを<strong>探す</strong>代わりに、別のネットワークが重みを<strong>出力する</strong>。
+  ハイパーネットと生成モデルという 2 つの流儀の学習と生成の仕組みを読み解きます(サーベイ §4)。</p>
+</header>
+
+<main class="article">
+
+<h2 id="setup">問題設定</h2>
+<div class="callout math">
+<span class="callout-title">式 (13) — 潜在変数から重みへの写像</span>
+$$ G_\phi: \mathcal{Z} \to \Theta \tag{13} $$
+潜在コード \(z \in \mathcal{Z}\) を、対象モデルのパラメータ集合 \(\theta = G_\phi(z)\) に変換する。
+“This mapping may capture global regularities of weight space, such as architectural symmetries, scaling relations, or functional similarity”
+</div>
+<p>
+§4 は動機を 2 つ挙げます。<strong>① 学習された重みの事前分布からモデルを合成</strong>し、フル学習なしに新しいネットワークを作れること。
+<strong>② タスク・データ領域・性能目標といった外部信号で条件付けた</strong>適応的な生成の土台になること。
+“Through this lens, the training of a model becomes <strong>the learning of a generative process over parameters</strong> rather than a pointwise search in weight space.”
+</p>
+
+<h2 id="two">2 つの流儀 — ハイパーネット vs 生成モデル</h2>
+<p>
+生成メカニズムで分けると、WSG は 2 つの大きなパラダイムに分かれます(Figure 6, Table 2)。
+両者の違いは<strong>「何を教師信号にするか」</strong>に集約されます。
+</p>
+<table>
+  <tr><th>手法</th><th>条件付け</th><th>多様性</th><th>学習データ</th><th>向いている場面</th></tr>
+  <tr><td><strong>ハイパーネットワーク</strong></td><td style="color:#1e9e6a">✓</td><td style="color:#d43d51">✗</td><td>実世界のデータ(タスクデータ)</td><td>少数ショット・高速な適応</td></tr>
+  <tr><td><strong>生成モデル</strong></td><td>P(部分的)</td><td style="color:#1e9e6a">✓</td><td><strong>model zoo</strong>(学習済み重みの集合)</td><td>大規模・高忠実度な生成</td></tr>
+</table>
+<p class="cite">Table 2 の転記。✓ は完全に満たす、✗ は満たさない、P は部分的に満たすことを表す。</p>
+
+<div class="callout point">
+<span class="callout-title">Takeaways(§4.1)</span>
+<ul style="margin:0.3rem 0 0">
+  <li>ハイパーネットは<strong>タスク教師あり・プロンプト条件付き</strong>の写像で重みを生成し、高速なインスタンス化と適応を可能にするが、表現力は条件信号と生成器の構造に縛られる</li>
+  <li>生成モデルは<strong>学習済み重みをデータとして</strong>その分布を学習し、多様性・モデルレベルの探索・学習時に見たものを超える重みの合成を可能にする</li>
+  <li>“The key frontier lies in <strong>unifying these two paradigms</strong>, combining the controllability of hypernetworks with the diversity and scalability of generative models”</li>
+</ul>
+</div>
+
+<h2 id="hyper">ハイパーネットワーク(§4.1.1)</h2>
+<div class="callout math">
+<span class="callout-title">式 (14)(15) — 層ごとの重み生成と、タスク損失による学習</span>
+層 \(\{W_1, \dots, W_L\}\) を持つ対象モデルに対し、ハイパーネット \(H\) が入力 \(x_i\) で条件付けて重みを出力する:
+$$ W_i = H(x_i), \quad i = 1, \dots, L \tag{14} $$
+$$ \theta = H(x), \qquad \mathcal{L}_{task}(f_\theta) \xrightarrow{\ \text{backprop}\ } \nabla_H \tag{15} $$
+“During training, the hypernetwork \(H\) <strong>does not receive direct supervision on the weights it produces</strong>.
+Instead, it generates the parameters of the target model, which is then applied to the task, and the resulting task loss is
+backpropagated through the target model and into \(H\).”
+</div>
+
+<figure class="diagram" id="hyper-fig" data-cycle-ms="14000" data-step-count="4">
+<svg viewBox="0 0 960 380" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="ハイパーネットの学習: 条件から重みを生成し、タスク損失の勾配がハイパーネットだけを更新する">
+  <defs>
+    <marker id="arrY" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#8a93ad"/>
+    </marker>
+    <marker id="arrYr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#d43d51"/>
+    </marker>
+  </defs>
+
+  <g class="h1">
+    <text x="100" y="26" font-size="13" font-weight="bold" text-anchor="middle" fill="#7b46c9">① 条件 (prompt)</text>
+    <rect x="14" y="40" width="172" height="200" rx="10" fill="#efe6fb" stroke="#7b46c9" stroke-width="2"/>
+    <g font-size="10.5">
+      <rect x="28" y="54" width="144" height="32" rx="6" fill="#fff" stroke="#7b46c9"/><text x="100" y="74" text-anchor="middle">層の埋め込み e<tspan baseline-shift="sub" font-size="75%">ℓ</tspan></text>
+      <rect x="28" y="94" width="144" height="32" rx="6" fill="#fff" stroke="#7b46c9"/><text x="100" y="114" text-anchor="middle">構造情報(計算グラフ)</text>
+      <rect x="28" y="134" width="144" height="32" rx="6" fill="#fff" stroke="#7b46c9"/><text x="100" y="154" text-anchor="middle">タスク情報・クラス</text>
+      <rect x="28" y="174" width="144" height="32" rx="6" fill="#fff" stroke="#7b46c9"/><text x="100" y="194" text-anchor="middle">ランダムノイズ</text>
+    </g>
+    <text x="100" y="228" font-size="10" text-anchor="middle" fill="#5b6478">Figure 6(a) の 4 種</text>
+  </g>
+
+  <g class="h2">
+    <text x="330" y="26" font-size="13" font-weight="bold" text-anchor="middle" fill="#7b46c9">② H が重みを出力</text>
+    <rect x="250" y="100" width="130" height="64" rx="12" fill="#fff" stroke="#7b46c9" stroke-width="3"/>
+    <text x="315" y="130" font-size="16" text-anchor="middle" font-style="italic" font-weight="bold">H(·)</text>
+    <text x="315" y="152" font-size="10" text-anchor="middle" fill="#5b6478">学習されるのはここだけ</text>
+    <rect x="410" y="104" width="70" height="56" rx="8" fill="#fdeeda" stroke="#e07b1f" stroke-width="2"/>
+    <text x="445" y="130" font-size="13" text-anchor="middle" font-style="italic">θ</text>
+    <text x="445" y="148" font-size="9.5" text-anchor="middle" fill="#5b6478">= H(x)</text>
+  </g>
+
+  <g class="h3">
+    <text x="680" y="26" font-size="13" font-weight="bold" text-anchor="middle" fill="#d43d51">③ タスク損失で H を学習</text>
+    <rect x="540" y="40" width="96" height="44" rx="8" fill="#fff" stroke="#8a93ad"/>
+    <text x="588" y="60" font-size="11" text-anchor="middle">タスクデータ</text>
+    <text x="588" y="76" font-size="10" text-anchor="middle" fill="#5b6478">🐶 🐱 …</text>
+    <rect x="530" y="104" width="116" height="56" rx="10" fill="#fff" stroke="#1c2333" stroke-width="2"/>
+    <text x="588" y="130" font-size="14" text-anchor="middle" font-style="italic">f(·; θ)</text>
+    <text x="588" y="148" font-size="9.5" text-anchor="middle" fill="#5b6478">対象モデル(重みは借り物)</text>
+    <rect x="690" y="104" width="120" height="56" rx="10" fill="#fbe4e8" stroke="#d43d51" stroke-width="2"/>
+    <text x="750" y="137" font-size="13" text-anchor="middle" font-style="italic">ℒ<tspan baseline-shift="sub" font-size="75%">task</tspan>(f<tspan baseline-shift="sub" font-size="75%">θ</tspan>)</text>
+    <path d="M 588 86 L 588 102" stroke="#8a93ad" stroke-width="2" marker-end="url(#arrY)"/>
+    <path d="M 648 132 L 688 132" stroke="#8a93ad" stroke-width="2" marker-end="url(#arrY)"/>
+    <path class="flow-edge" d="M 750 162 C 750 240, 330 250, 316 168" fill="none" stroke="#d43d51" stroke-width="2.4" marker-end="url(#arrYr)"/>
+    <text x="540" y="238" font-size="11.5" text-anchor="middle" fill="#d43d51" font-weight="bold">∇<tspan baseline-shift="sub" font-size="75%">H</tspan>: 勾配は f を通り抜けて H へ</text>
+    <text x="540" y="256" font-size="10.5" text-anchor="middle" fill="#5b6478">θ 自体は最適化されない = 二段階(bi-level)最適化</text>
+  </g>
+
+  <g class="h4">
+    <rect x="14" y="282" width="932" height="84" rx="12" fill="#e0f5ec" stroke="#1e9e6a" stroke-width="2"/>
+    <text x="480" y="306" font-size="13" font-weight="bold" text-anchor="middle" fill="#1e9e6a">④ 生成時: 新しい条件 → H の順伝播 1 回 → 使える重み</text>
+    <text x="480" y="330" font-size="11" text-anchor="middle" fill="#5b6478">“After training, generating a new model reduces to a <tspan font-weight="bold">forward pass through H</tspan>, avoiding iterative optimization.”</text>
+    <text x="480" y="352" font-size="11" text-anchor="middle" fill="#1e9e6a">→ 実時間の適応(HyperSeg, HyperStyle)、LoRA の初期化(HyperDreamBooth)、NAS の候補評価(GHN)</text>
+  </g>
+
+  <g fill="none" stroke="#8a93ad" stroke-width="2" marker-end="url(#arrY)">
+    <path class="flow-edge" d="M 188 132 L 248 132"/>
+    <path class="flow-edge" d="M 382 132 L 408 132"/>
+    <path class="flow-edge" d="M 482 132 L 528 132"/>
+  </g>
+</svg>
+<figcaption>
+ハイパーネットの学習と生成(式 14・15、Figure 6(a) を再構成)。実線が順伝播、赤の破線矢印が逆伝播。
+<strong>H は「正解の重み」を一度も見ない</strong>—— 生成した重みでタスクを解いた結果の損失だけが学習信号です。
+</figcaption>
+</figure>
+
+<div class="codeblock pseudo">
+<div class="codehead"><span class="path">⚠️ 擬似コード — 式 (14)(15) と §4.1.1 の記述から再構成(特定の論文の実装ではない)</span></div>
+<pre><code class="language-python"># ハイパーネットの学習ループ。変数名・構造は本解説による再構成。
+
+H = HyperNet()                              # 学習可能なのは H のパラメータだけ
+layer_emb = [Embedding(d) for _ in range(L)] # 層ごとの埋め込み e_ℓ(これも学習可)
+
+for x_batch, y_batch in task_data:
+    theta = [H(e) for e in layer_emb]       # 式 (14): W_ℓ = H(e_ℓ)
+    y_hat = target_forward(x_batch, theta)  # 対象モデル f(·; θ) に「借りた重み」で通す
+    loss  = task_loss(y_hat, y_batch)       # ℒ_task(f_θ)
+    loss.backward()                         # 式 (15): 勾配は θ を経由して H へ
+    step(H, layer_emb)                      # θ は保存も最適化もされない
+
+# 生成: 新しい条件 → 1 回の順伝播
+theta_new = [H(e) for e in new_condition_embeddings]</code></pre>
+</div>
+
+<h3 id="efficiency">なぜパラメータが減るのか — 計算してみる</h3>
+<p>
+§4.1.1 の “Parameter Efficiency” 段落は、ハイパーネットがパラメータを節約する仕組みを具体的に数えています。
+\(L\) 層・各層 \(N_{in} \times N_{out}\) 個の \(f \times f\) カーネルを持つ CNN を直接学習すると \(L \cdot N_{in} \cdot N_{out} \cdot f^2\) 個。
+一方、層の埋め込み \(e_\ell \in \mathbb{R}^d\) から隠れ幅 \(h\) の 2 層ハイパーネットで重みを生成すると、おおよそ
+</p>
+<div class="callout math">
+<span class="callout-title">§4.1.1 のパラメータ数(バイアスは省略)</span>
+$$ \underbrace{L \cdot d}_{\text{層ごとの埋め込み}} + \underbrace{h \cdot d \cdot N_{in}}_{\text{埋め込みを } N_{in} \text{ 個に展開}} + \underbrace{h \cdot N_{out} f^2}_{\text{各出力チャネルのカーネル生成}} $$
+“Since the second layer no longer scales with \(N_{in}\) for every output filter, the hypernetwork significantly reduces complexity.”
+しかもハイパーネット本体のパラメータは層数 \(L\) に依存しません。
+</div>
+
+<div class="widget" id="hn-calc">
+<span class="widget-title">🧮 パラメータ数の計算機(§4.1.1 の式をそのまま評価)</span>
+<div>
+  <label>層数 L <input type="range" min="1" max="200" value="20" data-k="L"><output data-o="L"></output></label>
+  <label>N<sub>in</sub> <input type="range" min="8" max="512" step="8" value="64" data-k="Nin"><output data-o="Nin"></output></label>
+  <label>N<sub>out</sub> <input type="range" min="8" max="512" step="8" value="64" data-k="Nout"><output data-o="Nout"></output></label>
+  <label>カーネル f <input type="range" min="1" max="7" step="2" value="3" data-k="f"><output data-o="f"></output></label>
+  <label>埋め込み d <input type="range" min="4" max="256" step="4" value="64" data-k="d"><output data-o="d"></output></label>
+  <label>隠れ幅 h <input type="range" min="4" max="256" step="4" value="64" data-k="h"><output data-o="h"></output></label>
+</div>
+<div id="hn-out" style="margin-top:0.6rem"></div>
+<p class="cite" style="margin:0.4rem 0 0">注: これは学習するパラメータ数の比較です。ハイパーネットが生成する重みの<strong>表現力</strong>(全層を共有の生成器から作る制約)とのトレードオフは考慮していません。</p>
+</div>
+
+<h3 id="hyper-design">ハイパーネット設計の 4 つの問い</h3>
+<p>§4.1.1 は、ハイパーネット研究を 4 つの設計軸で整理しています。</p>
+<table>
+  <tr><th>問い</th><th>変遷(サーベイの整理)</th></tr>
+  <tr><td><strong>何で条件付けるか</strong><br>(Input Conditioning)</td>
+  <td>ガウスノイズ(HBN, BbH)→ 構造トポロジー(SMASH)・計算グラフの GNN 埋め込み(GHN, GHN-2)→
+  チャンク化したタスク埋め込み(継続学習, von Oswald+ 2020)→ クラス意味情報(Sylph)→ 入力画像・特徴を直接(Littwin & Wolf 2019 など)。
+  “a shift from generic prompts toward <strong>semantically structured conditioning</strong>”</td></tr>
+  <tr><td><strong>何を生成するか</strong><br>(Output Granularity)</td>
+  <td>小さなネットの全重み(Ha+ 2017)→ 線形結合で組み立てる重みチャンク(Zhao+ 2020)→ デコーダだけ(HyperSeg)→
+  アダプタ(HyperFormer)→ <strong>LoRA</strong>(HyperDreamBooth)→ 学習軌跡そのもの(Hedlin+ 2025)。
+  “a shift from full-model generation to <strong>module-level and residual</strong> weight generation”</td></tr>
+  <tr><td><strong>どう作るか</strong><br>(Architectural Capacity)</td>
+  <td>単純な FF / RNN → 残差接続で深く → GAN 型(敵対的フィードバックで現実的な重み分布)→
+  <strong>Transformer 型</strong>(重み生成を sequence-to-sequence として扱う HyperTransformer)</td></tr>
+  <tr><td><strong>どう出力するか</strong><br>(Generation Strategy)</td>
+  <td>点推定ではなく分布(ベイズ的ハイパーネット)/ 一部だけ(分類器・アダプタ・LoRA)/
+  既存重みへの<strong>残差オフセット</strong>(HyperStyle, HyperInverter, HyperEditor)/ <strong>低ランク因子</strong>(Polyhistor)</td></tr>
+</table>
+
+<h2 id="genmodels">生成モデル(§4.1.2)</h2>
+<p>
+ハイパーネットが「条件 → 重み」の決定的写像 \(W = H(x)\) を学ぶのに対し、生成モデルは
+<strong>学習済みの重みそのものをデータとして</strong>、その分布を学習します。
+</p>
+<div class="callout math">
+<span class="callout-title">式 (16)(17) — 重みの分布を学ぶ</span>
+$$ p_\phi(W) \approx p_{\text{train}}(W) \tag{16} $$
+$$ W \sim p_\phi(W) \tag{17} $$
+利点は 2 つ: “(1) it separates weight generation from task-specific conditioning, enabling the creation of weights
+<strong>even without explicit prompts</strong>; and (2) it supports diversity and exploration in the weight space,
+potentially discovering models that <strong>perform better than any single checkpoint</strong> in the training repository.”
+</div>
+
+<figure class="diagram" id="fam-fig" data-cycle-ms="14000" data-step-count="4">
+<svg viewBox="0 0 960 360" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="重みの生成モデルの 4 系統: オートエンコーダ・GAN・自己回帰・拡散">
+  <defs>
+    <marker id="arrF" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#5b6478"/>
+    </marker>
+  </defs>
+
+  <g class="f1">
+    <rect x="8" y="8" width="230" height="344" rx="12" fill="#e5eafc" stroke="#3556d4" stroke-width="2"/>
+    <text x="123" y="34" font-size="13.5" font-weight="bold" text-anchor="middle" fill="#3556d4">① オートエンコーダ</text>
+    <rect x="28" y="64" width="40" height="110" rx="6" fill="#fdeeda" stroke="#e07b1f"/><text x="48" y="124" font-size="12" text-anchor="middle" font-style="italic">θ</text>
+    <path d="M 70 84 L 100 104 L 100 134 L 70 154 Z" fill="#fff" stroke="#3556d4" stroke-width="2"/>
+    <text x="85" y="186" font-size="10" text-anchor="middle" fill="#5b6478">E</text>
+    <rect x="106" y="104" width="22" height="30" rx="4" fill="#3556d4"/><text x="117" y="150" font-size="11" text-anchor="middle" font-style="italic">z</text>
+    <path d="M 134 104 L 164 84 L 164 154 L 134 134 Z" fill="#fff" stroke="#3556d4" stroke-width="2"/>
+    <text x="149" y="186" font-size="10" text-anchor="middle" fill="#5b6478">G<tspan baseline-shift="sub" font-size="75%">φ</tspan></text>
+    <rect x="170" y="64" width="40" height="110" rx="6" fill="#fdeeda" stroke="#e07b1f" stroke-dasharray="4 3"/><text x="190" y="124" font-size="12" text-anchor="middle" font-style="italic">θ̂</text>
+    <text x="123" y="222" font-size="10.5" text-anchor="middle" font-weight="bold" fill="#3556d4">θ = G<tspan baseline-shift="sub" font-size="75%">φ</tspan>(z), z ∈ ℝᵈ, d ≪ dim(θ)</text>
+    <text x="123" y="240" font-size="10" text-anchor="middle" fill="#5b6478">… 式 (18)。VAE なら ELBO を最大化</text>
+    <text x="123" y="272" font-size="10" text-anchor="middle" fill="#5b6478">HyperReps / SANE (Schürholt+)</text>
+    <text x="123" y="288" font-size="10" text-anchor="middle" fill="#5b6478">Functa(INR の変調)</text>
+    <text x="123" y="304" font-size="10" text-anchor="middle" fill="#5b6478">DnD / ICM-LoRA(LoRA を復号)</text>
+    <text x="123" y="330" font-size="10" text-anchor="middle" fill="#3556d4">次元削減 + 再構成として解く</text>
+  </g>
+
+  <g class="f2">
+    <rect x="246" y="8" width="230" height="344" rx="12" fill="#fbe4e8" stroke="#d43d51" stroke-width="2"/>
+    <text x="361" y="34" font-size="13.5" font-weight="bold" text-anchor="middle" fill="#d43d51">② GAN</text>
+    <rect x="262" y="96" width="30" height="40" rx="5" fill="#fff" stroke="#8a93ad"/><text x="277" y="121" font-size="11" text-anchor="middle" font-style="italic">z</text>
+    <rect x="300" y="96" width="44" height="40" rx="7" fill="#fff" stroke="#d43d51" stroke-width="2"/><text x="322" y="121" font-size="11" text-anchor="middle" font-style="italic">G<tspan baseline-shift="sub" font-size="75%">φ</tspan></text>
+    <rect x="352" y="96" width="44" height="40" rx="5" fill="#fdeeda" stroke="#e07b1f" stroke-dasharray="4 3"/><text x="374" y="112" font-size="10" text-anchor="middle" font-style="italic">θ<tspan baseline-shift="sub" font-size="75%">gen</tspan></text><text x="374" y="132" font-size="9" text-anchor="middle" fill="#5b6478">偽</text>
+    <rect x="352" y="148" width="44" height="40" rx="5" fill="#fdeeda" stroke="#e07b1f"/><text x="374" y="164" font-size="10" text-anchor="middle" font-style="italic">θ<tspan baseline-shift="sub" font-size="75%">real</tspan></text><text x="374" y="184" font-size="9" text-anchor="middle" fill="#5b6478">本物</text>
+    <rect x="410" y="118" width="50" height="44" rx="7" fill="#fff" stroke="#d43d51" stroke-width="2"/><text x="435" y="145" font-size="11" text-anchor="middle" font-style="italic">D<tspan baseline-shift="sub" font-size="75%">ψ</tspan></text>
+    <path d="M 294 116 L 298 116" stroke="#5b6478" stroke-width="1.6" marker-end="url(#arrF)"/>
+    <path d="M 344 116 L 350 116" stroke="#5b6478" stroke-width="1.6" marker-end="url(#arrF)"/>
+    <path d="M 398 116 L 408 132" stroke="#5b6478" stroke-width="1.6" marker-end="url(#arrF)"/>
+    <path d="M 398 168 L 408 152" stroke="#5b6478" stroke-width="1.6" marker-end="url(#arrF)"/>
+    <text x="361" y="222" font-size="10.5" text-anchor="middle" font-weight="bold" fill="#d43d51">min<tspan baseline-shift="sub" font-size="75%">G</tspan> max<tspan baseline-shift="sub" font-size="75%">D</tspan> V(D, G) … 式 (19)</text>
+    <text x="361" y="240" font-size="10" text-anchor="middle" fill="#5b6478">本物の重みと見分けがつかない重みを生成</text>
+    <text x="361" y="272" font-size="10" text-anchor="middle" fill="#5b6478">GRAF (Schwarz+ 2020)</text>
+    <text x="361" y="288" font-size="10" text-anchor="middle" fill="#5b6478">pi-GAN (Chan+ 2021)</text>
+    <text x="361" y="304" font-size="10" text-anchor="middle" fill="#5b6478">GASP(INR 分布)</text>
+    <text x="361" y="330" font-size="10" text-anchor="middle" fill="#d43d51">3D 対応の NeRF 生成で特に有効</text>
+  </g>
+
+  <g class="f3">
+    <rect x="484" y="8" width="230" height="344" rx="12" fill="#fdeeda" stroke="#e07b1f" stroke-width="2"/>
+    <text x="599" y="34" font-size="13.5" font-weight="bold" text-anchor="middle" fill="#e07b1f">③ 自己回帰</text>
+    <text x="504" y="72" font-size="10" fill="#5b6478">条件 c</text>
+    <g>
+      <rect class="tok" style="animation-delay:0s" x="504" y="84" width="34" height="26" rx="5" fill="#fff" stroke="#e07b1f"/>
+      <rect class="tok" style="animation-delay:0.4s" x="542" y="84" width="34" height="26" rx="5" fill="#fff" stroke="#e07b1f"/>
+      <rect class="tok" style="animation-delay:0.8s" x="580" y="84" width="34" height="26" rx="5" fill="#fff" stroke="#e07b1f"/>
+      <rect class="tok" style="animation-delay:1.2s" x="618" y="84" width="34" height="26" rx="5" fill="#fff" stroke="#e07b1f"/>
+      <rect class="tok" style="animation-delay:1.6s" x="656" y="84" width="34" height="26" rx="5" fill="#ffe1bf" stroke="#e07b1f" stroke-width="2"/>
+    </g>
+    <g font-size="10" text-anchor="middle" font-style="italic">
+      <text x="521" y="101">s₁</text><text x="559" y="101">s₂</text><text x="597" y="101">s₃</text><text x="635" y="101">s₄</text><text x="673" y="101">s₅</text>
+    </g>
+    <text x="599" y="134" font-size="10" text-anchor="middle" fill="#5b6478">層・チャンクごとのトークンを 1 つずつ</text>
+    <text x="599" y="166" font-size="10" text-anchor="middle" fill="#e07b1f">s<tspan baseline-shift="sub" font-size="75%">t</tspan> ← p<tspan baseline-shift="sub" font-size="75%">φ</tspan>(s<tspan baseline-shift="sub" font-size="75%">t</tspan> | s<tspan baseline-shift="sub" font-size="75%">&lt;t</tspan>, c)</text>
+    <text x="599" y="222" font-size="10.5" text-anchor="middle" font-weight="bold" fill="#e07b1f">p<tspan baseline-shift="sub" font-size="75%">φ</tspan>(θ) = ∏ p<tspan baseline-shift="sub" font-size="75%">φ</tspan>(s<tspan baseline-shift="sub" font-size="75%">t</tspan> | s<tspan baseline-shift="sub" font-size="75%">&lt;t</tspan>, c) … 式 (20)</text>
+    <text x="599" y="240" font-size="10" text-anchor="middle" fill="#5b6478">言語モデルと同じ連鎖律分解</text>
+    <text x="599" y="272" font-size="10" text-anchor="middle" fill="#5b6478">IGPG(層ごとに生成)</text>
+    <text x="599" y="288" font-size="10" text-anchor="middle" fill="#5b6478">RPG(再帰的に、大きな CNN まで)</text>
+    <text x="599" y="304" font-size="10" text-anchor="middle" fill="#5b6478">NeuroGen / T2W(LLM・テキスト条件)</text>
+    <text x="599" y="330" font-size="10" text-anchor="middle" fill="#e07b1f">層間依存と階層構造を捉える</text>
+  </g>
+
+  <g class="f4">
+    <rect x="722" y="8" width="230" height="344" rx="12" fill="#efe6fb" stroke="#7b46c9" stroke-width="2"/>
+    <text x="837" y="34" font-size="13.5" font-weight="bold" text-anchor="middle" fill="#7b46c9">④ 拡散(反復デノイズ)</text>
+    <g>
+      <rect x="742" y="84" width="40" height="56" rx="5" fill="#cdb8f0"/>
+      <g fill="#7b46c9"><circle cx="752" cy="94" r="3"/><circle cx="770" cy="102" r="3"/><circle cx="760" cy="120" r="3"/><circle cx="776" cy="130" r="3"/><circle cx="748" cy="132" r="3"/></g>
+      <text x="762" y="156" font-size="10" text-anchor="middle" font-style="italic">θ<tspan baseline-shift="sub" font-size="75%">T</tspan></text>
+      <rect x="814" y="84" width="40" height="56" rx="5" fill="#a98ae0"/>
+      <rect x="820" y="92" width="28" height="6" fill="#fff" opacity="0.6"/><rect x="820" y="106" width="28" height="6" fill="#fff" opacity="0.6"/><rect x="820" y="120" width="28" height="6" fill="#fff" opacity="0.6"/>
+      <text x="834" y="156" font-size="10" text-anchor="middle" font-style="italic">θ<tspan baseline-shift="sub" font-size="75%">t</tspan></text>
+      <rect x="886" y="84" width="40" height="56" rx="5" fill="#7b46c9"/>
+      <rect x="892" y="92" width="28" height="6" fill="#fff"/><rect x="892" y="106" width="28" height="6" fill="#fff"/><rect x="892" y="120" width="28" height="6" fill="#fff"/>
+      <text x="906" y="156" font-size="10" text-anchor="middle" font-style="italic">θ₀</text>
+      <path d="M 784 104 L 812 104" stroke="#7b46c9" stroke-width="1.8" marker-end="url(#arrF)"/>
+      <path d="M 856 104 L 884 104" stroke="#7b46c9" stroke-width="1.8" marker-end="url(#arrF)"/>
+      <text x="834" y="176" font-size="10" text-anchor="middle" fill="#7b46c9">デノイズ f<tspan baseline-shift="sub" font-size="75%">φ</tspan></text>
+    </g>
+    <text x="837" y="222" font-size="10.5" text-anchor="middle" font-weight="bold" fill="#7b46c9">q(θ<tspan baseline-shift="sub" font-size="75%">t</tspan> | θ₀), p<tspan baseline-shift="sub" font-size="75%">φ</tspan>(θ<tspan baseline-shift="sub" font-size="75%">t−1</tspan> | θ<tspan baseline-shift="sub" font-size="75%">t</tspan>) … 式 (21)(22)</text>
+    <text x="837" y="240" font-size="10" text-anchor="middle" fill="#5b6478">画像・音声の拡散と同じ枠組み</text>
+    <text x="837" y="272" font-size="10" text-anchor="middle" fill="#5b6478">G.pt / HyperDiffusion / p-diff</text>
+    <text x="837" y="288" font-size="10" text-anchor="middle" fill="#5b6478">FLoWN(潜在 flow matching)</text>
+    <text x="837" y="304" font-size="10" text-anchor="middle" fill="#5b6478">COND P-DIFF / ORAL / D2NWG(LoRA)</text>
+    <text x="837" y="330" font-size="10" text-anchor="middle" fill="#7b46c9">現在の主流。LLM 規模まで拡大中</text>
+  </g>
+</svg>
+<figcaption>
+重みの生成モデル 4 系統(§4.1.2)。いずれも「学習済み重みの集合 = 訓練データ」という点は共通で、
+違うのは<strong>分布の表し方</strong>(潜在変数・敵対的学習・連鎖律分解・反復デノイズ)です。
+</figcaption>
+</figure>
+
+<h3>① オートエンコーダ</h3>
+<div class="callout math">
+<span class="callout-title">式 (18)</span>
+$$ \theta = G_\phi(z), \quad \text{with}\quad z \in \mathbb{R}^d,\ d \ll \dim(\theta) \tag{18} $$
+単純な事前分布 \(p(z)\)(例: \(\mathcal{N}(0, \mathbf{I})\))からサンプルした潜在コードを重み空間に写す。VAE なら ELBO を最大化する。
+</div>
+<p>
+Schürholt et al. [2021, 2022a] は平坦化した重みテンソルを Transformer エンコーダで圧縮し、潜在空間での補間を可能にしました。
+Meynent et al. [2025] は<strong>振る舞いの損失</strong>(\(\theta\) と \(\hat\theta\) の出力の一致)と<strong>構造の損失</strong>を加え、機能的な意味を捉えやすくしています。
+最近は LoRA の生成が目立ちます —— DnD はテキストエンコーダでタスクのプロンプトを作り、ハイパー畳み込み生成器で LoRA に復号。
+ICM-LoRA は微調整済み LLM からタスクベクトルを学び、条件付き VAE で \(\hat\theta_{\text{LoRA}} = D(z),\ z \sim q(z \mid \text{task})\) を生成します。
+SANE は逐次的な自己符号化で深いネットワークへ、Falk et al. [2025b] は Hugging Face 規模に拡張し、ViT-base でもゼロショット生成を示しています。
+</p>
+
+<h3>② GAN</h3>
+<div class="callout math">
+<span class="callout-title">式 (19)</span>
+$$ \min_{G_\phi} \max_{D_\psi} V(D, G) = \mathbb{E}_{\theta \sim p_{\text{data}}}[\log D_\psi(\theta)] + \mathbb{E}_{z \sim p(z)}[\log(1 - D_\psi(G_\phi(z)))] \tag{19} $$
+再構成誤差を明示的に最小化する代わりに、本物の学習済み重み \(\theta_{real}\) と見分けがつかない \(\theta_{gen} = G_\phi(z)\) を生成する。
+</div>
+<p>
+3D 対応の画像合成で特に有効で、GRAF は形状・外観コードを条件付き放射場のパラメータに写し、
+pi-GAN はマッピングネットワークで周波数と位相シフトを通じて層の重みを変調します。
+</p>
+
+<h3>③ 自己回帰</h3>
+<div class="callout math">
+<span class="callout-title">式 (20)</span>
+重みを離散トークンまたは連続チャンクの系列 \(\mathcal{S} = \{s_1, \dots, s_L\}\) に分解し、
+$$ p_\phi(\theta) = \prod_{t=1}^{L} p_\phi(s_t \mid s_{<t}, c) \tag{20} $$
+\(s_{<t}\) は生成済みの重みトークン、\(c\) は任意の条件(タスク埋め込みなど)。
+</div>
+<p>
+IGPG は層ごとに、それまでの生成履歴で条件付けて構造的一貫性を保ち、RPG は再帰機構とトークン化した重み表現で大きな CNN まで拡大。
+最前線は <strong>LLM と重み空間の橋渡し</strong>で、NeuroGen は LLM を微調整してタスク記述を解釈し有効なパラメータを直接出力、
+T2W(Text-to-Weight)はテキスト埋め込みを重み空間に整列させて自然言語プロンプトからのゼロショット合成を可能にしています。
+</p>
+
+<h3 id="diffusion">④ 拡散(反復デノイズ)— 現在の主流</h3>
+<div class="callout math">
+<span class="callout-title">式 (21)(22) — 重み空間の拡散</span>
+前向き(ノイズ付加)過程:
+$$ q(\theta_t \mid \theta_0) = \mathcal{N}\big(\theta_t;\ \sqrt{\bar\alpha_t}\,\theta_0,\ (1 - \bar\alpha_t)\mathbf{I}\big) \tag{21} $$
+デノイズモデル \(f_\phi\) が逆過程を近似:
+$$ p_\phi(\theta_{t-1} \mid \theta_t) \approx q(\theta_{t-1} \mid \theta_t, \theta_0) \tag{22} $$
+学習後は純粋なノイズ \(\theta_T\) から \(\theta_0\) まで反復デノイズしてサンプリングする ——
+“producing model weights <strong>without gradient-based optimization</strong>”
+</div>
+<p class="cite">注: サーベイ本文の式 (21) は \(\sqrt{\alpha_t}\) と表記していますが、ここでは \(\theta_0\) から直接 \(\theta_t\) を得る標準的な DDPM の記法に合わせて累積積 \(\bar\alpha_t\) で書いています(意味は同じ)。</p>
+
+<figure class="diagram" id="diff-fig" data-cycle-ms="14000" data-step-count="4">
+<svg viewBox="0 0 960 360" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="潜在空間での重み拡散の学習と生成の流れ">
+  <defs>
+    <marker id="arrD" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#8a93ad"/>
+    </marker>
+  </defs>
+
+  <g class="d1">
+    <text x="115" y="26" font-size="13" font-weight="bold" text-anchor="middle" fill="#e07b1f">① 学習済み重みを集める</text>
+    <rect x="14" y="40" width="202" height="200" rx="10" fill="#fdeeda" stroke="#e07b1f" stroke-width="2"/>
+    <g font-size="10" text-anchor="middle" font-style="italic">
+      <rect x="34" y="58" width="74" height="24" rx="5" fill="#fff" stroke="#e07b1f"/><text x="71" y="74">θ⁽¹⁾</text>
+      <rect x="122" y="58" width="74" height="24" rx="5" fill="#fff" stroke="#e07b1f"/><text x="159" y="74">θ⁽²⁾</text>
+      <rect x="34" y="90" width="74" height="24" rx="5" fill="#fff" stroke="#e07b1f"/><text x="71" y="106">θ⁽³⁾</text>
+      <rect x="122" y="90" width="74" height="24" rx="5" fill="#fff" stroke="#e07b1f"/><text x="159" y="106">…</text>
+    </g>
+    <text x="115" y="140" font-size="10.5" text-anchor="middle" fill="#5b6478">学習履歴のチェックポイント(G.pt)</text>
+    <text x="115" y="158" font-size="10.5" text-anchor="middle" fill="#5b6478">INR の重み(HyperDiffusion)</text>
+    <text x="115" y="176" font-size="10.5" text-anchor="middle" fill="#5b6478">LoRA モジュール(DiffLoRA, ORAL)</text>
+    <text x="115" y="214" font-size="10.5" text-anchor="middle" fill="#e07b1f" font-weight="bold">= 訓練データ p<tspan baseline-shift="sub" font-size="75%">train</tspan>(W)</text>
+  </g>
+
+  <g class="d2">
+    <text x="345" y="26" font-size="13" font-weight="bold" text-anchor="middle" fill="#3556d4">② 潜在空間へ圧縮</text>
+    <rect x="250" y="40" width="190" height="200" rx="10" fill="#e5eafc" stroke="#3556d4" stroke-width="2"/>
+    <rect x="268" y="80" width="40" height="110" rx="6" fill="#fdeeda" stroke="#e07b1f"/><text x="288" y="140" font-size="12" text-anchor="middle" font-style="italic">θ</text>
+    <path d="M 312 96 L 350 114 L 350 156 L 312 174 Z" fill="#fff" stroke="#3556d4" stroke-width="2"/>
+    <text x="331" y="206" font-size="10" text-anchor="middle" fill="#5b6478">E</text>
+    <rect x="360" y="114" width="26" height="42" rx="4" fill="#3556d4"/>
+    <text x="373" y="176" font-size="11" text-anchor="middle" font-style="italic">z = E(θ)</text>
+    <text x="345" y="226" font-size="10" text-anchor="middle" fill="#5b6478">p-diff: 大きな backbone へ拡大の鍵</text>
+  </g>
+
+  <g class="d3">
+    <text x="600" y="26" font-size="13" font-weight="bold" text-anchor="middle" fill="#7b46c9">③ 潜在で拡散を学習 / 生成</text>
+    <rect x="474" y="40" width="252" height="200" rx="10" fill="#efe6fb" stroke="#7b46c9" stroke-width="2"/>
+    <g>
+      <rect x="494" y="88" width="30" height="42" rx="4" fill="#cdb8f0"/>
+      <rect class="clean" x="494" y="88" width="30" height="42" rx="4" fill="#7b46c9"/>
+      <text x="509" y="148" font-size="10" text-anchor="middle" font-style="italic">z<tspan baseline-shift="sub" font-size="75%">t</tspan></text>
+    </g>
+    <rect x="548" y="82" width="104" height="54" rx="9" fill="#fff" stroke="#7b46c9" stroke-width="2"/>
+    <text x="600" y="106" font-size="12" text-anchor="middle" font-style="italic">f<tspan baseline-shift="sub" font-size="75%">φ</tspan>(z<tspan baseline-shift="sub" font-size="75%">t</tspan>, t, c)</text>
+    <text x="600" y="124" font-size="9.5" text-anchor="middle" fill="#5b6478">デノイザ(Transformer 等)</text>
+    <rect x="676" y="88" width="30" height="42" rx="4" fill="#7b46c9"/>
+    <text x="691" y="148" font-size="10" text-anchor="middle" font-style="italic">z₀</text>
+    <path d="M 526 109 L 546 109" stroke="#8a93ad" stroke-width="2" marker-end="url(#arrD)"/>
+    <path d="M 654 109 L 674 109" stroke="#8a93ad" stroke-width="2" marker-end="url(#arrD)"/>
+    <path d="M 580 80 C 570 62, 509 62, 509 84" fill="none" stroke="#7b46c9" stroke-width="1.6" stroke-dasharray="4 3" marker-end="url(#arrD)"/>
+    <text x="600" y="52" font-size="9.5" text-anchor="middle" fill="#7b46c9">T 回くり返す</text>
+    <rect x="548" y="160" width="104" height="30" rx="6" fill="#fff" stroke="#8a93ad"/>
+    <text x="600" y="180" font-size="10.5" text-anchor="middle">条件 c(任意)</text>
+    <path d="M 600 158 L 600 138" stroke="#8a93ad" stroke-width="1.6" marker-end="url(#arrD)"/>
+    <text x="600" y="214" font-size="10" text-anchor="middle" fill="#5b6478">c = タスク記述・CLIP 特徴・データセット</text>
+    <text x="600" y="230" font-size="10" text-anchor="middle" fill="#5b6478">(COND P-DIFF, T2W, D2NWG …)</text>
+  </g>
+
+  <g class="d4">
+    <text x="840" y="26" font-size="13" font-weight="bold" text-anchor="middle" fill="#1e9e6a">④ 復号して使う</text>
+    <rect x="760" y="40" width="186" height="200" rx="10" fill="#e0f5ec" stroke="#1e9e6a" stroke-width="2"/>
+    <path d="M 780 114 L 816 96 L 816 174 L 780 156 Z" fill="#fff" stroke="#1e9e6a" stroke-width="2"/>
+    <text x="798" y="196" font-size="10" text-anchor="middle" fill="#5b6478">D</text>
+    <rect x="828" y="80" width="40" height="110" rx="6" fill="#fdeeda" stroke="#e07b1f" stroke-width="2"/>
+    <text x="848" y="140" font-size="12" text-anchor="middle" font-style="italic">θ̂</text>
+    <text x="908" y="118" font-size="20" text-anchor="middle">🧠</text>
+    <text x="908" y="146" font-size="10" text-anchor="middle" fill="#1e9e6a">すぐ使える</text>
+    <text x="853" y="226" font-size="10" text-anchor="middle" fill="#5b6478">θ₀ = D(f<tspan baseline-shift="sub" font-size="75%">φ</tspan>(θ<tspan baseline-shift="sub" font-size="75%">T</tspan>, c))(D2NWG)</text>
+  </g>
+
+  <g fill="none" stroke="#8a93ad" stroke-width="2" marker-end="url(#arrD)">
+    <path class="flow-edge" d="M 218 140 L 248 140"/>
+    <path class="flow-edge" d="M 442 140 L 472 140"/>
+    <path class="flow-edge" d="M 728 140 L 758 140"/>
+  </g>
+
+  <rect x="14" y="262" width="932" height="88" rx="12" fill="#f2f4fa" stroke="#7b46c9" stroke-width="1.5"/>
+  <text x="480" y="286" font-size="12.5" font-weight="bold" text-anchor="middle" fill="#7b46c9">ハイパーネットとの違い(§4.1.2)</text>
+  <text x="480" y="310" font-size="11" text-anchor="middle" fill="#5b6478">“Compared with hypernetworks, which condition weight generation on prompts, diffusion-based methods</text>
+  <text x="480" y="328" font-size="11" text-anchor="middle" fill="#5b6478">learn the <tspan font-weight="bold">intrinsic distribution of weight space itself</tspan>, enabling synthesis that preserves functional diversity and architectural semantics.”</text>
+</svg>
+<figcaption>
+潜在拡散による重み生成の流れ。②の潜在化(p-diff が導入)は必須ではなく、G.pt や HyperDiffusion は重みを直接デノイズします。
+③のアニメーションは、潜在がノイズから構造を持った状態へ近づく様子を表しています。
+</figcaption>
+</figure>
+
+<p>
+§4.1.2 の拡散系の発展を時系列で整理すると次の通りです。
+</p>
+<table>
+  <tr><th>段階</th><th>手法</th><th>サーベイの記述</th></tr>
+  <tr><td rowspan="3">小さなネットで実証</td><td>G.pt [Peebles+ 2022]</td><td>学習履歴のチェックポイントで Transformer デノイザを学習し、新しいネットワークをゼロから生成</td></tr>
+  <tr><td>HyperDiffusion [Erkoç+ 2023]</td><td>同様のデノイズを INR に適用</td></tr>
+  <tr><td>GPD / BEND</td><td>時空間 GNN への拡張 / 複数のデノイズサンプルをアンサンブルして頑健化</td></tr>
+  <tr><td rowspan="2">潜在化で大きな backbone へ</td><td>p-diff [Wang+ 2024a]</td><td>拡散の前に潜在表現 \(z = E(\theta)\) を導入し、ViT-Base・ConvNeXt-Base まで生成</td></tr>
+  <tr><td>FLoWN [Saragih+ 2025]</td><td>潜在の重み空間で、条件付きベクトル場による連続軌道を学ぶ flow matching</td></tr>
+  <tr><td rowspan="4">条件付き・LLM 規模へ</td><td>COND P-DIFF / DiffLoRA</td><td>条件入力で LoRA を高速に適応 / 視覚特徴で条件付けた DiT が T2I 拡散モデル用の重みを生成</td></tr>
+  <tr><td>RPG [Wang+ 2025b]</td><td>再帰的なデノイズ構造で ConvNeXt-Large 規模へ</td></tr>
+  <tr><td>ORAL [Khan+ 2025]</td><td>デノイズ軌道に条件制御を加え、<strong>Mistral-7B・Qwen-7B-VL</strong> の個人化 LoRA を生成</td></tr>
+  <tr><td>D2NWG [Soro+ 2025b]</td><td>データセット・タスク記述で条件付け、<strong>GPT-2</strong> の重みを潜在空間で生成</td></tr>
+</table>
+
+<div class="codeblock pseudo">
+<div class="codehead"><span class="path">⚠️ 擬似コード — 式 (21)(22) と p-diff / D2NWG の記述から再構成(特定の論文の実装ではない)</span></div>
+<pre><code class="language-python"># 潜在空間での重み拡散。変数名・構造は本解説による再構成。
+
+# --- 段階 1: 重みのオートエンコーダ(式 18 の形) ---
+for theta in model_zoo:                       # 学習済み重み(または LoRA)の集合
+    z = E(flatten(theta)); theta_hat = D(z)
+    loss = mse(theta_hat, theta)              # 振る舞いの損失を足す変種もある(Meynent+ 2025)
+    ...
+
+# --- 段階 2: 潜在で拡散モデルを学習(式 21, 22) ---
+for theta, c in model_zoo_with_conditions:    # c: タスク記述・データセット埋め込みなど(任意)
+    z0 = E(flatten(theta)).detach()
+    t = randint(1, T); eps = randn_like(z0)
+    zt = sqrt(abar[t]) * z0 + sqrt(1 - abar[t]) * eps   # 式 (21)
+    loss = mse(f_phi(zt, t, c), eps)                    # 逆過程 (22) をノイズ予測で近似
+    ...
+
+# --- 生成: ノイズから反復デノイズ → 復号 → そのまま評価 ---
+z = randn(latent_dim)
+for t in reversed(range(1, T + 1)):
+    z = denoise_step(f_phi, z, t, c)          # p_φ(z_{t-1} | z_t)
+theta_new = unflatten(D(z))                   # θ₀ = D(f_φ(θ_T, c))
+acc = evaluate(target_arch.load(theta_new))   # 勾配降下なしで得たモデルを評価</code></pre>
+</div>
+
+<h2 id="usecases">技術レベルのユースケース(§4.2)</h2>
+<p>
+“WSG serves as a unified mechanism for <strong>adaptive model specialization</strong>, enabling weights to be synthesized on demand for new tasks, domains, or conditions without full retraining.”
+</p>
+<table>
+  <tr><th>ユースケース</th><th>何が嬉しいか</th><th>代表例</th></tr>
+  <tr><td><strong>条件付き重み生成</strong>(§4.2.1)</td><td>タスク・ドメイン・意味条件に特化した重みを合成</td>
+  <td>Sylph(新カテゴリの分類器重み)、HyperLDM(CLIP 特徴で条件付け)、T2W(自然言語から分類ヘッド)、Li+ 2025(新ドメイン用 LoRA)</td></tr>
+  <tr><td><strong>実時間の重み最適化</strong>(§4.2.2)</td><td>入力ごとの勾配微調整を 1 回の順伝播で置き換える</td>
+  <td>HyperSeg(エンコーダがハイパーネットを兼ねる)、HyperStyle(StyleGAN の高速反転)、Wild-P-Diff(位置条件付き拡散で野生動物分類ヘッド)</td></tr>
+  <tr><td><strong>モデルマージ</strong>(§4.2.3)</td><td>単純平均は置換対称性・スケールの食い違いに弱い → 潜在空間で統合</td>
+  <td>model zoo を共有表現空間に埋め込みサンプリング(Schürholt+ 2022a)、Zeng+ 2025、Deep-Align(DWSNets で整列してからマージ)</td></tr>
+  <tr><td><strong>重みの初期化</strong>(§4.2.4)</td><td>ランダム初期化より良い出発点で収束を速める</td>
+  <td>G.pt、GHN-3(未知のモデルの初期化を予測)、hyper-representation の復号、HyperDreamBooth(LoRA 初期化)</td></tr>
+  <tr><td><strong>学習の加速</strong>(§4.2.5)</td><td>未来の重みを予測し、最適化を「先回り」させる</td>
+  <td>WNN(過去の重み系列から次の更新を予測)、NiNo(ニューロン接続と GNN でより正確に nowcast)</td></tr>
+  <tr><td><strong>データ生成</strong>(§4.2.6)</td><td>INR では重みの生成 = データの生成</td>
+  <td>Littwin & Wolf(ShapeNet の INR)、GASP、NeuMeta(VAE 潜在から INR)、pi-GAN</td></tr>
+</table>
+
+<h2 id="discussion">議論 — WSG の強みと限界(§4.3)</h2>
+<div class="callout point">
+<span class="callout-title">強み</span>
+“WSG <strong>decouples the act of constructing a model from the process of training it</strong>.”
+意味条件からモデルの族を合成する、学習済み解を補間・再結合する、データを再訪せずに事前知識を反映したモデルを作る ——
+勾配学習では表現しにくい能力が得られます。
+</div>
+<div class="callout warn">
+<span class="callout-title">限界と未解決課題</span>
+<ul style="margin:0.3rem 0 0">
+  <li>重み空間は高次元・異種で、<strong>多くの生成モデルが明示的に符号化していない対称性</strong>で形作られている [Navon+ 2023]</li>
+  <li>分布の学習には大量の学習済みネットワークが要り、生成器は<strong>脆い</strong>: “small conditioning shifts may lead to large functional deviations”</li>
+  <li><strong>生成モデルの評価が難しい</strong>: “performance alone does not reveal whether structural, functional, or symmetry-preserving properties are retained”(→ <a href="benchmarks.html#critique">評価編</a>)</li>
+</ul>
+</div>
+<p>
+展望は 3 つ: <strong>① WSR の構造的不変性を WSG に統合</strong>した幾何を意識した生成、
+<strong>② コンパクトで表現力のある潜在空間</strong>による次元削減と制御性、
+<strong>③ 生成と選択的な微調整のハイブリッド</strong>による信頼性。
+</p>
+
+<nav class="pager">
+  <a href="representation.html"><span class="dir">← 前へ</span><span class="title">2. 重み空間の表現 (WSR)</span></a>
+  <a class="next" href="benchmarks.html"><span class="dir">次へ →</span><span class="title">4. 評価方法とベンチマーク</span></a>
+</nav>
+
+</main>
+
+<footer class="site-footer">
+  <p>論文: <em>A Survey of Weight Space Learning: Understanding, Representation, and Generation</em>(Han, Wang+, 2026)/
+  <a href="https://arxiv.org/abs/2603.10090" target="_blank" rel="noopener">arXiv:2603.10090</a></p>
+  <p>このサイトのコンテンツはAIとの協働で作成しています。記述されている内容には間違いが含まれることがあるので、正確性については一次資料をチェックしてください。</p>
+</footer>
+
+<script>
+MathJax = { tex: { inlineMath: [['\\(', '\\)']], displayMath: [['$$', '$$']] } };
+</script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js" async></script>
+<script src="assets/diagram-controls.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-core.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-python.min.js"></script>
+<script>
+// ===== hypernetwork parameter-count calculator (formula from §4.1.1) =====
+(() => {
+  const root = document.getElementById('hn-calc');
+  if (!root) return;
+  const out = root.querySelector('#hn-out');
+  const inputs = root.querySelectorAll('input[data-k]');
+  const fmt = (n) => n.toLocaleString('en-US');
+  const update = () => {
+    const v = {};
+    inputs.forEach((el) => {
+      v[el.dataset.k] = Number(el.value);
+      root.querySelector(`output[data-o="${el.dataset.k}"]`).textContent = el.value;
+    });
+    const direct = v.L * v.Nin * v.Nout * v.f * v.f;
+    const terms = [v.L * v.d, v.h * v.d * v.Nin, v.h * v.Nout * v.f * v.f];
+    const hyper = terms.reduce((a, b) => a + b, 0);
+    const max = Math.max(direct, hyper);
+    const w = (x) => Math.max(2, Math.round((x / max) * 100));
+    const ratio = hyper / direct;
+    out.innerHTML =
+      `<div>直接学習  L·N<sub>in</sub>·N<sub>out</sub>·f² = <strong>${fmt(direct)}</strong></div>` +
+      `<div><span class="bar" style="width:${w(direct)}%;background:#e07b1f"></span></div>` +
+      `<div style="margin-top:0.4rem">ハイパーネット  L·d + h·d·N<sub>in</sub> + h·N<sub>out</sub>·f² = ` +
+      `${fmt(terms[0])} + ${fmt(terms[1])} + ${fmt(terms[2])} = <strong>${fmt(hyper)}</strong></div>` +
+      `<div><span class="bar" style="width:${w(hyper)}%;background:#7b46c9"></span></div>` +
+      `<div style="margin-top:0.4rem">比率 = <strong class="${ratio < 1 ? 'ok' : 'ng'}">${(ratio * 100).toFixed(1)}%</strong>` +
+      (ratio < 1 ? '(ハイパーネットの方が少ない)' : '(この設定ではハイパーネットの方が多い)') + '</div>';
+  };
+  inputs.forEach((el) => el.addEventListener('input', update));
+  update();
+})();
+</script>
+</body>
+</html>

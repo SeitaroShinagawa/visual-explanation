@@ -1,0 +1,585 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WSL 表現編 — 重みを埋め込むメタモデル</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🧬</text></svg>">
+<link rel="stylesheet" href="assets/style.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/themes/prism-tomorrow.min.css">
+<style>
+/* ===== meta-model pipeline: 3 stages (12s) ===== */
+@keyframes mm-turn {
+  0%, 2% { opacity: 0.22; }
+  6%, 30% { opacity: 1; }
+  34%, 100% { opacity: 0.22; }
+}
+#meta-fig .t1 { animation: mm-turn 12s ease-in-out infinite backwards; }
+#meta-fig .t2 { animation: mm-turn 12s ease-in-out infinite backwards; animation-delay: 4s; }
+#meta-fig .t3 { animation: mm-turn 12s ease-in-out infinite backwards; animation-delay: 8s; }
+
+/* ===== four families: 4 stages (14s) ===== */
+@keyframes rp-bright {
+  0%, 25%, 100% { opacity: 0.28; }
+  4%, 21% { opacity: 1; }
+}
+#rep-fig .r1 { animation: rp-bright 14s ease-in-out infinite backwards; }
+#rep-fig .r2 { animation: rp-bright 14s ease-in-out infinite backwards; animation-delay: 3.5s; }
+#rep-fig .r3 { animation: rp-bright 14s ease-in-out infinite backwards; animation-delay: 7s; }
+#rep-fig .r4 { animation: rp-bright 14s ease-in-out infinite backwards; animation-delay: 10.5s; }
+
+/* ===== graph view: 3 stages (12s) ===== */
+#graph-fig .g1 { animation: mm-turn 12s ease-in-out infinite backwards; }
+#graph-fig .g2 { animation: mm-turn 12s ease-in-out infinite backwards; animation-delay: 4s; }
+#graph-fig .g3 { animation: mm-turn 12s ease-in-out infinite backwards; animation-delay: 8s; }
+/* messages travelling along edges during stage 3 */
+@keyframes msg-move {
+  0% { transform: translate(0, 0); opacity: 0; }
+  15% { opacity: 1; }
+  85% { opacity: 1; }
+  100% { transform: translate(var(--mx), var(--my)); opacity: 0; }
+}
+#graph-fig .msg { animation: msg-move 1.6s linear infinite; }
+
+/* ===== use cases: 3 stages (12s) ===== */
+#use-fig .u1 { animation: mm-turn 12s ease-in-out infinite backwards; }
+#use-fig .u2 { animation: mm-turn 12s ease-in-out infinite backwards; animation-delay: 4s; }
+#use-fig .u3 { animation: mm-turn 12s ease-in-out infinite backwards; animation-delay: 8s; }
+
+@media (prefers-reduced-motion: reduce) {
+  #meta-fig .t1, #meta-fig .t2, #meta-fig .t3,
+  #rep-fig .r1, #rep-fig .r2, #rep-fig .r3, #rep-fig .r4,
+  #graph-fig .g1, #graph-fig .g2, #graph-fig .g3,
+  #use-fig .u1, #use-fig .u2, #use-fig .u3 { opacity: 1; }
+  #graph-fig .msg { opacity: 0; }
+}
+</style>
+</head>
+<body>
+
+<nav class="topnav">
+  <a class="home-link" href="../index.html">Visual Explanation</a><span class="sep">/</span>
+  <a href="./index.html">WSL 概要</a>
+  <a href="understanding.html">1. 理解 (WSU)</a>
+  <a href="representation.html" class="current">2. 表現 (WSR)</a>
+  <a href="generation.html">3. 生成 (WSG)</a>
+  <a href="benchmarks.html">4. 評価とベンチマーク</a>
+  <a href="outlook.html">5. 応用・トレンド・課題</a>
+</nav>
+
+<header class="page-header">
+  <h1>2. 重み空間の表現 (WSR)</h1>
+  <p>ネットワークの重みを入力にとり、その<strong>性質・振る舞い・機能</strong>を捉えた埋め込みを出力する
+  「ネットワークのためのネットワーク」—— <strong>メタモデル</strong>をどう設計し、どう学習するか(サーベイ §3)。</p>
+</header>
+
+<main class="article">
+
+<h2 id="setup">問題設定 — 重みを入力とするメタモデル</h2>
+<div class="callout point">
+<span class="callout-title">サーベイ §3 冒頭</span>
+“Unlike traditional representation learning, WSR focuses on <strong>encoding the learners of data</strong>,
+allowing reasoning, retrieval, or prediction directly in the model space.”
+</div>
+
+<div class="callout math">
+<span class="callout-title">式 (3)(4) — 表現関数と下流タスク</span>
+重み \(\theta \in \Theta\) を低次元の埋め込みに写す表現関数 \(\phi: \Theta \to \mathbb{R}^d\) と、
+それを使う下流の写像 \(g\) の組:
+$$ z = \phi(\theta) \tag{3} $$
+$$ y = g(z), \quad \text{with}\quad g: \mathbb{R}^d \to \mathcal{Y} \tag{4} $$
+\(\mathcal{Y}\) はタスク固有の出力空間(精度の回帰、性質の離散分類など)。
+“Here, \(\phi\) and \(g\) together form a <strong>meta-model that learns from networks instead of data</strong>”
+</div>
+
+<figure class="diagram" id="meta-fig" data-cycle-ms="12000" data-step-count="3">
+<svg viewBox="0 0 940 300" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="メタモデルの学習データ・エンコーダ・下流ヘッドの流れ">
+  <defs>
+    <marker id="arrT" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#8a93ad"/>
+    </marker>
+  </defs>
+  <g class="t1">
+    <text x="150" y="26" font-size="13" font-weight="bold" text-anchor="middle" fill="#e07b1f">① 学習データ = model zoo</text>
+    <rect x="14" y="40" width="272" height="196" rx="10" fill="#fdeeda" stroke="#e07b1f" stroke-width="2"/>
+    <g font-size="10.5">
+      <text x="30" y="64" fill="#5b6478">重み</text><text x="170" y="64" fill="#5b6478">ラベル(メタデータ)</text>
+      <rect x="30" y="74" width="120" height="24" rx="5" fill="#fff" stroke="#e07b1f"/><text x="90" y="91" text-anchor="middle" font-style="italic">θ₁</text>
+      <rect x="170" y="74" width="100" height="24" rx="5" fill="#fff" stroke="#8a93ad"/><text x="220" y="91" text-anchor="middle">acc 0.91</text>
+      <rect x="30" y="104" width="120" height="24" rx="5" fill="#fff" stroke="#e07b1f"/><text x="90" y="121" text-anchor="middle" font-style="italic">θ₂</text>
+      <rect x="170" y="104" width="100" height="24" rx="5" fill="#fff" stroke="#8a93ad"/><text x="220" y="121" text-anchor="middle">acc 0.62</text>
+      <rect x="30" y="134" width="120" height="24" rx="5" fill="#fff" stroke="#e07b1f"/><text x="90" y="151" text-anchor="middle" font-style="italic">θ₃</text>
+      <rect x="170" y="134" width="100" height="24" rx="5" fill="#fff" stroke="#8a93ad"/><text x="220" y="151" text-anchor="middle">lr=1e-3, tanh</text>
+      <text x="90" y="176" text-anchor="middle" fill="#8a93ad">⋮</text><text x="220" y="176" text-anchor="middle" fill="#8a93ad">⋮</text>
+      <text x="150" y="206" text-anchor="middle" fill="#5b6478">同じ構造・違う学習設定で</text>
+      <text x="150" y="223" text-anchor="middle" fill="#5b6478">数千〜数百万モデルを用意</text>
+    </g>
+  </g>
+  <g class="t2">
+    <text x="470" y="26" font-size="13" font-weight="bold" text-anchor="middle" fill="#3556d4">② エンコーダ φ<tspan baseline-shift="sub" font-size="75%">ψ</tspan></text>
+    <rect x="330" y="40" width="280" height="196" rx="10" fill="#e5eafc" stroke="#3556d4" stroke-width="2"/>
+    <rect x="350" y="70" width="240" height="40" rx="8" fill="#fff" stroke="#3556d4" stroke-width="2"/>
+    <text x="470" y="95" font-size="12" text-anchor="middle">重み θ を読む専用のネットワーク</text>
+    <text x="470" y="136" font-size="10.5" text-anchor="middle" fill="#5b6478">MLP / CNN / Transformer(対称性非考慮)</text>
+    <text x="470" y="154" font-size="10.5" text-anchor="middle" fill="#5b6478">DWSNets / NFN(置換同変層)</text>
+    <text x="470" y="172" font-size="10.5" text-anchor="middle" fill="#5b6478">GNN(重みをグラフとして読む)</text>
+    <text x="470" y="190" font-size="10.5" text-anchor="middle" fill="#5b6478">プローブ応答の集約(重みを見ない)</text>
+    <text x="470" y="222" font-size="11" text-anchor="middle" fill="#3556d4" font-weight="bold">z = φ<tspan baseline-shift="sub" font-size="75%">ψ</tspan>(θ) ∈ ℝᵈ</text>
+  </g>
+  <g class="t3">
+    <text x="780" y="26" font-size="13" font-weight="bold" text-anchor="middle" fill="#1e9e6a">③ 下流ヘッド g / ψ</text>
+    <rect x="654" y="40" width="272" height="196" rx="10" fill="#e0f5ec" stroke="#1e9e6a" stroke-width="2"/>
+    <g font-size="11" text-anchor="middle">
+      <rect x="674" y="62" width="232" height="34" rx="7" fill="#fff" stroke="#1e9e6a"/><text x="790" y="84">精度・汎化ギャップの回帰</text>
+      <rect x="674" y="104" width="232" height="34" rx="7" fill="#fff" stroke="#1e9e6a"/><text x="790" y="126">ハイパーパラメータの分類</text>
+      <rect x="674" y="146" width="232" height="34" rx="7" fill="#fff" stroke="#1e9e6a"/><text x="790" y="168">類似モデルの検索・編集</text>
+    </g>
+    <text x="790" y="214" font-size="10.5" text-anchor="middle" fill="#5b6478">元の学習データには一切触れない</text>
+  </g>
+  <g fill="none" stroke="#8a93ad" stroke-width="2" marker-end="url(#arrT)">
+    <path class="flow-edge" d="M 288 138 L 326 138"/>
+    <path class="flow-edge" d="M 612 138 L 650 138"/>
+  </g>
+  <text x="470" y="272" font-size="11.5" text-anchor="middle" fill="#1c2333">“φ and g together form a meta-model that learns from <tspan font-weight="bold">networks</tspan> instead of <tspan font-weight="bold">data</tspan>”</text>
+</svg>
+<figcaption>
+WSR のメタモデル。入力は画像やテキストではなく<strong>学習済みネットワークの重み</strong>で、
+学習データは「重み + そのモデルについてのラベル」の組からなる model zoo です(→ <a href="benchmarks.html">評価編</a>)。
+</figcaption>
+</figure>
+
+<div class="callout warn">
+<span class="callout-title">WSR が直面する 2 つの根本的課題(§3)</span>
+<strong>① モダリティの異質性</strong>: “different architectures exhibit different parameter organizations and scaling behaviors,
+making unified representations difficult to learn”<br>
+<strong>② 高次元性</strong>: “modern architectures contain millions of weights, and the resulting overparameterization
+poses challenges to learning compact and semantically consistent representations”<br>
+これに加えて、<a href="understanding.html#symmetry">理解編</a>で見た<strong>対称性</strong>をどう扱うかが、手法の分類軸そのものになります。
+</div>
+
+<h2 id="families">表現手法の 4 系統</h2>
+<p>
+§3.1 はまず大きく <strong>Model-based</strong>(重みそのものを読む)と <strong>Model-free</strong>(関数としての振る舞いを読む)に分け、
+前者をさらに対称性の扱い方で 3 段階に分けます。
+“WSR evolves from <strong>handcrafted symmetry modeling</strong> toward <strong>automatic discovery</strong> of functional regularities.”
+</p>
+
+<figure class="diagram" id="rep-fig" data-cycle-ms="14000" data-step-count="4">
+<svg viewBox="0 0 960 440" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="重み空間表現の 4 系統: 対称性非考慮・対称性考慮・グラフ型・プローブ型">
+  <defs>
+    <marker id="arrR" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#5b6478"/>
+    </marker>
+  </defs>
+  <rect x="8" y="8" width="704" height="424" rx="14" fill="#fdf6ee" stroke="#e7c9a5"/>
+  <text x="360" y="30" font-size="12.5" font-weight="bold" text-anchor="middle" fill="#a8641c">(a) Model-based — 重み θ を直接入力する</text>
+  <rect x="722" y="8" width="230" height="424" rx="14" fill="#f2f4fa" stroke="#c8cfe0"/>
+  <text x="837" y="30" font-size="12.5" font-weight="bold" text-anchor="middle" fill="#3556d4">(b) Model-free</text>
+
+  <!-- 1 agnostic -->
+  <g class="r1">
+    <text x="122" y="58" font-size="13" font-weight="bold" text-anchor="middle" fill="#d43d51">① 対称性非考慮</text>
+    <rect x="42" y="74" width="160" height="30" rx="6" fill="#fff" stroke="#e07b1f"/>
+    <text x="122" y="94" font-size="11" text-anchor="middle">vec(θ) をそのまま</text>
+    <path d="M 122 106 L 122 134" stroke="#5b6478" stroke-width="1.6" marker-end="url(#arrR)"/>
+    <text x="132" y="124" font-size="9.5" fill="#d43d51">区別しない</text>
+    <rect x="62" y="138" width="120" height="40" rx="8" fill="#fff" stroke="#d43d51" stroke-width="2"/>
+    <text x="122" y="163" font-size="12" text-anchor="middle" font-style="italic">φ<tspan baseline-shift="sub" font-size="75%">ψ</tspan>(·)</text>
+    <text x="122" y="198" font-size="10" text-anchor="middle" fill="#5b6478">MLP・CNN・決定木・</text>
+    <text x="122" y="213" font-size="10" text-anchor="middle" fill="#5b6478">Transformer</text>
+    <text x="122" y="248" font-size="11" text-anchor="middle" fill="#d43d51" font-weight="bold">z = φ<tspan baseline-shift="sub" font-size="75%">ψ</tspan>(θ) … 式 (5)</text>
+    <text x="122" y="276" font-size="10" text-anchor="middle" fill="#5b6478">Martin+ 2021(スペクトル統計)</text>
+    <text x="122" y="292" font-size="10" text-anchor="middle" fill="#5b6478">Eilertsen+ 2020 / Unterthiner+ 2020</text>
+    <text x="122" y="308" font-size="10" text-anchor="middle" fill="#5b6478">HyperReps (Schürholt+ 2021)</text>
+    <text x="122" y="346" font-size="10.5" text-anchor="middle" fill="#d43d51">✗ 置換すると埋め込みが変わる</text>
+    <text x="122" y="362" font-size="10.5" text-anchor="middle" fill="#d43d51">✗ 構造をまたいで汎化しにくい</text>
+  </g>
+
+  <!-- 2 aware -->
+  <g class="r2">
+    <text x="360" y="58" font-size="13" font-weight="bold" text-anchor="middle" fill="#e07b1f">② 対称性考慮</text>
+    <rect x="280" y="74" width="160" height="30" rx="6" fill="#fff" stroke="#e07b1f"/>
+    <text x="360" y="94" font-size="11" text-anchor="middle">層ごとの重み W₁, …, W<tspan baseline-shift="sub" font-size="75%">L</tspan></text>
+    <path d="M 360 106 L 360 134" stroke="#5b6478" stroke-width="1.6" marker-end="url(#arrR)"/>
+    <rect x="282" y="138" width="156" height="40" rx="8" fill="#fff" stroke="#e07b1f" stroke-width="2"/>
+    <text x="360" y="156" font-size="10.5" text-anchor="middle" font-weight="bold">置換同変層 × k</text>
+    <text x="360" y="171" font-size="10" text-anchor="middle" fill="#5b6478">+ 不変プーリング</text>
+    <text x="360" y="198" font-size="10" text-anchor="middle" fill="#5b6478">対称性を「手で」組み込む</text>
+    <text x="360" y="213" font-size="10" text-anchor="middle" fill="#5b6478">(パラメータ共有)</text>
+    <text x="360" y="248" font-size="11" text-anchor="middle" fill="#e07b1f" font-weight="bold">φ<tspan baseline-shift="sub" font-size="75%">ψ</tspan>(Pθ) = φ<tspan baseline-shift="sub" font-size="75%">ψ</tspan>(θ)</text>
+    <text x="360" y="276" font-size="10" text-anchor="middle" fill="#5b6478">DWSNets (Navon+ 2023)</text>
+    <text x="360" y="292" font-size="10" text-anchor="middle" fill="#5b6478">NFN / NFT (Zhou+ 2023a,b) / UNF</text>
+    <text x="360" y="308" font-size="10" text-anchor="middle" fill="#5b6478">Monomial-NFN / MAGEP-NFN</text>
+    <text x="360" y="346" font-size="10.5" text-anchor="middle" fill="#1e9e6a">✓ 置換で不変・同変</text>
+    <text x="360" y="362" font-size="10.5" text-anchor="middle" fill="#d43d51">✗ 構造ごとに手設計が必要</text>
+  </g>
+
+  <!-- 3 graph -->
+  <g class="r3">
+    <text x="598" y="58" font-size="13" font-weight="bold" text-anchor="middle" fill="#1e9e6a">③ グラフ型</text>
+    <rect x="518" y="74" width="160" height="30" rx="6" fill="#fff" stroke="#e07b1f"/>
+    <text x="598" y="94" font-size="11" text-anchor="middle">θ → 計算グラフ 𝒢</text>
+    <path d="M 598 106 L 598 134" stroke="#5b6478" stroke-width="1.6" marker-end="url(#arrR)"/>
+    <g>
+      <line x1="560" y1="150" x2="600" y2="140" stroke="#1e9e6a"/><line x1="560" y1="150" x2="600" y2="170" stroke="#1e9e6a"/>
+      <line x1="600" y1="140" x2="640" y2="158" stroke="#1e9e6a"/><line x1="600" y1="170" x2="640" y2="158" stroke="#1e9e6a"/>
+      <line x1="560" y1="172" x2="600" y2="140" stroke="#1e9e6a"/><line x1="560" y1="172" x2="600" y2="170" stroke="#1e9e6a"/>
+      <circle cx="560" cy="150" r="6" fill="#fff" stroke="#1e9e6a" stroke-width="2"/><circle cx="560" cy="172" r="6" fill="#fff" stroke="#1e9e6a" stroke-width="2"/>
+      <circle cx="600" cy="140" r="6" fill="#1e9e6a"/><circle cx="600" cy="170" r="6" fill="#1e9e6a"/>
+      <circle cx="640" cy="158" r="6" fill="#fff" stroke="#1e9e6a" stroke-width="2"/>
+    </g>
+    <text x="598" y="198" font-size="10" text-anchor="middle" fill="#5b6478">ノード=ニューロン(バイアス)</text>
+    <text x="598" y="213" font-size="10" text-anchor="middle" fill="#5b6478">エッジ=重み → GNN</text>
+    <text x="598" y="248" font-size="11" text-anchor="middle" fill="#1e9e6a" font-weight="bold">z = GNN<tspan baseline-shift="sub" font-size="75%">ψ</tspan>(𝒢) … 式 (6)</text>
+    <text x="598" y="276" font-size="10" text-anchor="middle" fill="#5b6478">Neural Graph (Kofinas+ 2024a)</text>
+    <text x="598" y="292" font-size="10" text-anchor="middle" fill="#5b6478">GMN (Lim+ 2024)</text>
+    <text x="598" y="308" font-size="10" text-anchor="middle" fill="#5b6478">Scale-GMN (Kalogeropoulos+ 2024)</text>
+    <text x="598" y="346" font-size="10.5" text-anchor="middle" fill="#1e9e6a">✓ 置換不変性が自動で得られる</text>
+    <text x="598" y="362" font-size="10.5" text-anchor="middle" fill="#1e9e6a">✓ 異なる構造を同じ GNN で</text>
+  </g>
+
+  <!-- 4 probe -->
+  <g class="r4">
+    <text x="837" y="58" font-size="13" font-weight="bold" text-anchor="middle" fill="#3556d4">④ プローブ型</text>
+    <g font-size="10" text-anchor="middle">
+      <rect x="752" y="74" width="34" height="30" rx="5" fill="#fff" stroke="#3556d4"/><text x="769" y="94">x₁</text>
+      <rect x="790" y="74" width="34" height="30" rx="5" fill="#fff" stroke="#3556d4"/><text x="807" y="94">x₂</text>
+      <text x="840" y="94">…</text>
+      <rect x="856" y="74" width="34" height="30" rx="5" fill="#fff" stroke="#3556d4"/><text x="873" y="94">x<tspan baseline-shift="sub" font-size="75%">m</tspan></text>
+    </g>
+    <path d="M 822 106 L 822 134" stroke="#5b6478" stroke-width="1.6" marker-end="url(#arrR)"/>
+    <rect x="757" y="138" width="160" height="40" rx="8" fill="#fff" stroke="#3556d4" stroke-width="2"/>
+    <text x="837" y="156" font-size="10.5" text-anchor="middle">対象モデル f<tspan baseline-shift="sub" font-size="75%">θ</tspan> に通す</text>
+    <text x="837" y="171" font-size="10" text-anchor="middle" fill="#5b6478">(ブラックボックスで可)</text>
+    <text x="837" y="198" font-size="10" text-anchor="middle" fill="#5b6478">応答 {f<tspan baseline-shift="sub" font-size="75%">θ</tspan>(x<tspan baseline-shift="sub" font-size="75%">i</tspan>)} を</text>
+    <text x="837" y="213" font-size="10" text-anchor="middle" fill="#5b6478">固定長の署名に集約</text>
+    <text x="837" y="248" font-size="11" text-anchor="middle" fill="#3556d4" font-weight="bold">z = ℰ({f<tspan baseline-shift="sub" font-size="75%">θ</tspan>(x<tspan baseline-shift="sub" font-size="75%">i</tspan>)}) … 式 (8)</text>
+    <text x="837" y="276" font-size="10" text-anchor="middle" fill="#5b6478">ProbeLog / ProbeGen (Kahana+ 2025)</text>
+    <text x="837" y="292" font-size="10" text-anchor="middle" fill="#5b6478">ProbeX (Horwitz+ 2025a)</text>
+    <text x="837" y="308" font-size="10" text-anchor="middle" fill="#5b6478">対話的プロービング (Herrmann+ 2024)</text>
+    <text x="837" y="346" font-size="10.5" text-anchor="middle" fill="#1e9e6a">✓ 構造に依存しない</text>
+    <text x="837" y="362" font-size="10.5" text-anchor="middle" fill="#1e9e6a">✓ 対称性に自然に不変</text>
+  </g>
+
+  <text x="480" y="410" font-size="11.5" text-anchor="middle" fill="#1c2333">手設計の対称性(①→②)から、構造が対称性を自動で担う設計(③)、そして重みを見ない設計(④)へ</text>
+</svg>
+<figcaption>
+WSR の 4 系統(サーベイ Figure 5 を再構成)。①〜③ は重み θ を直接入力する Model-based、④ はモデルに入力を通した応答だけを使う Model-free です。
+</figcaption>
+</figure>
+
+<h3 id="agnostic">① 対称性非考慮エンコーダ</h3>
+<p>
+初期の研究は、重み表現を<strong>統計・回帰問題</strong>として扱いました。
+Martin et al. [2021] は重み行列のスペクトルノルムや特異値統計からモデルの質を予測し、
+Eilertsen et al. [2020] と Unterthiner et al. [2020] は CNN・MLP・勾配ブースティング木で重みだけからネットワークを分類・順位付けしました。
+Schürholt et al. [2021] は model zoo 上で Transformer ベースの <strong>自己教師あり hyper-representation</strong> を提案しています。
+</p>
+<div class="callout math">
+<span class="callout-title">式 (5)</span>
+$$ z = \phi_\psi(\theta), \quad \text{where } \psi \text{ denotes the learnable parameters of the encoder} \tag{5} $$
+“without imposing constraints on \(\phi_\psi\) to respect architectural symmetries. While simple and flexible,
+such models <strong>often fail to generalize across architectures</strong>, as they ignore the inherent permutation and scaling invariances of neural networks.”
+</div>
+<p>
+理解編の<a href="understanding.html#perm-demo">デモ</a>で「素朴なエンコーダ」の値が置換で変わったのがまさにこの問題です。
+同じ関数を表す \(n!\) 通りの重みに、別々の埋め込みが割り当てられてしまいます。
+</p>
+
+<h3 id="aware">② 対称性考慮アーキテクチャ</h3>
+<p>
+そこで、<strong>同値なパラメータ化が同じ表現になる</strong>ことを構造で保証するのが次の世代です。
+</p>
+<div class="callout point">
+<span class="callout-title">DWSNets と NFN(§3.1.1)</span>
+“DWSNets achieve permutation invariance by characterizing the space of all linear equivariant layers for the permutation symmetries of MLP weight spaces.
+[…] their linear layers combine layers inspired by <strong>DeepSets</strong> [Zaheer et al., 2017] and its generalizations to multiple sets
+[Hartford et al., 2018], ensuring that neuron reordering leaves the embedding unchanged.
+NFN derived an equivalent architecture with a slightly improved scaling due to the use of smart positional encodings for input/output neurons.”
+</div>
+<p>
+直感的には、<strong>「各ニューロンに同じ処理を施し、順序に依存しない演算(和・平均)で集める」</strong>のが DeepSets の原理です。
+理解編のデモの「DeepSets 型の集約」が置換で不変だったのはこのためです。
+DWSNets はこれを MLP の重みの全体(複数層の行列・バイアスが、隣接層どうしで同じ置換を共有する構造)に一般化し、
+そうした<strong>線形同変層の全体を特徴づけた</strong>うえで層を積み重ねます。
+</p>
+<p>
+その後、対称群の拡張が続きます —— NFT(注意機構で層間依存をモデル化)、MAGEP-NFN と Monomial-NFN(スケーリング・符号反転を追加)、
+UNF(RNN・Transformer を含む任意構造)、Zhang et al. [2025a](Transformer の回転対称性)、
+Sverdlov et al. [2025](既約表現への分解)など。
+一方 NeRN や SNE、Logit Invariance Regularization のように<strong>正則化で近似的に不変性を得る</strong>系統もあります。
+</p>
+<div class="callout warn">
+<span class="callout-title">限界</span>
+“Overall, these models explicitly encode known symmetries, but their <strong>handcrafted nature limits scalability and adaptability to heterogeneous architectures</strong>.”
+</div>
+
+<h3 id="graph">③ グラフ型アーキテクチャ</h3>
+<p>
+手設計の硬さを解消するため、ネットワークを<strong>グラフとして読み替え</strong>、GNN で処理する系統が登場しました。
+GNN のメッセージパッシングは<strong>ノードの並べ替えに本来的に不変</strong>なので、置換対称性を自動で扱えます。
+</p>
+
+<figure class="diagram" id="graph-fig" data-cycle-ms="12000" data-step-count="3">
+<svg viewBox="0 0 940 300" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="ネットワークを計算グラフに変換し GNN で埋め込む流れ">
+  <defs>
+    <marker id="arrG" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#8a93ad"/>
+    </marker>
+  </defs>
+  <g class="g1">
+    <text x="150" y="26" font-size="13" font-weight="bold" text-anchor="middle" fill="#e07b1f">① 重みテンソル</text>
+    <rect x="20" y="40" width="260" height="210" rx="10" fill="#fdeeda" stroke="#e07b1f" stroke-width="2"/>
+    <text x="50" y="74" font-size="11" fill="#5b6478">W₁ ∈ ℝ³ˣ²</text>
+    <g><rect x="50" y="84" width="24" height="18" fill="#e07b1f" opacity="0.9"/><rect x="76" y="84" width="24" height="18" fill="#e07b1f" opacity="0.5"/>
+    <rect x="50" y="104" width="24" height="18" fill="#e07b1f" opacity="0.3"/><rect x="76" y="104" width="24" height="18" fill="#e07b1f" opacity="0.8"/>
+    <rect x="50" y="124" width="24" height="18" fill="#e07b1f" opacity="0.6"/><rect x="76" y="124" width="24" height="18" fill="#e07b1f" opacity="0.4"/></g>
+    <text x="130" y="74" font-size="11" fill="#5b6478">b₁</text>
+    <g><rect x="130" y="84" width="24" height="18" fill="#7b46c9" opacity="0.6"/><rect x="130" y="104" width="24" height="18" fill="#7b46c9" opacity="0.3"/><rect x="130" y="124" width="24" height="18" fill="#7b46c9" opacity="0.8"/></g>
+    <text x="180" y="74" font-size="11" fill="#5b6478">W₂ ∈ ℝ¹ˣ³</text>
+    <g><rect x="180" y="104" width="24" height="18" fill="#e07b1f" opacity="0.7"/><rect x="206" y="104" width="24" height="18" fill="#e07b1f" opacity="0.4"/><rect x="232" y="104" width="24" height="18" fill="#e07b1f" opacity="0.9"/></g>
+    <text x="150" y="182" font-size="10.5" text-anchor="middle" fill="#5b6478">層ごとの行列・ベクトル</text>
+    <text x="150" y="200" font-size="10.5" text-anchor="middle" fill="#5b6478">(並び順は任意)</text>
+  </g>
+  <g class="g2">
+    <text x="470" y="26" font-size="13" font-weight="bold" text-anchor="middle" fill="#1e9e6a">② 計算グラフ 𝒢 = (𝒱, ℰ)</text>
+    <rect x="330" y="40" width="280" height="210" rx="10" fill="#e0f5ec" stroke="#1e9e6a" stroke-width="2"/>
+    <g stroke="#e07b1f" stroke-width="2.5">
+      <line x1="380" y1="100" x2="470" y2="80"/><line x1="380" y1="100" x2="470" y2="140"/><line x1="380" y1="100" x2="470" y2="200"/>
+      <line x1="380" y1="180" x2="470" y2="80"/><line x1="380" y1="180" x2="470" y2="140"/><line x1="380" y1="180" x2="470" y2="200"/>
+      <line x1="470" y1="80" x2="560" y2="140"/><line x1="470" y1="140" x2="560" y2="140"/><line x1="470" y1="200" x2="560" y2="140"/>
+    </g>
+    <circle cx="380" cy="100" r="12" fill="#fff" stroke="#1e9e6a" stroke-width="2"/>
+    <circle cx="380" cy="180" r="12" fill="#fff" stroke="#1e9e6a" stroke-width="2"/>
+    <circle cx="470" cy="80" r="12" fill="#7b46c9" fill-opacity="0.6" stroke="#1e9e6a" stroke-width="2"/>
+    <circle cx="470" cy="140" r="12" fill="#7b46c9" fill-opacity="0.3" stroke="#1e9e6a" stroke-width="2"/>
+    <circle cx="470" cy="200" r="12" fill="#7b46c9" fill-opacity="0.8" stroke="#1e9e6a" stroke-width="2"/>
+    <circle cx="560" cy="140" r="12" fill="#fff" stroke="#1e9e6a" stroke-width="2"/>
+    <text x="470" y="236" font-size="10.5" text-anchor="middle" fill="#5b6478">ノード特徴 = バイアス / エッジ特徴 = 重み</text>
+  </g>
+  <g class="g3">
+    <text x="780" y="26" font-size="13" font-weight="bold" text-anchor="middle" fill="#3556d4">③ GNN でメッセージパッシング</text>
+    <rect x="654" y="40" width="272" height="210" rx="10" fill="#e5eafc" stroke="#3556d4" stroke-width="2"/>
+    <g stroke="#3556d4" stroke-opacity="0.35" stroke-width="2">
+      <line x1="700" y1="100" x2="780" y2="80"/><line x1="700" y1="100" x2="780" y2="140"/><line x1="700" y1="180" x2="780" y2="140"/>
+      <line x1="700" y1="180" x2="780" y2="200"/><line x1="780" y1="80" x2="860" y2="140"/><line x1="780" y1="140" x2="860" y2="140"/><line x1="780" y1="200" x2="860" y2="140"/>
+    </g>
+    <circle class="msg" style="--mx:80px; --my:-20px" cx="700" cy="100" r="4" fill="#3556d4"/>
+    <circle class="msg" style="--mx:80px; --my:-40px" cx="700" cy="180" r="4" fill="#3556d4"/>
+    <circle class="msg" style="--mx:80px; --my:60px" cx="780" cy="80" r="4" fill="#3556d4"/>
+    <circle class="msg" style="--mx:80px; --my:-60px" cx="780" cy="200" r="4" fill="#3556d4"/>
+    <circle cx="700" cy="100" r="10" fill="#fff" stroke="#3556d4" stroke-width="2"/><circle cx="700" cy="180" r="10" fill="#fff" stroke="#3556d4" stroke-width="2"/>
+    <circle cx="780" cy="80" r="10" fill="#fff" stroke="#3556d4" stroke-width="2"/><circle cx="780" cy="140" r="10" fill="#fff" stroke="#3556d4" stroke-width="2"/><circle cx="780" cy="200" r="10" fill="#fff" stroke="#3556d4" stroke-width="2"/>
+    <circle cx="860" cy="140" r="10" fill="#fff" stroke="#3556d4" stroke-width="2"/>
+    <text x="790" y="236" font-size="11" text-anchor="middle" fill="#3556d4" font-weight="bold">プーリング → z = GNN<tspan baseline-shift="sub" font-size="75%">ψ</tspan>(𝒢)</text>
+  </g>
+  <g fill="none" stroke="#8a93ad" stroke-width="2" marker-end="url(#arrG)">
+    <path class="flow-edge" d="M 282 145 L 326 145"/>
+    <path class="flow-edge" d="M 612 145 L 650 145"/>
+  </g>
+  <text x="470" y="284" font-size="11.5" text-anchor="middle" fill="#1c2333">隠れノードを並べ替えてもグラフは同型 → GNN の出力は変わらない(置換不変性が「無料で」得られる)</text>
+</svg>
+<figcaption>
+グラフ型の重み表現(§3.1.1, 式 6)。Neural Graph や GMN は層やモジュールを部分グラフとして表し、計算の依存関係に沿って情報を伝播します。
+Scale-GMN はさらに<strong>スケーリング対称性</strong>も扱います。
+</figcaption>
+</figure>
+
+<div class="callout math">
+<span class="callout-title">式 (6) — グラフとしての重み</span>
+各ネットワーク \(\mathcal{N}\) を、ノード特徴(バイアス)とエッジ特徴(重み)を持つ有向非巡回グラフ
+\(\mathcal{G} = (\mathcal{V}, \mathcal{E})\) とみなし、
+$$ z = \mathrm{GNN}_\psi(\mathcal{G}) \tag{6} $$
+を学習する。“By modeling weight space as a graph manifold, these approaches unify structure-aware encoding with flexibility,
+achieving symmetry handling <strong>without manual specification</strong>.”
+Ballerini et al. [2025] はこれを NeRF に拡張し、多様なパラメータ化をまたぐ<strong>アーキテクチャ非依存の埋め込み</strong>を示しています。
+</div>
+
+<h3 id="probe">④ Model-free — プロービングによる表現</h3>
+<p>
+最後の系統は、重みを<strong>そもそも見ない</strong>アプローチです。
+“they infer representations by probing how a model transforms inputs into outputs, thereby
+<strong>sidestepping challenges such as permutation symmetry, scaling invariance, and architecture-specific parameterization</strong>.”
+</p>
+<div class="callout math">
+<span class="callout-title">式 (7)(8) — 振る舞いによる埋め込み</span>
+$$ z = \phi_f(f_\theta), \quad \text{where } f_\theta: \mathcal{X} \to \mathcal{Y} \tag{7} $$
+\(f_\theta\) にはクエリでしかアクセスできないので、有限個のプローブ \(\mathcal{P} = \{x_i\}_{i=1}^m\) への応答から推定する:
+$$ z = \mathcal{E}\big(\{ f_\theta(x_i) \}_{x_i \in \mathcal{P}}\big) \tag{8} $$
+\(\mathcal{E}(\cdot)\) は応答を固定長の「振る舞いの署名」に集約する。
+</div>
+<table>
+  <tr><th>手法</th><th>プローブの作り方(§3.1.2)</th></tr>
+  <tr><td>ProbeLog [Kahana+ 2025b]</td><td>固定・順序付きのプローブ集合を入力し、<strong>ロジットの各出力次元</strong>を応答署名で表す(静的プロービング)</td></tr>
+  <tr><td>ProbeGen [Kahana+ 2025a]</td><td>深い線形生成器でプローブ自体を<strong>学習</strong>し、構造をまたぐ汎化を改善</td></tr>
+  <tr><td>Kofinas+ 2024a</td><td>GNN 型に<strong>プローブ由来の活性</strong>をノード特徴として追加(Model-based との融合)</td></tr>
+  <tr><td>ProbeX [Horwitz+ 2025a]</td><td>出力だけでなく<strong>隠れ層</strong>にもプロービングを拡張、mixture-of-experts で多様な内部挙動を捉える</td></tr>
+  <tr><td>Herrmann+ 2024</td><td>RNN 向けの<strong>対話的</strong>プロービング。モデルの応答に応じてクエリを変え、静的プローブより指数的に効率化</td></tr>
+</table>
+<div class="callout point">
+<span class="callout-title">Model-based と Model-free は補完的</span>
+“the former captures <strong>internal geometry of weights</strong>, while the latter embeds <strong>functional behavior</strong>.”
+Model-free は構造非依存・対称性に自然に不変・<strong>重みにアクセスできないブラックボックス設定にも拡張できる</strong>のが強みです。
+</div>
+
+<h2 id="training">学習の仕組み — メタモデルは何を目的に学習するか</h2>
+<p>
+サーベイは各手法の損失関数を詳しくは述べませんが、本文から読み取れる学習信号は大きく 2 種類です。
+</p>
+<table>
+  <tr><th>学習信号</th><th>サーベイでの記述</th><th>例</th></tr>
+  <tr><td><strong>教師あり</strong>(モデルのメタデータを予測)</td>
+  <td>式 (9) の \(\hat{y} = \psi(\phi(\theta))\) —— “This paradigm transforms model assessment into a <strong>regression problem</strong> in the embedding space”</td>
+  <td>DCM、Unterthiner+ 2020(精度・ハイパラ予測)、NFN・DWSNets・GMN の性能予測実験</td></tr>
+  <tr><td><strong>自己教師あり</strong>(ラベルなしで model zoo を圧縮)</td>
+  <td>“Schürholt et al. [2021] proposed <strong>self-supervised encoders</strong> for model zoos”、“Falk et al. [2025b] applied <strong>unsupervised encoding</strong> to undocumented Hugging Face models”</td>
+  <td>HyperReps、SANE</td></tr>
+</table>
+
+<div class="callout warn">
+<span class="callout-title">補足(サーベイ外)— 自己教師あり hyper-representation の中身</span>
+Schürholt et al. [2021] の原論文では、エンコーダ・デコーダで重みを<strong>再構成</strong>する損失と、
+同じモデルに<strong>重み空間のデータ拡張</strong>(ノイズ付加・一部の消去・ニューロン置換)を施した 2 つのビューを近づける
+<strong>対照学習</strong>の損失を組み合わせています。ここで使われる「置換による拡張」が、
+<a href="understanding.html#usecases">理解編</a>の重み空間データ拡張そのものです。
+この段落はサーベイ本文ではなく原論文に基づく補足で、詳細は原論文で確認してください。
+</div>
+
+<div class="codeblock pseudo">
+<div class="codehead"><span class="path">⚠️ 擬似コード — 式 (3)(5)(9) と §3.2.1 の記述から再構成(特定の論文の実装ではない)</span></div>
+<pre><code class="language-python"># 「重みから精度を予測する」メタモデルの最小の学習ループ。
+# 変数名・構造は本解説による再構成。サーベイは学習の実装詳細を記述していない。
+
+zoo = load_model_zoo()            # [(theta_i, acc_i), ...] 同一構造・異なる学習設定のモデル群
+train, test = split(zoo)          # 分割はモデル単位(同じ学習 run を両側に入れない)
+
+phi = Encoder()                   # 対称性非考慮: MLP(flatten(theta))
+                                  # 対称性考慮:   DWSNet / NFN(層ごとの重みを入力)
+                                  # グラフ型:     GNN(to_graph(theta))
+psi = RegressionHead()
+
+for theta, acc in train:
+    z = phi(theta)                # 式 (3)/(5): z = φ(θ)
+    acc_hat = psi(z)              # 式 (9): ŷ = ψ(φ(θ))
+    loss = mse(acc_hat, acc)
+    loss.backward(); step(phi, psi)
+
+# 評価: テスト用モデルの「予測精度」と「実際の精度」の一致度
+# (評価指標は評価編 benchmarks.html#metrics を参照)</code></pre>
+</div>
+
+<h2 id="usecases">技術レベルのユースケース(§3.2)</h2>
+<p>
+重みを埋め込み \(z = \phi(\theta)\) に写せれば、<strong>データに触れずに</strong>モデルを扱えます。
+“WSR enables model-level reasoning: once networks are embedded as latent vectors, their behaviors can be predicted, retrieved, or modified directly in embedding space.”
+</p>
+
+<figure class="diagram" id="use-fig" data-cycle-ms="12000" data-step-count="3">
+<svg viewBox="0 0 930 300" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="埋め込み空間での性能予測・モデル検索・モデル編集">
+  <defs>
+    <marker id="arrW" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#5b6478"/>
+    </marker>
+  </defs>
+  <g class="u1">
+    <rect x="10" y="10" width="295" height="280" rx="12" fill="#e0f5ec" stroke="#1e9e6a" stroke-width="2"/>
+    <text x="157" y="36" font-size="13.5" font-weight="bold" text-anchor="middle" fill="#1e9e6a">性能予測 (§3.2.1)</text>
+    <ellipse cx="110" cy="130" rx="70" ry="56" fill="#fff" stroke="#1e9e6a"/>
+    <circle cx="86" cy="112" r="6" fill="#1e9e6a"/><circle cx="106" cy="146" r="6" fill="#1e9e6a" opacity="0.6"/><circle cx="134" cy="118" r="6" fill="#1e9e6a" opacity="0.3"/>
+    <path d="M 182 130 L 212 130" stroke="#5b6478" stroke-width="2" marker-end="url(#arrW)"/>
+    <rect x="216" y="110" width="74" height="40" rx="7" fill="#fff" stroke="#1e9e6a" stroke-width="2"/>
+    <text x="253" y="128" font-size="11" text-anchor="middle" font-style="italic">ψ(z)</text>
+    <text x="253" y="143" font-size="9.5" text-anchor="middle" fill="#5b6478">acc ≈ 0.87</text>
+    <text x="157" y="220" font-size="11" text-anchor="middle" font-weight="bold" fill="#1e9e6a">ŷ = ψ(φ(θ)) … 式 (9)</text>
+    <text x="157" y="246" font-size="10.5" text-anchor="middle" fill="#5b6478">精度・ハイパラ・汎化ギャップを</text>
+    <text x="157" y="263" font-size="10.5" text-anchor="middle" fill="#5b6478">テストデータなしで推定</text>
+  </g>
+  <g class="u2">
+    <rect x="318" y="10" width="295" height="280" rx="12" fill="#fdeeda" stroke="#e07b1f" stroke-width="2"/>
+    <text x="465" y="36" font-size="13.5" font-weight="bold" text-anchor="middle" fill="#e07b1f">モデル検索 (§3.2.2)</text>
+    <ellipse cx="465" cy="130" rx="120" ry="66" fill="#fff" stroke="#e07b1f"/>
+    <circle cx="390" cy="110" r="6" fill="#8a93ad"/><circle cx="420" cy="160" r="6" fill="#8a93ad"/><circle cx="530" cy="96" r="6" fill="#8a93ad"/>
+    <circle cx="545" cy="160" r="6" fill="#8a93ad"/><circle cx="488" cy="146" r="7" fill="#e07b1f"/>
+    <path d="M 465 120 L 482 141" stroke="#e07b1f" stroke-width="2" stroke-dasharray="4 3"/>
+    <rect x="452" y="108" width="14" height="14" fill="#fff" stroke="#d43d51" stroke-width="2.5" transform="rotate(45 459 115)"/>
+    <text x="446" y="100" font-size="10" text-anchor="end" fill="#d43d51">クエリ z<tspan baseline-shift="sub" font-size="75%">q</tspan></text>
+    <text x="500" y="172" font-size="10" fill="#e07b1f">θ*</text>
+    <text x="465" y="220" font-size="11" text-anchor="middle" font-weight="bold" fill="#e07b1f">θ* = argmin ‖φ(θ<tspan baseline-shift="sub" font-size="75%">i</tspan>) − z<tspan baseline-shift="sub" font-size="75%">q</tspan>‖ … 式 (10)</text>
+    <text x="465" y="246" font-size="10.5" text-anchor="middle" fill="#5b6478">メタデータでなく「何を学んだか」で</text>
+    <text x="465" y="263" font-size="10.5" text-anchor="middle" fill="#5b6478">Hugging Face のモデルを探す</text>
+  </g>
+  <g class="u3">
+    <rect x="626" y="10" width="295" height="280" rx="12" fill="#efe6fb" stroke="#7b46c9" stroke-width="2"/>
+    <text x="773" y="36" font-size="13.5" font-weight="bold" text-anchor="middle" fill="#7b46c9">モデル編集 (§3.2.3)</text>
+    <ellipse cx="773" cy="130" rx="110" ry="60" fill="#fff" stroke="#7b46c9"/>
+    <circle cx="716" cy="140" r="7" fill="#7b46c9"/><text x="700" y="164" font-size="11" font-style="italic">z</text>
+    <path d="M 724 136 L 818 112" stroke="#7b46c9" stroke-width="2.4" marker-end="url(#arrW)"/>
+    <text x="770" y="114" font-size="11" fill="#7b46c9" font-style="italic">Δz</text>
+    <circle cx="826" cy="110" r="7" fill="#fff" stroke="#7b46c9" stroke-width="2.5"/>
+    <text x="773" y="220" font-size="11" text-anchor="middle" font-weight="bold" fill="#7b46c9">θ̃ = φ⁻¹(z + Δz) … 式 (11)</text>
+    <text x="773" y="240" font-size="11" text-anchor="middle" font-weight="bold" fill="#7b46c9">θ̃ = θ + Δ(θ) … 式 (12)</text>
+    <text x="773" y="266" font-size="10.5" text-anchor="middle" fill="#5b6478">再学習せずにバイアス除去・能力付与</text>
+  </g>
+</svg>
+<figcaption>
+WSR の 3 つのユースケース。いずれも<strong>元の学習データにアクセスせず</strong>、埋め込み空間での演算だけで完結する点が共通しています。
+</figcaption>
+</figure>
+
+<table>
+  <tr><th>ユースケース</th><th>式</th><th>代表例(§3.2)</th></tr>
+  <tr><td><strong>性能予測</strong></td><td>\(\hat{y} = \psi(\phi(\theta))\) (9)</td>
+  <td>DCM・Unterthiner+ 2020 が精度とハイパラを重みから予測。Honegger+ 2023 / Schürholt+ 2022b が大規模 zoo へ拡張、
+  Schürholt+ 2021, 2024 が汎化ギャップと学習ダイナミクスを予測、Falk+ 2025b がドキュメントのない Hugging Face モデルの精度を予測</td></tr>
+  <tr><td><strong>モデル検索</strong></td><td>\(\theta^* = \arg\min_{\theta_i \in \mathcal{M}} \|\phi(\theta_i) - z_q\|\) (10)</td>
+  <td>ProbeX(プローブ由来の機能埋め込みで整列)、ProbeLog(ロジット記述子で索引)、
+  Horwitz+ 2025b は数千の Hugging Face モデル上に<strong>“model atlas”</strong>を構築</td></tr>
+  <tr><td><strong>モデル編集</strong></td><td>\(\tilde{\theta} = \phi^{-1}(z + \Delta z)\) (11)<br>\(\tilde{\theta} = \theta + \Delta(\theta)\) (12)</td>
+  <td>Dravid+ 2024 / Schürholt+ 2024 は埋め込み空間の小さな摂動で狙った振る舞いを変更。
+  Kofinas+ 2024a / Lim+ 2024 / Zhou+ 2023a,b は重み空間の置換同変変換で INR を編集</td></tr>
+</table>
+
+<h2 id="discussion">議論 — WSR の強みと限界(§3.3)</h2>
+<div class="callout point">
+<span class="callout-title">強み</span>
+“In contrast to classical feature learning, WSR directly encodes <strong>the learners themselves</strong>, opening a new dimension for
+understanding and controlling generalization.”
+ゼロショットの性能予測、スケーラブルなモデル探索、データなしの効率的な適応を 1 つの表現の枠組みで扱えます。
+</div>
+<div class="callout warn">
+<span class="callout-title">限界と未解決課題</span>
+<ol style="margin:0.3rem 0 0">
+  <li><strong>高次元・異種構造</strong>のせいでスケールと設計に敏感で、構造をまたぐ転移が難しい</li>
+  <li>データ駆動の手法は<strong>大規模な学習済みモデルのリポジトリ</strong>に依存するが、その資源は分野ごとに偏っている</li>
+  <li><strong>標準化されたベンチマーク・評価指標がない</strong>: “while function prediction accuracy provides a partial signal, it fails to capture representation quality in terms of
+  <strong>symmetry preservation or transferability</strong>”(→ <a href="benchmarks.html#critique">評価編</a>)</li>
+</ol>
+</div>
+<p>
+展望としてサーベイは、記述的なエンコーダから<strong>予測的・生成的な表現</strong>への移行 ——
+構造をまたぐ埋め込み、暗黙の対称性を利用する自己教師あり定式化、そして重みを「表すだけでなく合成する」生成パラダイムとの統合 —— を挙げます。
+“WSR will likely form the <strong>connective tissue</strong> between weight space understanding and weight space generation”。次章がその生成です。
+</p>
+
+<nav class="pager">
+  <a href="understanding.html"><span class="dir">← 前へ</span><span class="title">1. 重み空間の理解 (WSU)</span></a>
+  <a class="next" href="generation.html"><span class="dir">次へ →</span><span class="title">3. 重み空間の生成 (WSG)</span></a>
+</nav>
+
+</main>
+
+<footer class="site-footer">
+  <p>論文: <em>A Survey of Weight Space Learning: Understanding, Representation, and Generation</em>(Han, Wang+, 2026)/
+  <a href="https://arxiv.org/abs/2603.10090" target="_blank" rel="noopener">arXiv:2603.10090</a></p>
+  <p>このサイトのコンテンツはAIとの協働で作成しています。記述されている内容には間違いが含まれることがあるので、正確性については一次資料をチェックしてください。</p>
+</footer>
+
+<script>
+MathJax = { tex: { inlineMath: [['\\(', '\\)']], displayMath: [['$$', '$$']] } };
+</script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js" async></script>
+<script src="assets/diagram-controls.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-core.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-python.min.js"></script>
+</body>
+</html>
