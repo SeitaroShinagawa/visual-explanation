@@ -154,24 +154,27 @@
 <div class="codeblock pseudo">
 <div class="codehead"><span class="path">⚠️ 擬似コード — 論文の式 (1)・付録 A・§2.2 から再構成(配布ライブラリの実際の API ではありません)</span></div>
 <pre><code class="language-python"># 公開モデルの呼び出し方(ライブラリ名・関数名)は論文に書かれていないため、
-# ここでは `model.embed()` という架空の関数で手続きだけを示します。
+# ここでは `model.embed(segments)`(区間のリスト x = (s_1, …, s_M) を受け取り、§2.2 の通り
+# テキストはトークン化、画像・音声はエンコーダに通して 1 本の系列にする)という架空の関数で手続きだけを示します。
 import numpy as np
 
 QUERY  = "task: search result | query: {}"
 TARGET = "title: {} | text: {}"
 
 # ① オフライン: ターゲットを埋め込んで索引化(画像・音声は text の位置に差し込まれる)
-docs = [TARGET.format("none", image_of_strings),           # 🖼️
-        TARGET.format("none", audio_of_chord),             # 🔊
-        TARGET.format("ギター入門", "コードの押さえ方…")]   # 📝
-P = np.stack([model.embed(d) for d in docs])               # [N, 768], 各行 ‖·‖=1
+# 入力は「区間 (segment) のリスト」: 文字列はテキスト区間、画像・音声はメディアのまま渡す。
+# (str.format に画像を埋め込むと文字列化されてしまうので、接頭辞とメディアは別区間にする)
+docs = [["title: none | text: ", image_of_strings],          # 🖼️ テキスト区間 + 画像区間
+        ["title: none | text: ", audio_of_chord],            # 🔊 テキスト区間 + 音声区間
+        [TARGET.format("ギター入門", "コードの押さえ方…")]]   # 📝 テキスト区間のみ
+P = np.stack([model.embed(segs) for segs in docs])         # [N, 768], 各行 ‖·‖=1
 
 # ② 次元を節約したいなら先頭を切って再正規化 (MRL: 768/512/256/128)
 k = 256
 P_k = P[:, :k] / np.linalg.norm(P[:, :k], axis=1, keepdims=True)
 
 # ③ オンライン: クエリを埋め込み、内積で上位を返す
-q = model.embed(QUERY.format("開放弦の音は?"))[:k]
+q = model.embed([QUERY.format("開放弦の音は?")])[:k]
 q /= np.linalg.norm(q)
 top = np.argsort(-(P_k @ q))[:10]</code></pre>
 </div>
