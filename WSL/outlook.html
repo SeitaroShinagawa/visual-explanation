@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WSL 応用・トレンド・課題 — 重み空間学習はどこへ向かうか</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🧬</text></svg>">
+<link rel="stylesheet" href="assets/style.css">
+<style>
+/* ===== application hub: 6 stages (15s) ===== */
+@keyframes ap-bright {
+  0%, 18%, 100% { opacity: 0.3; }
+  4%, 14% { opacity: 1; }
+}
+#app-fig .p1 { animation: ap-bright 15s ease-in-out infinite backwards; }
+#app-fig .p2 { animation: ap-bright 15s ease-in-out infinite backwards; animation-delay: 2.5s; }
+#app-fig .p3 { animation: ap-bright 15s ease-in-out infinite backwards; animation-delay: 5s; }
+#app-fig .p4 { animation: ap-bright 15s ease-in-out infinite backwards; animation-delay: 7.5s; }
+#app-fig .p5 { animation: ap-bright 15s ease-in-out infinite backwards; animation-delay: 10s; }
+#app-fig .p6 { animation: ap-bright 15s ease-in-out infinite backwards; animation-delay: 12.5s; }
+
+/* ===== trends: 5 stages (15s) ===== */
+@keyframes tr-bright {
+  0%, 21%, 100% { opacity: 0.28; }
+  4%, 17% { opacity: 1; }
+}
+#trend-fig .t1 { animation: tr-bright 15s ease-in-out infinite backwards; }
+#trend-fig .t2 { animation: tr-bright 15s ease-in-out infinite backwards; animation-delay: 3s; }
+#trend-fig .t3 { animation: tr-bright 15s ease-in-out infinite backwards; animation-delay: 6s; }
+#trend-fig .t4 { animation: tr-bright 15s ease-in-out infinite backwards; animation-delay: 9s; }
+#trend-fig .t5 { animation: tr-bright 15s ease-in-out infinite backwards; animation-delay: 12s; }
+
+/* ===== open questions: 3 stages (12s) ===== */
+@keyframes oq-turn {
+  0%, 2% { opacity: 0.25; }
+  6%, 30% { opacity: 1; }
+  34%, 100% { opacity: 0.25; }
+}
+#open-fig .o1 { animation: oq-turn 12s ease-in-out infinite backwards; }
+#open-fig .o2 { animation: oq-turn 12s ease-in-out infinite backwards; animation-delay: 4s; }
+#open-fig .o3 { animation: oq-turn 12s ease-in-out infinite backwards; animation-delay: 8s; }
+
+@media (prefers-reduced-motion: reduce) {
+  #app-fig .p1, #app-fig .p2, #app-fig .p3, #app-fig .p4, #app-fig .p5, #app-fig .p6,
+  #trend-fig .t1, #trend-fig .t2, #trend-fig .t3, #trend-fig .t4, #trend-fig .t5,
+  #open-fig .o1, #open-fig .o2, #open-fig .o3 { opacity: 1; }
+}
+</style>
+</head>
+<body>
+
+<nav class="topnav">
+  <a class="home-link" href="../index.html">Visual Explanation</a><span class="sep">/</span>
+  <a href="./index.html">WSL 概要</a>
+  <a href="understanding.html">1. 理解 (WSU)</a>
+  <a href="representation.html">2. 表現 (WSR)</a>
+  <a href="generation.html">3. 生成 (WSG)</a>
+  <a href="benchmarks.html">4. 評価とベンチマーク</a>
+  <a href="outlook.html" class="current">5. 応用・トレンド・課題</a>
+  <a href="wsp.html">6. 発展: WSP</a>
+</nav>
+
+<header class="page-header">
+  <h1>5. 応用・トレンド・課題</h1>
+  <p>重み空間の手法は、INR・メタ学習・継続学習・連合学習・NAS などでどう使われているのか(§5)。
+  そして、大規模モデルへの拡張と安全性という 2 つの壁を前に、この分野はどこへ向かうのか(§7)。</p>
+</header>
+
+<main class="article">
+
+<h2 id="apps">関連分野への応用(§5)</h2>
+<div class="callout point">
+<span class="callout-title">Takeaways(§5)</span>
+“Weight space methods provide a unified view of learning systems, where <strong>models themselves become manipulable objects</strong>,
+enabling retrieval, adaptation, composition, and generation <strong>without returning to data or training from scratch</strong>.”
+</div>
+
+<figure class="diagram" id="app-fig" data-cycle-ms="15000" data-step-count="6">
+<svg viewBox="0 0 960 470" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="重み空間学習の 6 つの応用分野">
+  <defs>
+    <marker id="arrAp" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#8a93ad"/>
+    </marker>
+  </defs>
+  <circle cx="480" cy="235" r="88" fill="#f2f4fa" stroke="#3556d4" stroke-width="2.5"/>
+  <text x="480" y="222" font-size="14" font-weight="bold" text-anchor="middle" fill="#3556d4">重み空間</text>
+  <text x="480" y="244" font-size="11" text-anchor="middle" fill="#5b6478">WSU · WSR · WSG</text>
+  <text x="480" y="264" font-size="10" text-anchor="middle" fill="#8a93ad">モデル = 操作できる対象</text>
+
+  <g fill="none" stroke="#c8cfe0" stroke-width="2">
+    <line x1="400" y1="190" x2="300" y2="110"/><line x1="560" y1="190" x2="660" y2="110"/>
+    <line x1="392" y1="235" x2="300" y2="235"/><line x1="568" y1="235" x2="660" y2="235"/>
+    <line x1="400" y1="280" x2="300" y2="360"/><line x1="560" y1="280" x2="660" y2="360"/>
+  </g>
+
+  <g class="p1">
+    <rect x="20" y="40" width="280" height="130" rx="12" fill="#e5eafc" stroke="#3556d4" stroke-width="2"/>
+    <text x="160" y="64" font-size="13" font-weight="bold" text-anchor="middle" fill="#3556d4">① INR (§5.1)</text>
+    <text x="160" y="88" font-size="10.5" text-anchor="middle" fill="#5b6478">信号を小さな MLP f<tspan baseline-shift="sub" font-size="75%">θ</tspan>: x ↦ y に符号化</text>
+    <text x="160" y="106" font-size="10.5" text-anchor="middle" fill="#5b6478">→ 重みの集合 = データセット</text>
+    <text x="160" y="128" font-size="10.5" text-anchor="middle" fill="#3556d4">拡張・分類・検索・生成がすべて重み上で</text>
+    <text x="160" y="150" font-size="10" text-anchor="middle" fill="#8a93ad">inr2vec, Functa, HyperDiffusion, NeoMLP</text>
+  </g>
+  <g class="p2">
+    <rect x="660" y="40" width="280" height="130" rx="12" fill="#fdeeda" stroke="#e07b1f" stroke-width="2"/>
+    <text x="800" y="64" font-size="13" font-weight="bold" text-anchor="middle" fill="#e07b1f">② モデル統一 (§5.2)</text>
+    <text x="800" y="88" font-size="10.5" text-anchor="middle" fill="#5b6478">異なる構造・モダリティのモデルを</text>
+    <text x="800" y="106" font-size="10.5" text-anchor="middle" fill="#5b6478">共有の潜在空間で比較・転移</text>
+    <text x="800" y="128" font-size="10.5" text-anchor="middle" fill="#e07b1f">“does not require a universal architecture</text>
+    <text x="800" y="146" font-size="10.5" text-anchor="middle" fill="#e07b1f">—only a universal weight space”</text>
+    <text x="800" y="164" font-size="10" text-anchor="middle" fill="#8a93ad">GEM, Spatial Functa, uGNN</text>
+  </g>
+  <g class="p3">
+    <rect x="20" y="186" width="280" height="98" rx="12" fill="#e0f5ec" stroke="#1e9e6a" stroke-width="2"/>
+    <text x="160" y="210" font-size="13" font-weight="bold" text-anchor="middle" fill="#1e9e6a">③ 継続学習 (§5.3)</text>
+    <text x="160" y="232" font-size="10.5" text-anchor="middle" fill="#5b6478">忘却 =「重みの管理」の失敗と捉え直す</text>
+    <text x="160" y="250" font-size="10.5" text-anchor="middle" fill="#1e9e6a">タスク埋め込みから重みを再生成</text>
+    <text x="160" y="272" font-size="10" text-anchor="middle" fill="#8a93ad">von Oswald+ 2020, W-Diff, Li+ 2025</text>
+  </g>
+  <g class="p4">
+    <rect x="660" y="186" width="280" height="98" rx="12" fill="#efe6fb" stroke="#7b46c9" stroke-width="2"/>
+    <text x="800" y="210" font-size="13" font-weight="bold" text-anchor="middle" fill="#7b46c9">④ メタ学習 (§5.4)</text>
+    <text x="800" y="232" font-size="10.5" text-anchor="middle" fill="#5b6478">「初期化の学習」から</text>
+    <text x="800" y="250" font-size="10.5" text-anchor="middle" fill="#7b46c9">タスク記述 → 重みの直接生成へ</text>
+    <text x="800" y="272" font-size="10" text-anchor="middle" fill="#8a93ad">MetaDiff, Mc-Di, Meta HyperNetworks</text>
+  </g>
+  <g class="p5">
+    <rect x="20" y="300" width="280" height="130" rx="12" fill="#fbe4e8" stroke="#d43d51" stroke-width="2"/>
+    <text x="160" y="324" font-size="13" font-weight="bold" text-anchor="middle" fill="#d43d51">⑤ 連合学習 (§5.5)</text>
+    <text x="160" y="348" font-size="10.5" text-anchor="middle" fill="#5b6478">勾配の集約ではなく、サーバが</text>
+    <text x="160" y="366" font-size="10.5" text-anchor="middle" fill="#5b6478">クライアントごとの重みを生成</text>
+    <text x="160" y="388" font-size="10.5" text-anchor="middle" fill="#d43d51">個人化 + 通信量削減</text>
+    <text x="160" y="410" font-size="10" text-anchor="middle" fill="#8a93ad">FedDiff, pFedHN, pFedGPA</text>
+  </g>
+  <g class="p6">
+    <rect x="660" y="300" width="280" height="130" rx="12" fill="#f2f4fa" stroke="#1c2333" stroke-width="2"/>
+    <text x="800" y="324" font-size="13" font-weight="bold" text-anchor="middle" fill="#1c2333">⑥ NAS (§5.6)</text>
+    <text x="800" y="348" font-size="10.5" text-anchor="middle" fill="#5b6478">候補構造ごとの学習を</text>
+    <text x="800" y="366" font-size="10.5" text-anchor="middle" fill="#5b6478">ハイパーネットの順伝播 1 回で置換</text>
+    <text x="800" y="388" font-size="10.5" text-anchor="middle" fill="#1c2333">「構造を探し、重みをサンプルする」</text>
+    <text x="800" y="410" font-size="10" text-anchor="middle" fill="#8a93ad">GHN, GHN-1/2</text>
+  </g>
+</svg>
+<figcaption>
+WSL の 6 つの応用分野(§5, Table 3)。どの分野でも、従来は<strong>勾配降下で解いていた内側のループ</strong>
+(タスクごとの学習・クライアントごとの学習・候補構造ごとの学習)を、<strong>重みの生成・検索に置き換える</strong>という同じ構図が現れます。
+</figcaption>
+</figure>
+
+<table>
+  <tr><th>分野</th><th>代表的な文献(Table 3 から抜粋)</th><th>なぜ WSL が合うか(Table 3)</th></tr>
+  <tr><td><strong>INR</strong></td><td>Shamsian+ 2023/2024, Huang+ 2025, Zhou+ 2023b, inr2vec, Functa, Spatial Functa, NeoMLP, GRAF, pi-GAN, HyperDiffusion, Yang & Wang 2024, Gielisse & van Gemert 2025</td><td>データが自然に重みで表現される</td></tr>
+  <tr><td><strong>モデル統一</strong></td><td>GEM, Functa, Spatial Functa, uGNN</td><td>アーキテクチャ非依存なモデル空間</td></tr>
+  <tr><td><strong>継続学習</strong></td><td>von Oswald+ 2020, W-Diff, Li+ 2025</td><td>重みの再生成による忘却の緩和</td></tr>
+  <tr><td><strong>メタ学習</strong></td><td>MetaDiff, Mc-Di, MH</td><td>勾配を使わない高速な適応</td></tr>
+  <tr><td><strong>連合学習</strong></td><td>FedDiff, pFedHN, pFedGPA</td><td>個人化された重み・低い通信量</td></tr>
+  <tr><td><strong>NAS</strong></td><td>GHN, GHN-1/2</td><td>効率的な重み予測</td></tr>
+</table>
+
+<div class="callout math">
+<span class="callout-title">各分野で起きている「再定式化」(§5 の各節の結び)</span>
+<ul style="margin:0.3rem 0 0">
+  <li><strong>継続学習</strong>: “rather than preserving a single mutable model, CL can be understood as <strong>learning a generative model over task-specific weights</strong>”</li>
+  <li><strong>メタ学習</strong>: “from optimizing initializations to <strong>directly synthesizing task-specific models</strong>” —— MetaDiff は内側ループの更新をデノイズ軌道で置き換える</li>
+  <li><strong>連合学習</strong>: “FL shifts from communicating gradients to <strong>communicating representations of model families</strong>”</li>
+  <li><strong>NAS</strong>: “NAS shifts from searching architectures and training them to <strong>searching architectures and sampling their weights</strong>”</li>
+</ul>
+</div>
+
+<h2 id="trends">近年のトレンド</h2>
+<p>
+サーベイの §3〜§7 に散らばる記述を、時間の流れとして並べ直すと、5 つのトレンドが読み取れます
+(この整理は解説者によるもので、各項目の根拠となるサーベイの節を併記しています)。
+</p>
+
+<figure class="diagram" id="trend-fig" data-cycle-ms="15000" data-step-count="5">
+<svg viewBox="0 0 960 400" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="重み空間学習の 5 つのトレンド">
+  <defs>
+    <marker id="arrTr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#8a93ad"/>
+    </marker>
+  </defs>
+  <text x="200" y="26" font-size="12.5" font-weight="bold" text-anchor="middle" fill="#5b6478">かつて</text>
+  <text x="720" y="26" font-size="12.5" font-weight="bold" text-anchor="middle" fill="#5b6478">いま / これから</text>
+
+  <g class="t1">
+    <rect x="20" y="40" width="360" height="56" rx="10" fill="#fff" stroke="#8a93ad"/>
+    <text x="200" y="64" font-size="11.5" text-anchor="middle">手設計の対称性(同変層を構造ごとに導出)</text>
+    <text x="200" y="84" font-size="10" text-anchor="middle" fill="#8a93ad">DWSNets, NFN</text>
+    <path class="flow-edge" d="M 384 68 L 534 68" stroke="#3556d4" stroke-width="2.4" fill="none" marker-end="url(#arrTr)"/>
+    <text x="459" y="60" font-size="10" text-anchor="middle" fill="#3556d4">§3.1</text>
+    <rect x="540" y="40" width="400" height="56" rx="10" fill="#e5eafc" stroke="#3556d4" stroke-width="2"/>
+    <text x="740" y="64" font-size="11.5" text-anchor="middle" font-weight="bold" fill="#3556d4">対称性を自動で扱う構造(グラフ・プローブ)</text>
+    <text x="740" y="84" font-size="10" text-anchor="middle" fill="#5b6478">NG, GMN, Scale-GMN, ProbeX — 異種構造をまたぐ</text>
+  </g>
+
+  <g class="t2">
+    <rect x="20" y="110" width="360" height="56" rx="10" fill="#fff" stroke="#8a93ad"/>
+    <text x="200" y="134" font-size="11.5" text-anchor="middle">小さなネットワークの全重みを生成</text>
+    <text x="200" y="154" font-size="10" text-anchor="middle" fill="#8a93ad">Ha+ 2017, G.pt</text>
+    <path class="flow-edge" d="M 384 138 L 534 138" stroke="#7b46c9" stroke-width="2.4" fill="none" marker-end="url(#arrTr)"/>
+    <text x="459" y="130" font-size="10" text-anchor="middle" fill="#7b46c9">§4.1, §7.2</text>
+    <rect x="540" y="110" width="400" height="56" rx="10" fill="#efe6fb" stroke="#7b46c9" stroke-width="2"/>
+    <text x="740" y="134" font-size="11.5" text-anchor="middle" font-weight="bold" fill="#7b46c9">基盤モデルの上の LoRA・アダプタを生成</text>
+    <text x="740" y="154" font-size="10" text-anchor="middle" fill="#5b6478">HyperDreamBooth, DnD, ICM-LoRA, ORAL(Mistral-7B)</text>
+  </g>
+
+  <g class="t3">
+    <rect x="20" y="180" width="360" height="56" rx="10" fill="#fff" stroke="#8a93ad"/>
+    <text x="200" y="204" font-size="11.5" text-anchor="middle">ノイズ・層インデックスで条件付け</text>
+    <text x="200" y="224" font-size="10" text-anchor="middle" fill="#8a93ad">HBN, BbH</text>
+    <path class="flow-edge" d="M 384 208 L 534 208" stroke="#e07b1f" stroke-width="2.4" fill="none" marker-end="url(#arrTr)"/>
+    <text x="459" y="200" font-size="10" text-anchor="middle" fill="#e07b1f">§4.1.1, §4.1.2</text>
+    <rect x="540" y="180" width="400" height="56" rx="10" fill="#fdeeda" stroke="#e07b1f" stroke-width="2"/>
+    <text x="740" y="204" font-size="11.5" text-anchor="middle" font-weight="bold" fill="#e07b1f">自然言語・データセットで条件付け(LLM と接続)</text>
+    <text x="740" y="224" font-size="10" text-anchor="middle" fill="#5b6478">T2W, NeuroGen, D2NWG — 「テキストから重みへ」</text>
+  </g>
+
+  <g class="t4">
+    <rect x="20" y="250" width="360" height="56" rx="10" fill="#fff" stroke="#8a93ad"/>
+    <text x="200" y="274" font-size="11.5" text-anchor="middle">自作の小さな model zoo(数千〜数百万)</text>
+    <text x="200" y="294" font-size="10" text-anchor="middle" fill="#8a93ad">tetris, MNIST の CNN zoo</text>
+    <path class="flow-edge" d="M 384 278 L 534 278" stroke="#1e9e6a" stroke-width="2.4" fill="none" marker-end="url(#arrTr)"/>
+    <text x="459" y="270" font-size="10" text-anchor="middle" fill="#1e9e6a">§3.2, §6</text>
+    <rect x="540" y="250" width="400" height="56" rx="10" fill="#e0f5ec" stroke="#1e9e6a" stroke-width="2"/>
+    <text x="740" y="274" font-size="11.5" text-anchor="middle" font-weight="bold" fill="#1e9e6a">野生のリポジトリ(Hugging Face)を直接扱う</text>
+    <text x="740" y="294" font-size="10" text-anchor="middle" fill="#5b6478">model atlas (Horwitz+ 2025b), Falk+ 2025b, ProbeLog</text>
+  </g>
+
+  <g class="t5">
+    <rect x="20" y="320" width="360" height="56" rx="10" fill="#fff" stroke="#8a93ad"/>
+    <text x="200" y="344" font-size="11.5" text-anchor="middle">理解・表現・生成が別々のコミュニティ</text>
+    <text x="200" y="364" font-size="10" text-anchor="middle" fill="#8a93ad">用語も枠組みもばらばら(§1)</text>
+    <path class="flow-edge" d="M 384 348 L 534 348" stroke="#d43d51" stroke-width="2.4" fill="none" marker-end="url(#arrTr)"/>
+    <text x="459" y="340" font-size="10" text-anchor="middle" fill="#d43d51">§3.3, §4.3</text>
+    <rect x="540" y="320" width="400" height="56" rx="10" fill="#fbe4e8" stroke="#d43d51" stroke-width="2"/>
+    <text x="740" y="344" font-size="11.5" text-anchor="middle" font-weight="bold" fill="#d43d51">対称性を尊重した表現 × 生成の統合</text>
+    <text x="740" y="364" font-size="10" text-anchor="middle" fill="#5b6478">EQUIGEN(同変潜在空間で生成), Deep-Align → マージ</text>
+  </g>
+</svg>
+<figcaption>
+5 つのトレンド(解説者の整理)。共通するのは<strong>「より大きく・より異種に・より意味的に」</strong>という方向で、
+それぞれが §7 の未解決問題(下)にそのまま接続しています。
+</figcaption>
+</figure>
+
+<table>
+  <tr><th>トレンド</th><th>根拠となるサーベイの記述</th></tr>
+  <tr><td>① 手設計 → 自動</td><td>“This progression reflects a broader trend in WSR: <strong>shifting from handcrafted formulations toward automatic encoding</strong> of the geometric principles that govern weight space.”(§3.1.1)</td></tr>
+  <tr><td>② 全重み → モジュール</td><td>“a shift from full-model generation to <strong>module-level and residual weight generation</strong>, allowing hypernetworks to scale to larger architectures”(§4.1.1)、§7.2 “Fine-Tuning Modules”</td></tr>
+  <tr><td>③ ノイズ → 意味的な条件</td><td>“a shift from generic prompts toward <strong>semantically structured conditioning</strong>”(§4.1.1)、“The most recent frontier leverages <strong>Large Language Models</strong> to bridge natural language and weight space”(§4.1.2)</td></tr>
+  <tr><td>④ 自作 zoo → 野生のリポジトリ</td><td>“The proliferation of pretrained models in public repositories such as Hugging Face has shifted the challenge from <strong>model creation to model selection</strong>”(§3.2.2)</td></tr>
+  <tr><td>⑤ 表現と生成の統合</td><td>“The next frontier lies in cross-architecture, self-supervised, and generative representations that <strong>unify understanding and creation</strong> within weight space”(§3.3)、“integrating structural invariances from WSR into WSG”(§4.3)</td></tr>
+</table>
+
+<div class="callout point">
+<span class="callout-title">サーベイ後の新しい動き — Weight-Space Programming(2026 年 11 月)</span>
+トレンド ③(LLM との接続)をさらに推し進めた例として、ブログ記事
+“Sparks of Weight-Space Programming”(Takehi, Teoh, Zhang, Khattab, 2026)があります。
+重みを出力するよう<strong>学習した</strong> LLM ではなく、<strong>汎用 LLM をそのまま</strong>使い、推論で重みを読み・直し・書くという主張です。
+サーベイの枠組みへの位置づけは<a href="wsp.html">発展編</a>で詳しく扱います。
+</div>
+
+<h2 id="open">未解決問題(§7)</h2>
+<p>
+“Despite rapid progress, Weight Space Learning remains in its <strong>early stages</strong>.”
+§7 は 3 つの研究方向を挙げています。
+</p>
+
+<figure class="diagram" id="open-fig" data-cycle-ms="12000" data-step-count="3">
+<svg viewBox="0 0 960 330" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="重み空間学習の 3 つの未解決問題">
+  <g class="o1">
+    <rect x="10" y="10" width="304" height="310" rx="12" fill="#e5eafc" stroke="#3556d4" stroke-width="2"/>
+    <text x="162" y="38" font-size="13.5" font-weight="bold" text-anchor="middle" fill="#3556d4">§7.1 第一級の学習ドメインへ</text>
+    <text x="162" y="62" font-size="10.5" text-anchor="middle" fill="#5b6478">重みを「データの入れ物」で終わらせない</text>
+    <rect x="28" y="78" width="268" height="104" rx="9" fill="#fff" stroke="#3556d4"/>
+    <text x="162" y="100" font-size="11.5" text-anchor="middle" font-weight="bold">幾何的・関数的な基盤</text>
+    <text x="162" y="122" font-size="10.5" text-anchor="middle" fill="#5b6478">商構造で不変性を形式化し、</text>
+    <text x="162" y="140" font-size="10.5" text-anchor="middle" fill="#5b6478">意味のある距離を定義する</text>
+    <text x="162" y="162" font-size="10" text-anchor="middle" fill="#8a93ad">モード連結性・低ランク部分空間</text>
+    <rect x="28" y="194" width="268" height="112" rx="9" fill="#fff" stroke="#3556d4"/>
+    <text x="162" y="216" font-size="11.5" text-anchor="middle" font-weight="bold">汎用な重み空間学習器</text>
+    <text x="162" y="238" font-size="10.5" text-anchor="middle" fill="#5b6478">MLP・CNN・RNN・Transformer・拡散を</text>
+    <text x="162" y="256" font-size="10.5" text-anchor="middle" fill="#5b6478">1 つの族で扱えるメタモデルはまだない</text>
+    <text x="162" y="280" font-size="10" text-anchor="middle" fill="#3556d4">候補: LoRA を構造非依存の</text>
+    <text x="162" y="296" font-size="10" text-anchor="middle" fill="#3556d4">共通表現として使う</text>
+  </g>
+  <g class="o2">
+    <rect x="328" y="10" width="304" height="310" rx="12" fill="#fdeeda" stroke="#e07b1f" stroke-width="2"/>
+    <text x="480" y="38" font-size="13.5" font-weight="bold" text-anchor="middle" fill="#e07b1f">§7.2 大規模モデルへの拡張</text>
+    <text x="480" y="62" font-size="10.5" text-anchor="middle" fill="#5b6478">入力次元が深さ・幅とともに爆発する</text>
+    <rect x="346" y="78" width="268" height="70" rx="9" fill="#fff" stroke="#e07b1f"/>
+    <text x="480" y="100" font-size="11.5" text-anchor="middle" font-weight="bold">モジュール的・階層的な処理</text>
+    <text x="480" y="122" font-size="10.5" text-anchor="middle" fill="#5b6478">共有の重みテンプレート + 層ごとの</text>
+    <text x="480" y="138" font-size="10.5" text-anchor="middle" fill="#5b6478">軽量トークン(位置埋め込みのように)</text>
+    <rect x="346" y="158" width="268" height="70" rx="9" fill="#fff" stroke="#e07b1f"/>
+    <text x="480" y="180" font-size="11.5" text-anchor="middle" font-weight="bold">微調整モジュールの生成</text>
+    <text x="480" y="202" font-size="10.5" text-anchor="middle" fill="#5b6478">「組み合わせ」を超えて、基盤モデルの</text>
+    <text x="480" y="218" font-size="10.5" text-anchor="middle" fill="#5b6478">知識を活かした合成へ</text>
+    <rect x="346" y="238" width="268" height="70" rx="9" fill="#fff" stroke="#e07b1f"/>
+    <text x="480" y="260" font-size="11.5" text-anchor="middle" font-weight="bold">圧縮と近似</text>
+    <text x="480" y="282" font-size="10.5" text-anchor="middle" fill="#5b6478">対称性を割った低次元部分空間</text>
+    <text x="480" y="298" font-size="10.5" text-anchor="middle" fill="#5b6478">(LoRA のように)で重みを近似</text>
+  </g>
+  <g class="o3">
+    <rect x="646" y="10" width="304" height="310" rx="12" fill="#fbe4e8" stroke="#d43d51" stroke-width="2"/>
+    <text x="798" y="38" font-size="13.5" font-weight="bold" text-anchor="middle" fill="#d43d51">§7.3 頑健性と安全性</text>
+    <text x="798" y="62" font-size="10.5" text-anchor="middle" fill="#5b6478">重みを直接いじる操作には固有の危険がある</text>
+    <rect x="664" y="78" width="268" height="104" rx="9" fill="#fff" stroke="#d43d51"/>
+    <text x="798" y="100" font-size="11.5" text-anchor="middle" font-weight="bold">制御可能な重み生成</text>
+    <text x="798" y="122" font-size="10.5" text-anchor="middle" fill="#5b6478">生成した重みの機能に保証がない</text>
+    <text x="798" y="140" font-size="10.5" text-anchor="middle" fill="#5b6478">→ タスク記述・ドメイン制約・安全規則を</text>
+    <text x="798" y="158" font-size="10.5" text-anchor="middle" fill="#5b6478">生成過程に統合し、監査可能に</text>
+    <rect x="664" y="194" width="268" height="112" rx="9" fill="#fff" stroke="#d43d51"/>
+    <text x="798" y="216" font-size="11.5" text-anchor="middle" font-weight="bold">重み空間での攻撃の検知と防御</text>
+    <text x="798" y="238" font-size="10.5" text-anchor="middle" fill="#5b6478">悪意ある編集・注入された部分空間は</text>
+    <text x="798" y="256" font-size="10.5" text-anchor="middle" fill="#5b6478">データを変えずにモデルを損なう</text>
+    <text x="798" y="280" font-size="10" text-anchor="middle" fill="#d43d51">検知: 異常指標・埋め込みプローブ</text>
+    <text x="798" y="296" font-size="10" text-anchor="middle" fill="#d43d51">防御: 対称性を考慮した射影・可逆編集</text>
+  </g>
+</svg>
+<figcaption>
+§7 が挙げる 3 つの研究方向と、それぞれの下位課題。
+</figcaption>
+</figure>
+
+<h3>§7.1 重み空間を「第一級の学習ドメイン」に</h3>
+<div class="callout warn">
+<span class="callout-title">現状への批判</span>
+“Many current successes of WSL appear in INRs, where signals are encoded directly into weights. However, these approaches typically treat
+<strong>weights as containers for data</strong>, rather than as a domain with its own geometry and semantics.”
+</div>
+<p>
+必要なのは 2 つです。<strong>幾何的・関数的な基盤</strong> —— 対称性と冗長性が作る大きな同値類を商構造で形式化し、
+意味のある距離を定義すること(過剰パラメータ化のため関数的な変化はしばしば低次元部分空間に乗っている、という観察も手がかりになる)。
+そして<strong>汎用な重み空間学習器</strong> —— “A key open question is whether a <strong>structure-aware yet architecture-agnostic learner</strong>
+can operate directly on raw model weights.” その候補としてサーベイは LoRA を挙げます:
+“Because LoRA represents weights through a compact linear transformation, it naturally exhibits strong symmetry properties and aligns well with weight space generation paradigms.”
+</p>
+
+<h3>§7.2 大規模モデルへのスケーリング</h3>
+<p>
+“the input size of weight space grows dramatically with model depth and width, coupled with complex symmetry constraints and inter-layer dependencies.”
+3 つの方向が挙げられています。
+</p>
+<ul>
+  <li><strong>モジュール的・階層的処理</strong>: 大規模モデルは機能の少し違う同じモジュール(注意ブロック・FFN)の繰り返し。
+  “can we modulate an entire large-scale model through <strong>shared bases plus layer-specific tokens</strong>?”</li>
+  <li><strong>微調整モジュール</strong>: 重み生成は既存部品の<strong>組み合わせ</strong>(compositional generation)に近く、新しい知識を持ち込みにくい [Wiedemer+ 2023, Zeng+ 2025]。
+  アダプタ・プレフィックス・低ランク変換を生成すれば、基盤モデルの豊かな事前知識を活用した「知識拡張型の合成」になる</li>
+  <li><strong>圧縮と近似</strong>: 既存の潜在符号化手法の多くは重み空間の構造的性質を無視している。
+  対称性を割った部分空間(LoRA に似た、関数に効く重みが少ない空間)で近似する</li>
+</ul>
+
+<h3>§7.3 重み空間操作の頑健性と安全性</h3>
+<p>
+“Most existing works prioritize performance and efficiency, leaving <strong>security largely unexplored</strong>.”
+WSL では重みそのものが主要なデータモダリティになるため、敵対的攻撃も入力レベルとは根本的に異なる形をとります。
+</p>
+<ul>
+  <li><strong>制御可能な重み生成</strong>: 生成パイプラインは意図した機能の保証なしに重みを出すことが多く、有害・予測不能な振る舞いのリスクがある。
+  タスク記述・ドメイン制約・安全規則を生成に統合し、“shift WSL from opaque inner-loop adaptation to <strong>transparent, reliable weight synthesis</strong>”</li>
+  <li><strong>攻撃の検知と防御</strong>: “malicious edits or injected subspaces can compromise model integrity <strong>without altering the original data</strong>.”
+  検知(異常指標・埋め込みベースのプローブで怪しい重みパターンや軌跡を特定 [Shor+ 2025])と、
+  防御(対称性を考慮した射影・再学習不要の可逆編集)の 2 面</li>
+</ul>
+
+<div class="callout math">
+<span class="callout-title">解説者の考察 — 3 つの問題はつながっている</span>
+評価編で見た「評価指標の欠如」も含めると、未解決問題は 1 本の鎖として読めます。
+<strong>大規模化</strong>のためには全重みではなく LoRA のような部分空間を扱いたい(§7.2)→
+その部分空間を<strong>構造をまたいで共通に</strong>扱えれば汎用学習器になる(§7.1)→
+しかし重みを直接生成・編集できるようになるほど、<strong>出てきた重みが何をするか</strong>を保証・監査する手段が必要になる(§7.3)→
+その監査には、タスク性能だけでなく<strong>対称性の保存や機能的性質を測る評価</strong>が要る(§3.3, §4.3)。
+WSR(重みを見て振る舞いを予測する)が、WSG の安全性を担保する道具になる —— という循環が、この分野の次の数年の姿かもしれません。<br><br>なお、汎用 LLM に重みを読ませて監査する(“auditing without evaluation”)という別のアプローチも現れています(→ <a href="wsp.html#discussion">発展編</a>)。
+</div>
+
+<h2 id="summary">全体まとめ</h2>
+<div class="callout point">
+<span class="callout-title">サーベイの結論(§8)</span>
+“Weight space learning reframes neural networks not merely as function approximators trained on data, but as
+<strong>structured objects inhabiting a rich and informative parameter space</strong>. […]
+we hope this survey helps unify ongoing research and encourages the community to view neural networks in a new light:
+not only as functions we train, but as entities we can <strong>analyze, represent, and create directly in weight space</strong>.”
+</div>
+<table>
+  <tr><th>章</th><th>一言でいうと</th><th>鍵になる式</th></tr>
+  <tr><td><a href="understanding.html">1. 理解 (WSU)</a></td><td>違う重みが同じ関数になる —— 対称性が重み空間を同値類に分ける</td><td>\(f(\rho_{in}(\theta); x) = f(\theta; x)\)</td></tr>
+  <tr><td><a href="representation.html">2. 表現 (WSR)</a></td><td>その対称性を尊重して、重みをデータなしで推論できる埋め込みに写す</td><td>\(z = \phi(\theta),\ \hat y = \psi(z)\)</td></tr>
+  <tr><td><a href="generation.html">3. 生成 (WSG)</a></td><td>タスク損失(ハイパーネット)か zoo の分布(生成モデル)から、重みを直接作る</td><td>\(\theta = H(x)\) / \(W \sim p_\phi(W)\)</td></tr>
+  <tr><td><a href="benchmarks.html">4. 評価</a></td><td>model zoo が土台。だがタスク性能以外を測る標準指標はまだない</td><td>—</td></tr>
+  <tr><td>5. 応用・課題</td><td>内側ループを「重みの生成」で置き換える流れが各分野で進行中。壁は大規模化と安全性</td><td>—</td></tr>
+  <tr><td><a href="wsp.html">6. 発展: WSP</a></td><td>専用のメタモデルを学習せず、汎用 LLM が推論で重みを読み・直し・書く(サーベイ後の 2026 年 11 月のブログ)</td><td>\(\tilde\theta = \theta + \Delta\)(Δ を推論で決める)</td></tr>
+</table>
+
+<nav class="pager">
+  <a href="benchmarks.html"><span class="dir">← 前へ</span><span class="title">4. 評価方法とベンチマーク</span></a>
+  <a class="next" href="wsp.html"><span class="dir">次へ →</span><span class="title">6. 発展: Weight-Space Programming</span></a>
+</nav>
+
+</main>
+
+<footer class="site-footer">
+  <p>論文: <em>A Survey of Weight Space Learning: Understanding, Representation, and Generation</em>(Han, Wang+, 2026)/
+  <a href="https://arxiv.org/abs/2603.10090" target="_blank" rel="noopener">arXiv:2603.10090</a></p>
+  <p>このサイトのコンテンツはAIとの協働で作成しています。記述されている内容には間違いが含まれることがあるので、正確性については一次資料をチェックしてください。</p>
+</footer>
+
+<script>
+MathJax = { tex: { inlineMath: [['\\(', '\\)']], displayMath: [['$$', '$$']] } };
+</script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js" async></script>
+<script src="assets/diagram-controls.js"></script>
+</body>
+</html>

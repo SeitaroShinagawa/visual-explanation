@@ -1,0 +1,484 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WSL 発展編 — Weight-Space Programming: 汎用 LLM が重みを読み書きする</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🧬</text></svg>">
+<link rel="stylesheet" href="assets/style.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/themes/prism-tomorrow.min.css">
+<style>
+/* ===== who writes the weights: 4 stages (14s) ===== */
+@keyframes ps-bright {
+  0%, 25%, 100% { opacity: 0.28; }
+  4%, 21% { opacity: 1; }
+}
+#pos-fig .c1 { animation: ps-bright 14s ease-in-out infinite backwards; }
+#pos-fig .c2 { animation: ps-bright 14s ease-in-out infinite backwards; animation-delay: 3.5s; }
+#pos-fig .c3 { animation: ps-bright 14s ease-in-out infinite backwards; animation-delay: 7s; }
+#pos-fig .c4 { animation: ps-bright 14s ease-in-out infinite backwards; animation-delay: 10.5s; }
+
+/* ===== read / fix / write: 3 stages (12s) ===== */
+@keyframes ex-turn {
+  0%, 2% { opacity: 0.25; }
+  6%, 30% { opacity: 1; }
+  34%, 100% { opacity: 0.25; }
+}
+#exp-fig .e1 { animation: ex-turn 12s ease-in-out infinite backwards; }
+#exp-fig .e2 { animation: ex-turn 12s ease-in-out infinite backwards; animation-delay: 4s; }
+#exp-fig .e3 { animation: ex-turn 12s ease-in-out infinite backwards; animation-delay: 8s; }
+
+/* ===== edit loop (Exp 8): 4 stages (14s) ===== */
+#loop-fig .l1 { animation: ps-bright 14s ease-in-out infinite backwards; }
+#loop-fig .l2 { animation: ps-bright 14s ease-in-out infinite backwards; animation-delay: 3.5s; }
+#loop-fig .l3 { animation: ps-bright 14s ease-in-out infinite backwards; animation-delay: 7s; }
+#loop-fig .l4 { animation: ps-bright 14s ease-in-out infinite backwards; animation-delay: 10.5s; }
+
+@media (prefers-reduced-motion: reduce) {
+  #pos-fig .c1, #pos-fig .c2, #pos-fig .c3, #pos-fig .c4,
+  #exp-fig .e1, #exp-fig .e2, #exp-fig .e3,
+  #loop-fig .l1, #loop-fig .l2, #loop-fig .l3, #loop-fig .l4 { opacity: 1; }
+}
+</style>
+</head>
+<body>
+
+<nav class="topnav">
+  <a class="home-link" href="../index.html">Visual Explanation</a><span class="sep">/</span>
+  <a href="./index.html">WSL 概要</a>
+  <a href="understanding.html">1. 理解 (WSU)</a>
+  <a href="representation.html">2. 表現 (WSR)</a>
+  <a href="generation.html">3. 生成 (WSG)</a>
+  <a href="benchmarks.html">4. 評価とベンチマーク</a>
+  <a href="outlook.html">5. 応用・トレンド・課題</a>
+  <a href="wsp.html" class="current">6. 発展: WSP</a>
+</nav>
+
+<header class="page-header">
+  <h1>6. 発展: Weight-Space Programming</h1>
+  <p>サーベイ(2026 年 3 月)の後に公開されたブログ記事
+  <em>Sparks of Weight-Space Programming: LLMs can natively read &amp; write neural network weights</em>
+  (Takehi, Teoh, Zhang, Khattab / MIT CSAIL, 2026-11-02)を、サーベイの枠組みの中に位置づけます。
+  <strong>専用に学習したメタモデルではなく、汎用の LLM が推論によって重みを読み・直し・書く</strong>という主張です。</p>
+</header>
+
+<main class="article">
+
+<h2 id="what">記事は何を主張しているか</h2>
+<div class="callout point">
+<span class="callout-title">記事の TL;DR</span>
+“We find that frontier LLMs are surprisingly good at <strong>natively reading and writing neural network weights</strong>,
+using a variety of recent tools and algorithms or even via direct weight editing. These results show sparks of Weight-Space Programming,
+which may extend beyond what we’d expect from humans or conventional algorithms.”
+<br><br>
+定義: “In Weight-Space Programming, a <strong>general-purpose LLM</strong> reads and writes a network’s weights directly
+(i.e., <strong>not through an optimizer</strong>, and in particular not with gradient descent) around some <strong>natural language spec</strong>,
+sometimes even with no environment feedback at all.”
+<span class="cite">— Takehi et al., 2026(ブログ記事。査読論文ではありません)</span>
+</div>
+<p>
+実験に使われたのは記事中で <strong>GPT-6 Astra</strong> と呼ばれる汎用 LLM で、
+重みを<strong>読む</strong>(何を学習したネットワークか当てる)・<strong>直す</strong>(失敗の原因を重みの中で特定し修正する)・
+<strong>書く</strong>(ゼロから重みを書く)の 3 種類、計 8 つの実験が報告されています。
+いずれも<strong>勾配降下・学習ループは使わせていない</strong>点が共通です。
+</p>
+
+<h2 id="position">サーベイの中での位置づけ — 「誰が重みを読み書きするか」</h2>
+<p>
+記事自身は、重みの書き手を 3 種類に分けています:
+“Today, weights are written by <strong>optimization</strong>, by <strong>custom networks trained to write them</strong>, or by <strong>compilers from formal programs</strong>.”
+(リンク先はそれぞれ Software 2.0、arXiv:2102.11174、arXiv:2301.05062)。
+サーベイが扱う WSR・WSG は、このうち 2 つ目 ——「<strong>そのために学習したネットワーク</strong>」—— に当たります。
+WSP はそこに 4 つ目の書き手(読み手)を加える提案だと整理できます。
+</p>
+
+<figure class="diagram" id="pos-fig" data-cycle-ms="14000" data-step-count="4">
+<svg viewBox="0 0 960 420" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="重みを読み書きする主体の 4 類型と、サーベイと WSP の位置">
+  <text x="70" y="140" font-size="13" font-weight="bold" text-anchor="middle" fill="#3556d4">読む</text>
+  <text x="70" y="158" font-size="10" text-anchor="middle" fill="#5b6478">(理解・予測)</text>
+  <text x="70" y="300" font-size="13" font-weight="bold" text-anchor="middle" fill="#7b46c9">書く</text>
+  <text x="70" y="318" font-size="10" text-anchor="middle" fill="#5b6478">(生成・編集)</text>
+  <line x1="120" y1="215" x2="950" y2="215" stroke="#dde2ee"/>
+
+  <g class="c1">
+    <text x="220" y="30" font-size="12.5" font-weight="bold" text-anchor="middle" fill="#5b6478">① 最適化アルゴリズム</text>
+    <text x="220" y="48" font-size="10" text-anchor="middle" fill="#8a93ad">SGD / Adam / Muon</text>
+    <rect x="130" y="80" width="180" height="120" rx="10" fill="#f2f4fa" stroke="#8a93ad"/>
+    <text x="220" y="130" font-size="11" text-anchor="middle" fill="#8a93ad">(読まない)</text>
+    <text x="220" y="150" font-size="10" text-anchor="middle" fill="#8a93ad">勾配しか見ない</text>
+    <rect x="130" y="230" width="180" height="120" rx="10" fill="#fff" stroke="#5b6478" stroke-width="2"/>
+    <text x="220" y="262" font-size="11.5" text-anchor="middle" font-weight="bold">損失の勾配で更新</text>
+    <text x="220" y="284" font-size="10" text-anchor="middle" fill="#5b6478">データ・損失が必須</text>
+    <text x="220" y="302" font-size="10" text-anchor="middle" fill="#5b6478">記事: 人間の単純な帰納バイアスを</text>
+    <text x="220" y="318" font-size="10" text-anchor="middle" fill="#5b6478">“tiny symbolic optimizers” に</text>
+    <text x="220" y="334" font-size="10" text-anchor="middle" fill="#5b6478">埋め込んだもの</text>
+  </g>
+
+  <g class="c2">
+    <text x="420" y="30" font-size="12.5" font-weight="bold" text-anchor="middle" fill="#e07b1f">② 専用に学習したネット</text>
+    <text x="420" y="48" font-size="10" text-anchor="middle" fill="#e07b1f">= サーベイの WSR / WSG</text>
+    <rect x="330" y="80" width="180" height="120" rx="10" fill="#fdeeda" stroke="#e07b1f" stroke-width="2"/>
+    <text x="420" y="108" font-size="11.5" text-anchor="middle" font-weight="bold">メタモデル φ, ψ</text>
+    <text x="420" y="130" font-size="10" text-anchor="middle" fill="#5b6478">DWSNets / NFN / GMN</text>
+    <text x="420" y="146" font-size="10" text-anchor="middle" fill="#5b6478">ProbeX / ProbeLog</text>
+    <text x="420" y="176" font-size="10" text-anchor="middle" fill="#e07b1f">model zoo で学習が必要</text>
+    <rect x="330" y="230" width="180" height="120" rx="10" fill="#efe6fb" stroke="#7b46c9" stroke-width="2"/>
+    <text x="420" y="258" font-size="11.5" text-anchor="middle" font-weight="bold">ハイパーネット H / G<tspan baseline-shift="sub" font-size="75%">φ</tspan></text>
+    <text x="420" y="280" font-size="10" text-anchor="middle" fill="#5b6478">G.pt / p-diff / ORAL</text>
+    <text x="420" y="296" font-size="10" text-anchor="middle" fill="#5b6478">NeuroGen / T2W(LLM を微調整)</text>
+    <text x="420" y="312" font-size="10" text-anchor="middle" fill="#5b6478">Fast weight programmers</text>
+    <text x="420" y="336" font-size="10" text-anchor="middle" fill="#7b46c9">タスク損失 or zoo の分布で学習</text>
+  </g>
+
+  <g class="c3">
+    <text x="620" y="30" font-size="12.5" font-weight="bold" text-anchor="middle" fill="#1e9e6a">③ 人手の道具・コンパイラ</text>
+    <text x="620" y="48" font-size="10" text-anchor="middle" fill="#8a93ad">機械論的解釈可能性 / Tracr</text>
+    <rect x="530" y="80" width="180" height="120" rx="10" fill="#e0f5ec" stroke="#1e9e6a" stroke-width="2"/>
+    <text x="620" y="108" font-size="11.5" text-anchor="middle" font-weight="bold">回路・特徴の追跡</text>
+    <text x="620" y="130" font-size="10" text-anchor="middle" fill="#5b6478">研究者が専用ツールで読む</text>
+    <text x="620" y="146" font-size="10" text-anchor="middle" fill="#5b6478">LLM は主に「ニューロンの</text>
+    <text x="620" y="162" font-size="10" text-anchor="middle" fill="#5b6478">説明係」として参加</text>
+    <rect x="530" y="230" width="180" height="120" rx="10" fill="#e0f5ec" stroke="#1e9e6a" stroke-width="2"/>
+    <text x="620" y="258" font-size="11.5" text-anchor="middle" font-weight="bold">形式プログラムを変換</text>
+    <text x="620" y="280" font-size="10" text-anchor="middle" fill="#5b6478">プログラム → Transformer 重み</text>
+    <text x="620" y="296" font-size="10" text-anchor="middle" fill="#5b6478">AdderBoard: エージェントが</text>
+    <text x="620" y="312" font-size="10" text-anchor="middle" fill="#5b6478">極小 Transformer を手で設定</text>
+    <text x="620" y="336" font-size="10" text-anchor="middle" fill="#1e9e6a">ごく小規模に限られる</text>
+  </g>
+
+  <g class="c4">
+    <text x="830" y="30" font-size="12.5" font-weight="bold" text-anchor="middle" fill="#d43d51">④ 汎用 LLM(そのまま)</text>
+    <text x="830" y="48" font-size="10" text-anchor="middle" fill="#d43d51">= Weight-Space Programming</text>
+    <rect x="730" y="80" width="200" height="120" rx="10" fill="#fbe4e8" stroke="#d43d51" stroke-width="2.5"/>
+    <text x="830" y="108" font-size="11.5" text-anchor="middle" font-weight="bold">推論で重みを読む</text>
+    <text x="830" y="130" font-size="10" text-anchor="middle" fill="#5b6478">学習したゲーム・言語・形状を</text>
+    <text x="830" y="146" font-size="10" text-anchor="middle" fill="#5b6478">重みから当てる(実験 1〜3, 7)</text>
+    <text x="830" y="176" font-size="10" text-anchor="middle" fill="#d43d51">model zoo も追加学習も不要</text>
+    <rect x="730" y="230" width="200" height="120" rx="10" fill="#fbe4e8" stroke="#d43d51" stroke-width="2.5"/>
+    <text x="830" y="258" font-size="11.5" text-anchor="middle" font-weight="bold">推論で重みを直す・書く</text>
+    <text x="830" y="280" font-size="10" text-anchor="middle" fill="#5b6478">自然言語の仕様 → 重み</text>
+    <text x="830" y="296" font-size="10" text-anchor="middle" fill="#5b6478">修正(実験 4, 8)・ゼロから(5, 6)</text>
+    <text x="830" y="312" font-size="10" text-anchor="middle" fill="#5b6478">171K 重みを直接 〜 0.8B をツールで</text>
+    <text x="830" y="336" font-size="10" text-anchor="middle" fill="#d43d51">勾配降下を使わない</text>
+  </g>
+
+  <text x="535" y="385" font-size="11.5" text-anchor="middle" fill="#1c2333">記事の言葉: “Apart from such tiny cases, <tspan font-weight="bold">either the reader is trained for the task or training still does the writing</tspan>.</text>
+  <text x="535" y="405" font-size="11.5" text-anchor="middle" fill="#1c2333">What is new here is a general-purpose frontier model, used as it is, that reads and writes the weights themselves”</text>
+</svg>
+<figcaption>
+重みの読み手・書き手の 4 類型(記事の Introduction と Background の記述を、解説者が表にしたもの)。
+サーベイの WSR / WSG は ② に収まり、WSP は ④ という新しい列を主張します。
+② の NeuroGen・T2W も LLM を使いますが、<strong>重みを出力するように微調整・整列した</strong>専用モデルである点が ④ と違います。
+</figcaption>
+</figure>
+
+<h3>サーベイの定式化との対応</h3>
+<table>
+  <tr><th>観点</th><th>サーベイの WSR / WSG</th><th>Weight-Space Programming</th></tr>
+  <tr><td>読み手・書き手</td><td>専用に学習したメタモデル \(\phi_\psi\)、ハイパーネット \(H\)、生成器 \(G_\phi\)</td><td>汎用 LLM をそのまま使う(学習しない)</td></tr>
+  <tr><td>学習データ</td><td>model zoo(数千〜数百万の学習済みモデル)/ タスクデータ</td><td><strong>なし</strong>(読む・書く対象の 1〜2 個のネットワークだけ)</td></tr>
+  <tr><td>条件付け</td><td>タスク埋め込み・CLIP 特徴・テキスト埋め込み(§4.1.1)</td><td>自然言語の仕様・環境のルールとソースコード</td></tr>
+  <tr><td>重みの読み方</td><td>同変層・GNN・プローブ応答の集約(§3.1)</td><td>LLM が重みをテキストとして読む / Python で解析する(行列積・方向の分析)</td></tr>
+  <tr><td>編集の形</td><td>\(\tilde\theta = \phi^{-1}(z+\Delta z)\) または \(\tilde\theta = \theta + \Delta(\theta)\)(式 11, 12)</td><td>\(\tilde\theta = \theta + \Delta\) で、\(\Delta\) を<strong>推論で</strong>決める(式 12 の形)</td></tr>
+  <tr><td>環境からのフィードバック</td><td>学習時に大量に使う</td><td>0 回(実験 1〜5)〜 forward pass 50 回まで(実験 6, 8)</td></tr>
+  <tr><td>規模</td><td>多くは小〜中規模の MLP / CNN(§7.2)</td><td>17K 重み 〜 Qwen3.5-0.8B(ツール併用)</td></tr>
+</table>
+
+<h2 id="experiments">8 つの実験 — 読む・直す・書く</h2>
+
+<figure class="diagram" id="exp-fig" data-cycle-ms="12000" data-step-count="3">
+<svg viewBox="0 0 960 400" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="記事の 8 つの実験を読む・直す・書くに分類した図">
+  <g class="e1">
+    <rect x="10" y="10" width="300" height="380" rx="12" fill="#e5eafc" stroke="#3556d4" stroke-width="2"/>
+    <text x="160" y="38" font-size="14" font-weight="bold" text-anchor="middle" fill="#3556d4">読む — WSR に対応</text>
+    <g font-size="10.5">
+      <rect x="24" y="54" width="272" height="72" rx="8" fill="#fff" stroke="#3556d4"/>
+      <text x="36" y="74" font-weight="bold">実験 1: どのゲームの方策か</text>
+      <text x="36" y="92" fill="#5b6478">PPO の MLP(17,253 重み)× 4 ゲーム</text>
+      <text x="36" y="110" fill="#3556d4">選択肢を示さずに 4 つとも正解</text>
+      <rect x="24" y="134" width="272" height="72" rx="8" fill="#fff" stroke="#3556d4"/>
+      <text x="36" y="154" font-weight="bold">実験 2: DDPM が何を描くか</text>
+      <text x="36" y="172" fill="#5b6478">円・三角・四角(23,824 重み、順伝播禁止)</text>
+      <text x="36" y="190" fill="#3556d4">形状を当てる(ただし輪郭として描く)</text>
+      <rect x="24" y="214" width="272" height="80" rx="8" fill="#fff" stroke="#3556d4"/>
+      <text x="36" y="234" font-weight="bold">実験 3: 中間層だけで言語を当てる</text>
+      <text x="36" y="252" fill="#5b6478">入出力層を除いた 4 ブロック(7.2M)</text>
+      <text x="36" y="270" fill="#3556d4">言語 3/3 正解・copying head を全て特定</text>
+      <text x="36" y="286" fill="#8a93ad">(行列積で探す — Elhage+ の手法を再発見)</text>
+      <rect x="24" y="302" width="272" height="78" rx="8" fill="#fff" stroke="#d43d51"/>
+      <text x="36" y="322" font-weight="bold">実験 7: どちらが迎合的 (sycophant) か</text>
+      <text x="36" y="340" fill="#d43d51">重みだけ: 4 回とも判別できず</text>
+      <text x="36" y="358" fill="#3556d4">自作テキストの注意パターンを見れば</text>
+      <text x="36" y="374" fill="#3556d4">3 組すべて判別(Gemma 3 270M)</text>
+    </g>
+  </g>
+  <g class="e2">
+    <rect x="330" y="10" width="300" height="380" rx="12" fill="#e0f5ec" stroke="#1e9e6a" stroke-width="2"/>
+    <text x="480" y="38" font-size="14" font-weight="bold" text-anchor="middle" fill="#1e9e6a">直す — WSR のモデル編集に対応</text>
+    <g font-size="10.5">
+      <rect x="344" y="54" width="272" height="132" rx="8" fill="#fff" stroke="#1e9e6a"/>
+      <text x="356" y="74" font-weight="bold">実験 4: 坂を登れない車の方策</text>
+      <text x="356" y="92" fill="#5b6478">Kinetix の PPO 方策(171,664 重み)は</text>
+      <text x="356" y="110" fill="#5b6478">局所解に陥り 256 回中 0 回成功</text>
+      <text x="356" y="132" fill="#1e9e6a">重みの 3.5% を 1 回で書き換え</text>
+      <text x="356" y="150" fill="#1e9e6a">→ 1,024 回すべて成功</text>
+      <text x="356" y="172" fill="#8a93ad">各層に「後退してから加速」する小経路を追加</text>
+      <rect x="344" y="196" width="272" height="184" rx="8" fill="#fff" stroke="#1e9e6a"/>
+      <text x="356" y="216" font-weight="bold">実験 8: Qwen3.5-0.8B を数学に強く</text>
+      <text x="356" y="234" fill="#5b6478">勾配なし・forward pass 50 回の予算</text>
+      <text x="356" y="254" fill="#5b6478">思考ループの原因を層 15・19 の MLP が</text>
+      <text x="356" y="270" fill="#5b6478">書き込む 1 方向に特定し、除去</text>
+      <text x="356" y="292" fill="#1e9e6a">変更は 131,072 重み(0.016%)</text>
+      <text x="356" y="312" fill="#1e9e6a">MATH-500  7.9% → 48.1%</text>
+      <text x="356" y="330" fill="#1e9e6a">GSM8K  13.8% → 67.1%</text>
+      <text x="356" y="348" fill="#1e9e6a">IFEval  21.0% → 62.3%</text>
+      <text x="356" y="370" fill="#d43d51">ループしない Gemma 3 270M は改善せず</text>
+    </g>
+  </g>
+  <g class="e3">
+    <rect x="650" y="10" width="300" height="380" rx="12" fill="#efe6fb" stroke="#7b46c9" stroke-width="2"/>
+    <text x="800" y="38" font-size="14" font-weight="bold" text-anchor="middle" fill="#7b46c9">書く — WSG に対応</text>
+    <g font-size="10.5">
+      <rect x="664" y="54" width="272" height="150" rx="8" fill="#fff" stroke="#7b46c9"/>
+      <text x="676" y="74" font-weight="bold">実験 5: MinAtar の方策をゼロから</text>
+      <text x="676" y="92" fill="#5b6478">ルールとソースコードだけ。データ・損失・</text>
+      <text x="676" y="108" fill="#5b6478">勾配・ツール・試行プレイすべてなし</text>
+      <text x="676" y="128" fill="#7b46c9">3 ゲームとも PPO 1 億 step を上回る</text>
+      <text x="676" y="146" fill="#5b6478">Breakout 517.4(PPO 5 億 step: 25.3)</text>
+      <text x="676" y="164" fill="#5b6478">1 層目で「球の落下点」を計算し、</text>
+      <text x="676" y="180" fill="#5b6478">2 層目でパドルを動かす、とプログラム</text>
+      <rect x="664" y="214" width="272" height="166" rx="8" fill="#fff" stroke="#7b46c9"/>
+      <text x="676" y="234" font-weight="bold">実験 6: 9×9 囲碁の方策をゼロから</text>
+      <text x="676" y="252" fill="#5b6478">1,480,274 重み(文脈に入らない)を</text>
+      <text x="676" y="268" fill="#5b6478">Python サンドボックスで書く</text>
+      <text x="676" y="290" fill="#7b46c9">forward pass 0 回: 小さな PPO に過半勝利</text>
+      <text x="676" y="308" fill="#7b46c9">50 回: 同サイズ・2,000 万局学習の</text>
+      <text x="676" y="324" fill="#7b46c9">PPO を上回る</text>
+      <text x="676" y="346" fill="#5b6478">呼吸点 → 連の危険 → 手の評価、を</text>
+      <text x="676" y="362" fill="#5b6478">層ごとに「囲碁プログラム」として書く</text>
+    </g>
+  </g>
+</svg>
+<figcaption>
+記事の 8 実験を、サーベイの次元に対応づけたもの(数値はすべて記事の本文・表から転記)。
+「読む」は WSR の性能予測・性質分類、「直す」は WSR のモデル編集(式 12)、「書く」は WSG に当たりますが、
+<strong>どれも model zoo で学習したメタモデルを使っていない</strong>のが決定的な違いです。
+</figcaption>
+</figure>
+
+<h3>実験の詳細(記事の表から転記)</h3>
+<table>
+  <tr><th>実験 5: MinAtar</th><th>PPO 1 億 step</th><th>PPO 5 億 step</th><th>Astra(1 回の応答)</th></tr>
+  <tr><td>Breakout</td><td>15.8</td><td>25.3</td><td><strong>517.4</strong></td></tr>
+  <tr><td>Seaquest</td><td>5.6</td><td>88.9</td><td><strong>53.1</strong></td></tr>
+  <tr><td>Asterix</td><td>25.8</td><td>55.2</td><td><strong>53.2</strong></td></tr>
+</table>
+<table>
+  <tr><th>実験 8: Qwen3.5-0.8B</th><th>MATH-500 (%)</th><th>GSM8K (%)</th><th>IFEval (%)</th><th>トークン上限到達 (%)</th></tr>
+  <tr><td>ベース</td><td>7.9</td><td>13.8</td><td>21.0</td><td>93.0</td></tr>
+  <tr><td>編集・forward pass 10 回</td><td>12.3</td><td>25.7</td><td>49.0</td><td>87.2</td></tr>
+  <tr><td>編集・forward pass 25 回</td><td>14.1</td><td>25.1</td><td>39.9</td><td>86.4</td></tr>
+  <tr><td>編集・forward pass 50 回</td><td><strong>48.1</strong></td><td><strong>67.1</strong></td><td><strong>62.3</strong></td><td>33.1</td></tr>
+</table>
+
+<h2 id="mechanism">「直す」の仕組み — 実験 8 の編集ループ</h2>
+<p>
+実験 6・8 では、重みが文脈に収まらないため、LLM に <strong>Python の実行環境(重みの読み書き・numpy/PyTorch での解析)</strong>と、
+<strong>限られた回数の forward pass</strong>(モデルに問題を解かせて結果を見る)が与えられます。
+学習ループと勾配は禁止です。
+</p>
+<div class="callout warn">
+<span class="callout-title">「forward pass 1 回」はバッチ単位の要求 1 回</span>
+記事の “forward pass” は、評価ツールへの<strong>要求 1 回</strong>を数えたものです。
+実験 8 では 1 回で<strong>最大 512 問を解かせる</strong>か<strong>最大 1,024 本のテキストを読ませる</strong>
+(記事の Setup: “a forward pass: the model answers up to 512 problems, or reads up to 1,024 texts”、平均バッチは 64 系列)、
+実験 6 では 1 回で<strong>最大 128 局の対局</strong>か 256 局面の出力です。
+したがって「50 回」は、モデルの実行回数としてはその数十〜数百倍に当たり、得られるフィードバックも 50 サンプルよりずっと多い点に注意してください。
+</div>
+
+<figure class="diagram" id="loop-fig" data-cycle-ms="14000" data-step-count="4">
+<svg viewBox="0 0 960 330" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="LLM が仮説を立て重みを編集し forward pass で検証するループ">
+  <defs>
+    <marker id="arrLp" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#8a93ad"/>
+    </marker>
+  </defs>
+  <g class="l1">
+    <rect x="14" y="40" width="210" height="190" rx="12" fill="#e5eafc" stroke="#3556d4" stroke-width="2"/>
+    <text x="119" y="28" font-size="13" font-weight="bold" text-anchor="middle" fill="#3556d4">① 失敗を観察する</text>
+    <text x="119" y="70" font-size="10.5" text-anchor="middle" fill="#5b6478">練習問題(GSM8K / MATH の</text>
+    <text x="119" y="88" font-size="10.5" text-anchor="middle" fill="#5b6478">訓練セット)で forward pass</text>
+    <text x="119" y="118" font-size="11" text-anchor="middle" fill="#3556d4" font-weight="bold">最初の 96 解答のうち 85 が</text>
+    <text x="119" y="136" font-size="11" text-anchor="middle" fill="#3556d4" font-weight="bold">32,768 トークン上限まで</text>
+    <text x="119" y="154" font-size="11" text-anchor="middle" fill="#3556d4" font-weight="bold">同じ文を繰り返す</text>
+    <text x="119" y="190" font-size="10" text-anchor="middle" fill="#8a93ad">(モデルカードも警告している</text>
+    <text x="119" y="206" font-size="10" text-anchor="middle" fill="#8a93ad">思考ループ)</text>
+  </g>
+  <g class="l2">
+    <rect x="252" y="40" width="210" height="190" rx="12" fill="#fdeeda" stroke="#e07b1f" stroke-width="2"/>
+    <text x="357" y="28" font-size="13" font-weight="bold" text-anchor="middle" fill="#e07b1f">② 重みの中で原因を探す</text>
+    <text x="357" y="70" font-size="10.5" text-anchor="middle" fill="#5b6478">Python で重みを解析</text>
+    <g>
+      <rect x="282" y="90" width="150" height="20" rx="4" fill="#fff" stroke="#e07b1f"/><text x="357" y="104" font-size="10" text-anchor="middle">層 15 の MLP</text>
+      <rect x="282" y="116" width="150" height="20" rx="4" fill="#fff" stroke="#e07b1f"/><text x="357" y="130" font-size="10" text-anchor="middle">層 19 の MLP</text>
+      <path d="M 300 150 L 414 150" stroke="#d43d51" stroke-width="3" marker-end="url(#arrLp)"/>
+      <text x="357" y="170" font-size="11" text-anchor="middle" fill="#d43d51" font-weight="bold">ループを生む 1 方向 u</text>
+    </g>
+    <text x="357" y="200" font-size="10" text-anchor="middle" fill="#5b6478">「どの部分が何を計算しているか」</text>
+    <text x="357" y="216" font-size="10" text-anchor="middle" fill="#5b6478">を推論で特定する</text>
+  </g>
+  <g class="l3">
+    <rect x="490" y="40" width="220" height="190" rx="12" fill="#efe6fb" stroke="#7b46c9" stroke-width="2"/>
+    <text x="600" y="28" font-size="13" font-weight="bold" text-anchor="middle" fill="#7b46c9">③ 最小限の編集</text>
+    <text x="600" y="70" font-size="10.5" text-anchor="middle" fill="#5b6478">各層 64 個の出力列から</text>
+    <text x="600" y="88" font-size="10.5" text-anchor="middle" fill="#5b6478">方向 u を差し引く</text>
+    <text x="600" y="118" font-size="12" text-anchor="middle" font-style="italic" fill="#7b46c9">W<tspan baseline-shift="sub" font-size="75%">S</tspan> ← W<tspan baseline-shift="sub" font-size="75%">S</tspan> − u (uᵀ W<tspan baseline-shift="sub" font-size="75%">S</tspan>)</text>
+    <text x="600" y="134" font-size="9.5" text-anchor="middle" fill="#8a93ad">W<tspan baseline-shift="sub" font-size="75%">S</tspan>: 選んだ 64 列 / ‖u‖ = 1</text>
+    <text x="600" y="148" font-size="9.5" text-anchor="middle" fill="#8a93ad">(式は解説者による定式化)</text>
+    <text x="600" y="172" font-size="11" text-anchor="middle" fill="#7b46c9" font-weight="bold">131,072 重み = 全体の 0.016%</text>
+    <text x="600" y="200" font-size="10" text-anchor="middle" fill="#5b6478">式 (12) θ̃ = θ + Δ(θ) の</text>
+    <text x="600" y="216" font-size="10" text-anchor="middle" fill="#5b6478">Δ を学習でなく推論で決める</text>
+  </g>
+  <g class="l4">
+    <rect x="738" y="40" width="208" height="190" rx="12" fill="#e0f5ec" stroke="#1e9e6a" stroke-width="2"/>
+    <text x="842" y="28" font-size="13" font-weight="bold" text-anchor="middle" fill="#1e9e6a">④ forward pass で検証</text>
+    <text x="842" y="70" font-size="10.5" text-anchor="middle" fill="#5b6478">予算内で編集と検証を交互に</text>
+    <text x="842" y="100" font-size="11" text-anchor="middle" fill="#1e9e6a">予算 10・25 回: ループ残存</text>
+    <text x="842" y="118" font-size="11" text-anchor="middle" fill="#1e9e6a">予算 50 回: 上限到達 93% → 33%</text>
+    <text x="842" y="150" font-size="11" text-anchor="middle" fill="#1e9e6a" font-weight="bold">MATH-500 7.9% → 48.1%</text>
+    <text x="842" y="180" font-size="10" text-anchor="middle" fill="#5b6478">数学以外(IFEval)にも波及</text>
+    <text x="842" y="196" font-size="10" text-anchor="middle" fill="#5b6478">= ループは数学固有でない</text>
+  </g>
+  <g fill="none" stroke="#8a93ad" stroke-width="2" marker-end="url(#arrLp)">
+    <path class="flow-edge" d="M 226 135 L 250 135"/>
+    <path class="flow-edge" d="M 464 135 L 488 135"/>
+    <path class="flow-edge" d="M 712 135 L 736 135"/>
+    <path class="flow-edge" d="M 842 232 C 842 290, 119 290, 119 234"/>
+  </g>
+  <text x="480" y="300" font-size="11" text-anchor="middle" fill="#5b6478">予算が尽きるまで ① に戻る(実験 6 の囲碁でも、負け方を見て該当部分を直し、勝率が上がる変更だけを残す)</text>
+  <text x="480" y="322" font-size="11.5" text-anchor="middle" fill="#1c2333">“It uses its reasoning to figure out <tspan font-weight="bold">what each part of a neural network computes, or should compute</tspan>, and changes the weights accordingly.”</text>
+</svg>
+<figcaption>
+実験 8 の編集ループ(記事の本文から再構成)。「方向を差し引く」操作の具体的な式は記事に示されていないため、
+③ の \(W_S \leftarrow W_S - u(u^\top W_S)\)(\(W_S\) は各層で選んだ 64 個の出力列だけからなる部分行列、\(u\) は単位ベクトル)は<strong>解説者による一つの読み方</strong>(射影による方向の除去)です。
+正確な操作は公開ログ(<a href="https://github.com/RikiyaT/lm_understand-logs" target="_blank" rel="noopener">RikiyaT/lm_understand-logs</a>)で確認してください。
+</figcaption>
+</figure>
+
+<div class="callout warn">
+<span class="callout-title">記事自身が報告している限界 — 「隠れていた能力を出す」ことはできても「無い能力を足す」ことはできない</span>
+思考ループをほとんど起こさない <strong>Gemma 3 270M</strong> では、同じ手順で MATH-500 は 6.8% → 最大 7.7% にとどまりました。
+“Editing weights could <strong>remove an obstacle that hid an ability</strong>, but it could <strong>not add an ability the model lacked</strong>.”
+また実験 7 では、<strong>重みだけからは</strong>迎合的なモデルを 4 回とも見分けられず、
+自作テキストに対する注意パターンを見ることを許して初めて判別できています。
+</div>
+
+<h2 id="discussion">サーベイの議論にどう効いてくるか</h2>
+<p>
+ここからは、サーベイの各章の論点と、記事の結果・主張を突き合わせます(対応づけは解説者によるものです)。
+</p>
+
+<h3>1. 対称性(WSU)は「推論で」扱われている</h3>
+<p>
+サーベイの WSR は、置換対称性を<strong>エンコーダの構造</strong>(同変層・GNN)で扱いました。
+記事の LLM は対称性を構造で保証していませんが、読み方が対称性と相性の良いものになっています。
+実験 1 は<strong>入力チャネルごとに 1 層目の重みがどこに集中するか</strong>を見ており
+(入力側の並びは置換対称性の対象外)、実験 3 は copying head を<strong>重み行列の積</strong>から見つけています
+(注意の \(W_Q W_K^\top\) のような積は、ヘッド内部の基底の取り方によらない量)。
+「行や列の並び順ではなく、並び順によらない量を見る」という WSU の教訓を、LLM が自然に使っていると読めます。
+これは解説者の考察です。
+</p>
+
+<h3>2. Model-based と Model-free の補完性(§3.1)がそのまま再現された</h3>
+<p>
+サーベイは「重みを読む Model-based」と「応答を読む Model-free(プローブ)」は補完的だと述べていました。
+記事の実験 7 はその実例です —— <strong>重みだけでは失敗</strong>し、
+<strong>自分で書いたテキスト(= プローブ)に対する注意パターン</strong>を許すと成功しました。
+LLM は「プローブを設計する」側に回っており、ProbeGen(プローブ自体を学習する)の発想を推論で置き換えたものと見ることもできます。
+</p>
+
+<h3>3. 生成(WSG)の新しい条件付け — 自然言語仕様から重みへ</h3>
+<p>
+サーベイは WSG の最前線として「LLM で自然言語と重み空間を橋渡しする」NeuroGen・T2W を挙げていました(§4.1.2)。
+これらは LLM を<strong>重みを出力するように学習</strong>させたものです。
+記事の実験 5・6 はさらに一歩進み、<strong>重みの例を 1 つも見せずに</strong>、ルールとソースコードから
+「このネットワークに実装させたいプログラム」を考え、それを<strong>ニューラルな形に変換</strong>しています
+(Breakout なら 1 層目で球の落下点、2 層目でパドル移動)。
+記事は書き手の第 3 類型として<strong>形式プログラムからのコンパイラ</strong>(arXiv:2301.05062)を挙げており、
+WSP はこの「コンパイル」を自然言語の仕様から推論で行うもの、と位置づけられます。
+</p>
+
+<h3>4. 大規模化(§7.2)への別ルート</h3>
+<p>
+サーベイは、重み空間の入力次元が深さ・幅とともに爆発することを最大の壁とし、
+LoRA のような<strong>部分空間</strong>やモジュール単位の処理を有望な方向として挙げました。
+記事の実験 8 は、0.8B 重みのモデルに対し<strong>0.016% の重みだけ</strong>を編集して大きな効果を出しています。
+全重みを入力するメタモデルを作らずとも、<strong>ツールで解析し、効いている小さな部分空間(1 方向)を特定して直す</strong>という
+スケールの仕方があり得ることを示唆しています。
+ただし記事の実験は数例で、大規模化の一般的な解になるかは未検証です。
+</p>
+
+<h3>5. 安全性(§7.3)と評価(§3.3, §4.3)</h3>
+<table>
+  <tr><th>サーベイが挙げた課題</th><th>記事の対応する主張・展望</th></tr>
+  <tr><td>重み空間での攻撃の検知(§7.3)</td>
+  <td>“<strong>Auditing without evaluation</strong>” —— テストセットを用意せず、重みから直接バックドアなどの隠れた問題を見つける</td></tr>
+  <tr><td>制御可能・監査可能な重み生成(§7.3)</td>
+  <td>LLM の推論の要約とコードがすべてログとして残り、<strong>何をなぜ変えたか</strong>を人間が読める(記事は全実験のログを公開)</td></tr>
+  <tr><td>標準化されたベンチマーク・評価指標の欠如(§3.3, §4.3)</td>
+  <td>“We are currently building <strong>a benchmark and a harness</strong> for LLMs’ capability on Weight-Space Programming”</td></tr>
+  <tr><td>マージは同一構造・整列が前提(§2.1.1, §4.2.3)</td>
+  <td>“<strong>True architectural and model merging</strong>” —— 推論モジュールのような回路を、構造の違うモデルへ再学習なしに移植する</td></tr>
+  <tr><td>学習の加速(§4.2.5)</td>
+  <td>“Dramatically reducing optimization cost” —— データ収集や学習ループの代わりに 1 回の初期化</td></tr>
+  <tr><td>(継続学習の忘却、§5.3)</td>
+  <td>“Zero-data capability steering and unlearning” —— 少数の重みだけを触るので、微調整で起きがちな破滅的忘却を避けられる</td></tr>
+</table>
+
+<div class="callout math">
+<span class="callout-title">解説者の考察 — WSL にとっての意味と、注意点</span>
+サーベイは WSL を「重みをデータとして扱い、<strong>そこから学習する</strong>」分野として整理しました。
+WSP の結果が一般化するなら、メタモデルを<strong>学習しなくても</strong>、汎用の推論能力が重み空間の読み書きをかなりの程度こなせることになります。
+そうなると model zoo やメタモデルの役割は、①汎用 LLM が苦手な部分(重みだけからの振る舞いの判定 = 実験 7)を補う専用の道具、
+②LLM による編集の<strong>検証器</strong>(性能予測器が編集後の重みを評価する)、
+③大量のモデルを安く処理する<strong>高速な代替</strong>、へと変わっていくかもしれません。
+<br><br>
+一方で、次の点には注意が必要です。
+<ul style="margin:0.4rem 0 0">
+  <li>記事は<strong>査読前のブログ</strong>で、著者自身が “very early results”・“sparks” と呼んでいる</li>
+  <li>多くの実験は 3〜4 個のネットワークが対象で、統計的な規模は小さい(ログは公開されている)</li>
+  <li>失敗例(実験 7 の重みのみ判定、Gemma の数学)も報告されており、「読める・直せる」の範囲は限定的</li>
+  <li>実験 8 の大きな改善は「ループという<strong>単一の障害</strong>を取り除いた」効果で、能力そのものを足したわけではない(記事自身の分析)</li>
+</ul>
+</div>
+
+<h2 id="sources">出典</h2>
+<ul>
+  <li>Rikiya Takehi, Jayden Teoh, Alex Zhang, Omar Khattab. “Sparks of Weight-Space Programming: LLMs can natively read &amp; write neural network weights.” November 2026.
+  <a href="https://rikiyat.github.io/blog/weight-space-programming/" target="_blank" rel="noopener">https://rikiyat.github.io/blog/weight-space-programming/</a></li>
+  <li>実験ログ: <a href="https://github.com/RikiyaT/lm_understand-logs" target="_blank" rel="noopener">github.com/RikiyaT/lm_understand-logs</a>、
+  編集済み Qwen3.5-0.8B: <a href="https://huggingface.co/RikiyaT/Qwen3.5-0.8B-weight-space-programming" target="_blank" rel="noopener">Hugging Face</a></li>
+  <li>本ページの数値・引用はすべて上記記事の本文・表から転記しています。サーベイとの対応づけ・考察は解説者によるものです</li>
+</ul>
+
+<nav class="pager">
+  <a href="outlook.html"><span class="dir">← 前へ</span><span class="title">5. 応用・トレンド・課題</span></a>
+  <a class="next" href="index.html"><span class="dir">最初に戻る →</span><span class="title">WSL 概要</span></a>
+</nav>
+
+</main>
+
+<footer class="site-footer">
+  <p>サーベイ: <em>A Survey of Weight Space Learning</em>(Han, Wang+, 2026)/
+  <a href="https://arxiv.org/abs/2603.10090" target="_blank" rel="noopener">arXiv:2603.10090</a> /
+  ブログ: <a href="https://rikiyat.github.io/blog/weight-space-programming/" target="_blank" rel="noopener">Sparks of Weight-Space Programming</a>(Takehi+, 2026)</p>
+  <p>このサイトのコンテンツはAIとの協働で作成しています。記述されている内容には間違いが含まれることがあるので、正確性については一次資料をチェックしてください。</p>
+</footer>
+
+<script>
+MathJax = { tex: { inlineMath: [['\\(', '\\)']], displayMath: [['$$', '$$']] } };
+</script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js" async></script>
+<script src="assets/diagram-controls.js"></script>
+</body>
+</html>

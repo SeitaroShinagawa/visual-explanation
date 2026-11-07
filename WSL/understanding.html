@@ -1,0 +1,666 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WSL 理解編 — 重み空間の対称性・不変性・同変性</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🧬</text></svg>">
+<link rel="stylesheet" href="assets/style.css">
+<style>
+/* ===== permutation symmetry: 4 stages (14s) ===== */
+@keyframes pm-bright {
+  0%, 25%, 100% { opacity: 0.25; }
+  4%, 21% { opacity: 1; }
+}
+#perm-fig .p1 { animation: pm-bright 14s ease-in-out infinite backwards; }
+#perm-fig .p2 { animation: pm-bright 14s ease-in-out infinite backwards; animation-delay: 3.5s; }
+#perm-fig .p3 { animation: pm-bright 14s ease-in-out infinite backwards; animation-delay: 7s; }
+#perm-fig .p4 { animation: pm-bright 14s ease-in-out infinite backwards; animation-delay: 10.5s; }
+
+/* ===== invariance vs equivariance: 2 stages (8s) ===== */
+@keyframes eq-turn {
+  0%, 2% { opacity: 0.25; }
+  6%, 46% { opacity: 1; }
+  50%, 100% { opacity: 0.25; }
+}
+#equi-fig .e1 { animation: eq-turn 8s ease-in-out infinite backwards; }
+#equi-fig .e2 { animation: eq-turn 8s ease-in-out infinite backwards; animation-delay: 4s; }
+
+/* ===== linear mode connectivity: 3 stages (12s) ===== */
+@keyframes lmc-turn {
+  0%, 2% { opacity: 0.18; }
+  6%, 30% { opacity: 1; }
+  34%, 100% { opacity: 0.18; }
+}
+#lmc-fig .m1 { animation: lmc-turn 12s ease-in-out infinite backwards; }
+#lmc-fig .m2 { animation: lmc-turn 12s ease-in-out infinite backwards; animation-delay: 4s; }
+#lmc-fig .m3 { animation: lmc-turn 12s ease-in-out infinite backwards; animation-delay: 8s; }
+/* the permuted copy of θ_B slides into θ_A's basin during stage 2 */
+@keyframes lmc-move {
+  0%, 36% { transform: translate(0, 0); }
+  56%, 100% { transform: translate(-128px, -6px); }
+}
+#lmc-fig .mover { animation: lmc-move 12s ease-in-out infinite; }
+
+/* ===== use cases: 3 stages (12s) ===== */
+#use-fig .u1 { animation: lmc-turn 12s ease-in-out infinite backwards; }
+#use-fig .u2 { animation: lmc-turn 12s ease-in-out infinite backwards; animation-delay: 4s; }
+#use-fig .u3 { animation: lmc-turn 12s ease-in-out infinite backwards; animation-delay: 8s; }
+
+@media (prefers-reduced-motion: reduce) {
+  #perm-fig .p1, #perm-fig .p2, #perm-fig .p3, #perm-fig .p4,
+  #equi-fig .e1, #equi-fig .e2,
+  #lmc-fig .m1, #lmc-fig .m2, #lmc-fig .m3,
+  #use-fig .u1, #use-fig .u2, #use-fig .u3 { opacity: 1; }
+  #lmc-fig .mover { transform: translate(-128px, -6px); }
+}
+</style>
+</head>
+<body>
+
+<nav class="topnav">
+  <a class="home-link" href="../index.html">Visual Explanation</a><span class="sep">/</span>
+  <a href="./index.html">WSL 概要</a>
+  <a href="understanding.html" class="current">1. 理解 (WSU)</a>
+  <a href="representation.html">2. 表現 (WSR)</a>
+  <a href="generation.html">3. 生成 (WSG)</a>
+  <a href="benchmarks.html">4. 評価とベンチマーク</a>
+  <a href="outlook.html">5. 応用・トレンド・課題</a>
+  <a href="wsp.html">6. 発展: WSP</a>
+</nav>
+
+<header class="page-header">
+  <h1>1. 重み空間の理解 (WSU)</h1>
+  <p>「違う重みなのに、まったく同じ関数になる」—— 重み空間に潜む<strong>対称性</strong>が、
+  最適化の縮退、モデルマージ、そして後続の表現・生成のすべての設計を左右します(サーベイ §2)。</p>
+</header>
+
+<main class="article">
+
+<h2 id="goal">WSU が目指すもの</h2>
+<div class="callout point">
+<span class="callout-title">サーベイ §2 冒頭</span>
+“Weight Space Understanding (WSU) aims to characterize the intrinsic structure of the neural network weight space,
+<strong>independent of any specific dataset or training objective</strong>. Rather than viewing model parameters as
+unstructured vectors governed by a flat metric, WSU investigates the underlying structures, e.g.,
+<strong>symmetries, redundancies, and manifold topologies</strong>, that govern how different weight configurations
+correspond to equivalent model behaviors.”
+</div>
+<p>
+ポイントは「<strong>平坦な計量を持つ、構造のないベクトル</strong>として重みを見ない」ことです。
+重みを 1 本のベクトル \(\theta \in \mathbb{R}^P\) に平坦化してユークリッド距離で比べると、
+<strong>同じ関数を表す 2 つのネットワークが「遠い」と判定されてしまう</strong>ことがあります。
+その原因が対称性です。
+</p>
+
+<h2 id="symmetry">対称性 — 群作用としての定式化</h2>
+<p>
+§2.1 は、対称性を<strong>パラメータ空間への群作用</strong>として捉え、そこから 2 つの関係 ——
+<strong>不変性</strong>と<strong>同変性</strong> —— が導かれると整理します。
+</p>
+
+<h3>関数的不変性 (Functional Invariance)</h3>
+<div class="callout math">
+<span class="callout-title">式 (1) — 不変性</span>
+重み \(\theta\) への変換 \(\rho_{in}: \Theta \to \Theta\) が、すべての入力 \(x\) について
+$$ f(\rho_{in}(\theta); x) = f(\theta; x) \tag{1} $$
+を満たすとき、\(\rho_{in}\) は<strong>不変変換</strong>です。
+“This equivalence partitions the weight space into <strong>functional equivalence classes</strong>,
+where each class represents a single neural function realized by multiple parameter settings.”
+</div>
+
+<p>
+脚注 1 は、この同値類の集まりを<strong>商空間 (quotient space)</strong> として定義しています。
+</p>
+<div class="callout math">
+<span class="callout-title">商空間(§2 脚注 1)</span>
+対称群 \(G\) が重み空間 \(\mathcal{W}\) に作用するとき、
+$$ \mathcal{W}/G := \{ [\theta] \mid \theta \in \mathcal{W} \},\qquad [\theta] = \{ g \cdot \theta \mid g \in G \} $$
+同値類 \([\theta]\)(<strong>軌道 orbit</strong>)は、対称変換で到達できるすべての重み設定を含みます。
+<strong>WSL が本当に扱いたいのは \(\mathcal{W}\) ではなく \(\mathcal{W}/G\)</strong> —— つまり「関数としての違い」だけ、というのが以降の章を貫く発想です。
+</div>
+
+<p>実際のネットワークで不変性を生む代表的な対称性は 3 つです(§2.1.1)。</p>
+<ul>
+  <li><strong>ニューロン / フィルタの置換</strong>: 隠れ層のニューロンを入れ替え、次の層で逆の入れ替えをすると、関数は完全に同一。
+  “This is perhaps <strong>the most studied form of parameter redundancy</strong>, observed across MLPs, CNNs, and self-attention.”</li>
+  <li><strong>正のスケーリング不変性</strong>: BatchNorm を持つ層では、入力側の重みを正定数倍しても正規化後の出力は変わらない</li>
+  <li><strong>バイアス・ロジットの平行移動</strong>: Softmax はすべてのロジットに定数を足しても不変</li>
+</ul>
+
+<h3>動くと分かる — 置換対称性</h3>
+<p>
+最も研究されている置換対称性を、2 入力・隠れ 3・1 出力の MLP で見てみます。
+隠れニューロンを色で区別し、それに接続する重みも同じ色で塗っています。
+</p>
+
+<figure class="diagram" id="perm-fig" data-cycle-ms="14000" data-step-count="4">
+<svg viewBox="0 0 960 440" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="隠れニューロンの置換で重みベクトルは変わるが関数は変わらないことを示す図">
+  <defs>
+    <marker id="arrP" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#8a93ad"/>
+    </marker>
+  </defs>
+
+  <!-- Network A -->
+  <g class="p1">
+    <text x="185" y="24" font-size="13" font-weight="bold" text-anchor="middle" fill="#1c2333">① 元のネットワーク θ</text>
+    <g stroke-width="2.4" fill="none">
+      <path d="M 60 110 L 190 70" stroke="#d43d51"/><path d="M 60 210 L 190 70" stroke="#d43d51"/>
+      <path d="M 60 110 L 190 160" stroke="#1e9e6a"/><path d="M 60 210 L 190 160" stroke="#1e9e6a"/>
+      <path d="M 60 110 L 190 250" stroke="#3556d4"/><path d="M 60 210 L 190 250" stroke="#3556d4"/>
+      <path d="M 190 70 L 310 160" stroke="#d43d51"/><path d="M 190 160 L 310 160" stroke="#1e9e6a"/><path d="M 190 250 L 310 160" stroke="#3556d4"/>
+    </g>
+    <circle cx="60" cy="110" r="15" fill="#fff" stroke="#8a93ad" stroke-width="2"/><text x="60" y="115" font-size="11" text-anchor="middle">x₁</text>
+    <circle cx="60" cy="210" r="15" fill="#fff" stroke="#8a93ad" stroke-width="2"/><text x="60" y="215" font-size="11" text-anchor="middle">x₂</text>
+    <circle cx="190" cy="70" r="16" fill="#fbe4e8" stroke="#d43d51" stroke-width="2.5"/><text x="190" y="75" font-size="11" text-anchor="middle">h₁</text>
+    <circle cx="190" cy="160" r="16" fill="#e0f5ec" stroke="#1e9e6a" stroke-width="2.5"/><text x="190" y="165" font-size="11" text-anchor="middle">h₂</text>
+    <circle cx="190" cy="250" r="16" fill="#e5eafc" stroke="#3556d4" stroke-width="2.5"/><text x="190" y="255" font-size="11" text-anchor="middle">h₃</text>
+    <circle cx="310" cy="160" r="15" fill="#fff" stroke="#8a93ad" stroke-width="2"/><text x="310" y="165" font-size="11" text-anchor="middle">y</text>
+    <!-- matrices -->
+    <text x="40" y="300" font-size="11" fill="#5b6478">W₁ (3×2)</text>
+    <rect x="40" y="308" width="22" height="14" fill="#d43d51"/><rect x="64" y="308" width="22" height="14" fill="#d43d51"/>
+    <rect x="40" y="324" width="22" height="14" fill="#1e9e6a"/><rect x="64" y="324" width="22" height="14" fill="#1e9e6a"/>
+    <rect x="40" y="340" width="22" height="14" fill="#3556d4"/><rect x="64" y="340" width="22" height="14" fill="#3556d4"/>
+    <text x="112" y="300" font-size="11" fill="#5b6478">b₁</text>
+    <rect x="112" y="308" width="22" height="14" fill="#d43d51" opacity="0.6"/>
+    <rect x="112" y="324" width="22" height="14" fill="#1e9e6a" opacity="0.6"/>
+    <rect x="112" y="340" width="22" height="14" fill="#3556d4" opacity="0.6"/>
+    <text x="170" y="300" font-size="11" fill="#5b6478">W₂ (1×3)</text>
+    <rect x="170" y="324" width="22" height="14" fill="#d43d51"/><rect x="194" y="324" width="22" height="14" fill="#1e9e6a"/><rect x="218" y="324" width="22" height="14" fill="#3556d4"/>
+  </g>
+
+  <!-- permutation arrow -->
+  <g class="p2">
+    <rect x="352" y="120" width="120" height="76" rx="10" fill="#fff" stroke="#7b46c9" stroke-width="2"/>
+    <text x="412" y="146" font-size="12" font-weight="bold" text-anchor="middle" fill="#7b46c9">置換 P</text>
+    <text x="412" y="166" font-size="10.5" text-anchor="middle" fill="#5b6478">h₁ ↔ h₃ を交換</text>
+    <text x="412" y="184" font-size="10" text-anchor="middle" fill="#8a93ad">ρ<tspan baseline-shift="sub" font-size="75%">in</tspan>(θ)</text>
+  </g>
+  <g fill="none" stroke="#8a93ad" stroke-width="2" marker-end="url(#arrP)">
+    <path class="flow-edge" d="M 330 158 L 350 158"/>
+    <path class="flow-edge" d="M 474 158 L 494 158"/>
+  </g>
+
+  <!-- Network B -->
+  <g class="p2">
+    <text x="625" y="24" font-size="13" font-weight="bold" text-anchor="middle" fill="#7b46c9">② 置換後のネットワーク θ′</text>
+    <g stroke-width="2.4" fill="none">
+      <path d="M 500 110 L 630 70" stroke="#3556d4"/><path d="M 500 210 L 630 70" stroke="#3556d4"/>
+      <path d="M 500 110 L 630 160" stroke="#1e9e6a"/><path d="M 500 210 L 630 160" stroke="#1e9e6a"/>
+      <path d="M 500 110 L 630 250" stroke="#d43d51"/><path d="M 500 210 L 630 250" stroke="#d43d51"/>
+      <path d="M 630 70 L 750 160" stroke="#3556d4"/><path d="M 630 160 L 750 160" stroke="#1e9e6a"/><path d="M 630 250 L 750 160" stroke="#d43d51"/>
+    </g>
+    <circle cx="500" cy="110" r="15" fill="#fff" stroke="#8a93ad" stroke-width="2"/><text x="500" y="115" font-size="11" text-anchor="middle">x₁</text>
+    <circle cx="500" cy="210" r="15" fill="#fff" stroke="#8a93ad" stroke-width="2"/><text x="500" y="215" font-size="11" text-anchor="middle">x₂</text>
+    <circle cx="630" cy="70" r="16" fill="#e5eafc" stroke="#3556d4" stroke-width="2.5"/><text x="630" y="75" font-size="11" text-anchor="middle">h₃</text>
+    <circle cx="630" cy="160" r="16" fill="#e0f5ec" stroke="#1e9e6a" stroke-width="2.5"/><text x="630" y="165" font-size="11" text-anchor="middle">h₂</text>
+    <circle cx="630" cy="250" r="16" fill="#fbe4e8" stroke="#d43d51" stroke-width="2.5"/><text x="630" y="255" font-size="11" text-anchor="middle">h₁</text>
+    <circle cx="750" cy="160" r="15" fill="#fff" stroke="#8a93ad" stroke-width="2"/><text x="750" y="165" font-size="11" text-anchor="middle">y</text>
+    <text x="480" y="300" font-size="11" fill="#5b6478">P W₁</text>
+    <rect x="480" y="308" width="22" height="14" fill="#3556d4"/><rect x="504" y="308" width="22" height="14" fill="#3556d4"/>
+    <rect x="480" y="324" width="22" height="14" fill="#1e9e6a"/><rect x="504" y="324" width="22" height="14" fill="#1e9e6a"/>
+    <rect x="480" y="340" width="22" height="14" fill="#d43d51"/><rect x="504" y="340" width="22" height="14" fill="#d43d51"/>
+    <text x="552" y="300" font-size="11" fill="#5b6478">P b₁</text>
+    <rect x="552" y="308" width="22" height="14" fill="#3556d4" opacity="0.6"/>
+    <rect x="552" y="324" width="22" height="14" fill="#1e9e6a" opacity="0.6"/>
+    <rect x="552" y="340" width="22" height="14" fill="#d43d51" opacity="0.6"/>
+    <text x="610" y="300" font-size="11" fill="#5b6478">W₂ Pᵀ</text>
+    <rect x="610" y="324" width="22" height="14" fill="#3556d4"/><rect x="634" y="324" width="22" height="14" fill="#1e9e6a"/><rect x="658" y="324" width="22" height="14" fill="#d43d51"/>
+  </g>
+
+  <!-- flattened vectors -->
+  <g class="p3">
+    <text x="40" y="384" font-size="11.5" font-weight="bold" fill="#e07b1f">③ 平坦化すると別物:</text>
+    <text x="40" y="404" font-size="11" fill="#5b6478" font-style="italic">vec(θ)</text>
+    <g>
+      <rect x="92" y="393" width="14" height="14" fill="#d43d51"/><rect x="108" y="393" width="14" height="14" fill="#d43d51"/>
+      <rect x="124" y="393" width="14" height="14" fill="#1e9e6a"/><rect x="140" y="393" width="14" height="14" fill="#1e9e6a"/>
+      <rect x="156" y="393" width="14" height="14" fill="#3556d4"/><rect x="172" y="393" width="14" height="14" fill="#3556d4"/>
+      <rect x="192" y="393" width="14" height="14" fill="#d43d51" opacity="0.6"/><rect x="208" y="393" width="14" height="14" fill="#1e9e6a" opacity="0.6"/><rect x="224" y="393" width="14" height="14" fill="#3556d4" opacity="0.6"/>
+      <rect x="244" y="393" width="14" height="14" fill="#d43d51"/><rect x="260" y="393" width="14" height="14" fill="#1e9e6a"/><rect x="276" y="393" width="14" height="14" fill="#3556d4"/>
+    </g>
+    <text x="320" y="405" font-size="18" font-weight="bold" fill="#d43d51">≠</text>
+    <text x="350" y="404" font-size="11" fill="#5b6478" font-style="italic">vec(θ′)</text>
+    <g>
+      <rect x="408" y="393" width="14" height="14" fill="#3556d4"/><rect x="424" y="393" width="14" height="14" fill="#3556d4"/>
+      <rect x="440" y="393" width="14" height="14" fill="#1e9e6a"/><rect x="456" y="393" width="14" height="14" fill="#1e9e6a"/>
+      <rect x="472" y="393" width="14" height="14" fill="#d43d51"/><rect x="488" y="393" width="14" height="14" fill="#d43d51"/>
+      <rect x="508" y="393" width="14" height="14" fill="#3556d4" opacity="0.6"/><rect x="524" y="393" width="14" height="14" fill="#1e9e6a" opacity="0.6"/><rect x="540" y="393" width="14" height="14" fill="#d43d51" opacity="0.6"/>
+      <rect x="560" y="393" width="14" height="14" fill="#3556d4"/><rect x="576" y="393" width="14" height="14" fill="#1e9e6a"/><rect x="592" y="393" width="14" height="14" fill="#d43d51"/>
+    </g>
+    <text x="620" y="404" font-size="11" fill="#d43d51">‖θ − θ′‖ ≫ 0</text>
+    <text x="40" y="430" font-size="10.5" fill="#8a93ad">隠れ層の幅が n なら、同じ関数を表す重みが n! 通り存在する(置換だけで)</text>
+  </g>
+
+  <!-- same function -->
+  <g class="p4">
+    <rect x="790" y="60" width="158" height="290" rx="12" fill="#e0f5ec" stroke="#1e9e6a" stroke-width="2"/>
+    <text x="869" y="88" font-size="13" font-weight="bold" text-anchor="middle" fill="#1e9e6a">④ でも関数は同一</text>
+    <text x="869" y="124" font-size="12" text-anchor="middle" font-style="italic">f(θ′; x)</text>
+    <text x="869" y="146" font-size="14" text-anchor="middle" fill="#1e9e6a" font-weight="bold">=</text>
+    <text x="869" y="168" font-size="12" text-anchor="middle" font-style="italic">f(θ; x)</text>
+    <text x="869" y="196" font-size="10.5" text-anchor="middle" fill="#5b6478">すべての x で</text>
+    <text x="869" y="214" font-size="10.5" text-anchor="middle" fill="#5b6478">出力が一致 ✓</text>
+    <line x1="806" y1="232" x2="932" y2="232" stroke="#9ed9bd"/>
+    <text x="869" y="254" font-size="10.5" text-anchor="middle" fill="#1e9e6a">θ と θ′ は</text>
+    <text x="869" y="272" font-size="10.5" text-anchor="middle" fill="#1e9e6a">同じ軌道 [θ] に属し、</text>
+    <text x="869" y="290" font-size="10.5" text-anchor="middle" fill="#1e9e6a">商空間では 1 点</text>
+    <text x="869" y="322" font-size="10" text-anchor="middle" fill="#8a93ad">式 (1) の</text>
+    <text x="869" y="338" font-size="10" text-anchor="middle" fill="#8a93ad">不変変換の典型例</text>
+  </g>
+  <path class="flow-edge" d="M 768 160 L 788 160" fill="none" stroke="#8a93ad" stroke-width="2" marker-end="url(#arrP)"/>
+</svg>
+<figcaption>
+置換対称性。h₁ と h₃ を入れ替えると、W₁ の行・b₁ の要素・W₂ の列が一緒に並べ替わります(\(W_1 \to PW_1,\ b_1 \to Pb_1,\ W_2 \to W_2P^\top\))。
+<strong>平坦化した重みベクトルは大きく変わるのに、ネットワークが計算する関数は 1 ビットも変わりません。</strong>
+</figcaption>
+</figure>
+
+<div class="widget" id="perm-demo">
+<span class="widget-title">🧪 触って確かめる — 置換とスケーリングで関数は変わるか?</span>
+<p style="margin:0.2rem 0 0.6rem">ReLU 活性の 2-3-1 MLP です。ボタンで重みを変換し、<strong>重みベクトルの距離</strong>と<strong>出力</strong>を比べてください。
+「素朴なエンコーダ」は平坦化ベクトルへの固定線形写像、「DeepSets 型の集約」は各隠れニューロンの
+\((W_1[i], b_1[i], W_2[i])\) に同じ関数を適用して<strong>和</strong>をとる集約です(表現編で扱う対称性考慮エンコーダの最小版)。</p>
+<div>
+  <button type="button" data-act="perm">隠れニューロンをランダムに置換</button>
+  <button type="button" data-act="scale">正のスケーリング(ReLU の正斉次性)</button>
+  <button type="button" data-act="noise">小さなノイズを加える(関数が変わる)</button>
+  <button type="button" data-act="reset">リセット</button>
+</div>
+<div class="row" style="margin-top:0.6rem">
+  <div class="panel">
+    <strong>現在の重み</strong>
+    <table class="mat" id="pd-mat"></table>
+    <div class="vec" id="pd-vec"></div>
+  </div>
+  <div class="panel">
+    <strong>比較(元の重み θ₀ に対して)</strong>
+    <div id="pd-cmp"></div>
+  </div>
+</div>
+<p class="cite" style="margin:0.6rem 0 0">正のスケーリング: ReLU は \(\mathrm{ReLU}(\alpha u) = \alpha\,\mathrm{ReLU}(u)\ (\alpha>0)\) を満たすので、
+ニューロン i の入力側重みとバイアスを \(\alpha_i\) 倍、出力側重みを \(1/\alpha_i\) 倍しても関数は変わりません
+(サーベイの Table 1 は BatchNorm による例を挙げていますが、同じ「正のスケーリング」の別の現れです —
+補足(サーベイ外))。</p>
+</div>
+
+<h3>関数的同変性 (Functional Equivariance)</h3>
+<div class="callout math">
+<span class="callout-title">式 (2) — 同変性</span>
+重みへの変換 \(\rho_{in}: \Theta \to \Theta\) と出力空間の変換 \(\rho_{out}: \mathcal{Y} \to \mathcal{Y}\) について
+$$ f(\rho_{in}(\theta); x) = \rho_{out}(f(\theta; x)) \tag{2} $$
+が成り立つとき、\(f\) は \((\rho_{in}, \rho_{out})\) に関して<strong>同変</strong>です。
+“Unlike invariance, here the function is not identical after transformation, but its change follows a <strong>well-defined pattern</strong>.”
+</div>
+
+<figure class="diagram" id="equi-fig" data-cycle-ms="8000" data-step-count="2">
+<svg viewBox="0 0 900 300" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="不変性と同変性の対比">
+  <defs>
+    <marker id="arrE" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#5b6478"/>
+    </marker>
+  </defs>
+  <line x1="450" y1="20" x2="450" y2="280" stroke="#c8cfe0" stroke-dasharray="6 5"/>
+
+  <g class="e1">
+    <text x="225" y="26" font-size="13.5" font-weight="bold" text-anchor="middle" fill="#3556d4">(a) 不変性 — 式 (1)</text>
+    <ellipse cx="225" cy="88" rx="140" ry="44" fill="#e5eafc" stroke="#3556d4"/>
+    <text x="225" y="66" font-size="10.5" text-anchor="middle" fill="#5b6478">重み空間</text>
+    <circle cx="135" cy="96" r="6" fill="#1c2333"/><text x="122" y="88" font-size="12" font-style="italic">θ</text>
+    <circle cx="315" cy="96" r="6" fill="#1c2333"/><text x="300" y="120" font-size="11" font-style="italic">ρ<tspan baseline-shift="sub" font-size="75%">in</tspan>·θ</text>
+    <path d="M 141 96 Q 225 70 307 96" fill="none" stroke="#1c2333" stroke-width="1.6" stroke-dasharray="5 4" marker-end="url(#arrE)"/>
+    <ellipse cx="225" cy="230" rx="120" ry="34" fill="#efe6fb" stroke="#7b46c9"/>
+    <text x="225" y="256" font-size="10.5" text-anchor="middle" fill="#7b46c9">商空間(関数)</text>
+    <circle cx="225" cy="224" r="7" fill="#7b46c9"/>
+    <path d="M 135 102 Q 150 200 216 222" fill="none" stroke="#5b6478" stroke-width="1.6" marker-end="url(#arrE)"/>
+    <path d="M 315 102 Q 300 200 234 222" fill="none" stroke="#5b6478" stroke-width="1.6" marker-end="url(#arrE)"/>
+    <text x="150" y="170" font-size="12" font-style="italic" fill="#5b6478">f</text>
+    <text x="300" y="170" font-size="12" font-style="italic" fill="#5b6478">f</text>
+    <text x="225" y="186" font-size="10.5" text-anchor="middle" fill="#3556d4" font-weight="bold">同じ 1 点に写る</text>
+    <text x="225" y="290" font-size="10.5" text-anchor="middle" fill="#5b6478">例: ニューロン置換・正のスケーリング・ロジット平行移動</text>
+  </g>
+
+  <g class="e2">
+    <text x="675" y="26" font-size="13.5" font-weight="bold" text-anchor="middle" fill="#e07b1f">(b) 同変性 — 式 (2)</text>
+    <ellipse cx="675" cy="88" rx="140" ry="44" fill="#fdeeda" stroke="#e07b1f"/>
+    <text x="675" y="66" font-size="10.5" text-anchor="middle" fill="#5b6478">重み空間</text>
+    <circle cx="585" cy="96" r="6" fill="#1c2333"/><text x="572" y="88" font-size="12" font-style="italic">θ</text>
+    <circle cx="765" cy="96" r="6" fill="#1c2333"/><text x="750" y="120" font-size="11" font-style="italic">ρ<tspan baseline-shift="sub" font-size="75%">in</tspan>·θ</text>
+    <path d="M 591 96 Q 675 70 757 96" fill="none" stroke="#1c2333" stroke-width="1.6" stroke-dasharray="5 4" marker-end="url(#arrE)"/>
+    <ellipse cx="675" cy="230" rx="140" ry="34" fill="#efe6fb" stroke="#7b46c9"/>
+    <text x="675" y="256" font-size="10.5" text-anchor="middle" fill="#7b46c9">出力空間</text>
+    <circle cx="605" cy="226" r="7" fill="#7b46c9"/>
+    <circle cx="745" cy="226" r="7" fill="#7b46c9"/>
+    <path d="M 614 226 L 734 226" fill="none" stroke="#7b46c9" stroke-width="1.6" stroke-dasharray="5 4" marker-end="url(#arrE)"/>
+    <text x="675" y="218" font-size="11" text-anchor="middle" fill="#7b46c9" font-style="italic">ρ<tspan baseline-shift="sub" font-size="75%">out</tspan></text>
+    <path d="M 585 102 L 603 216" fill="none" stroke="#5b6478" stroke-width="1.6" marker-end="url(#arrE)"/>
+    <path d="M 765 102 L 747 216" fill="none" stroke="#5b6478" stroke-width="1.6" marker-end="url(#arrE)"/>
+    <text x="580" y="170" font-size="12" font-style="italic" fill="#5b6478">f</text>
+    <text x="765" y="170" font-size="12" font-style="italic" fill="#5b6478">f</text>
+    <text x="675" y="170" font-size="10.5" text-anchor="middle" fill="#e07b1f" font-weight="bold">予測できる形で変わる</text>
+    <text x="675" y="290" font-size="10.5" text-anchor="middle" fill="#5b6478">例: 直交回転・符号反転・注意ヘッドの置換</text>
+  </g>
+</svg>
+<figcaption>
+不変性と同変性(サーベイ Figure 4 を再構成)。不変性は「変換しても関数は同じ」、
+同変性は「変換すると出力も対応する変換を受ける」。後者は、<strong>重みを入力とするメタモデルの設計原理</strong>
+(置換同変層)の土台になります。
+</figcaption>
+</figure>
+
+<p>サーベイの Table 1 は、代表的な対称性を次のようにまとめています。</p>
+<table>
+  <tr><th>関係</th><th>変換の例</th><th>関数への効果(Table 1)</th></tr>
+  <tr><td rowspan="3"><strong>不変性</strong></td><td>ニューロン置換</td><td>隠れユニットを並べ替えても関数的に同一のネットワーク</td></tr>
+  <tr><td>正のスケーリング</td><td>スケールがバッチ正規化で打ち消される</td></tr>
+  <tr><td>Softmax のバイアス平行移動</td><td>ロジットの定数シフトは確率を変えない</td></tr>
+  <tr><td rowspan="3"><strong>同変性</strong></td><td>直交回転</td><td>ニューロン基底を回転すると、出力も対応して変わる</td></tr>
+  <tr><td>符号反転</td><td>出力が対応する符号変換に従って予測可能に変わる</td></tr>
+  <tr><td>注意ヘッドの置換</td><td>ヘッドを付け替えると、注意構造が同変に変わる</td></tr>
+</table>
+
+<div class="callout point">
+<span class="callout-title">同変性の研究系譜(§2.1.2)</span>
+同変性は「重みを入力として処理するネットワーク(メタモデル)」の設計に直結します ——
+<strong>DWSNets</strong> [Navon et al., 2023] は MLP 重み空間のニューロン置換対称性を形式化し、
+プーリング・ブロードキャスト・線形ブロックで<strong>アフィン同変写像の完全な基底</strong>を構成。
+<strong>NFN</strong> [Zhou et al., 2023a] はパラメータ共有で置換同変性を実現して CNN に拡張。
+<strong>UNF</strong> [Zhou et al., 2024] は RNN・Transformer を含む任意のアーキテクチャへ一般化。
+さらに GNN で同変性を得る Kofinas et al. [2024a]、生成のための同変潜在空間を作る EQUIGEN [Huang et al., 2025] へと続きます。
+具体的な構造は<a href="representation.html#aware">表現編</a>で扱います。
+</div>
+
+<h2 id="lmc">線形モード連結性とモデルマージ</h2>
+<p>
+対称性の理解が最も実用的な形で効いたのが、<strong>独立に学習した 2 つのモデルをつなぐ</strong>問題です。
+§2.1.1 は次のように述べます。
+</p>
+<div class="callout warn">
+<span class="callout-title">§2.1.1 — 置換を考慮すると SGD 解は同じ盆地に入る</span>
+“Entezari et al. [2022] demonstrate that accounting for permutation invariance places SGD solutions in the
+<strong>same basin</strong>, enabling linear interpolation without barriers. Extending these insights,
+<strong>Git Re-Basin</strong> [Ainsworth et al., 2023] develops practical algorithms to align permutations and merge
+independently trained models via linear mode connectivity. Shamsian et al. [2023] extend the linear mode connectivity
+to design <strong>weight space mixup</strong>”
+</div>
+
+<figure class="diagram" id="lmc-fig" data-cycle-ms="12000" data-step-count="3">
+<svg viewBox="0 0 940 360" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="置換による整列で線形補間の損失障壁が消える様子">
+  <defs>
+    <marker id="arrL" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#5b6478"/>
+    </marker>
+  </defs>
+  <!-- landscape -->
+  <text x="230" y="24" font-size="12.5" font-weight="bold" text-anchor="middle" fill="#1c2333">重み空間の損失地形(模式図)</text>
+  <rect x="20" y="36" width="420" height="250" rx="10" fill="#f7f8fb" stroke="#dde2ee"/>
+  <g fill="none" stroke="#3556d4" stroke-opacity="0.5">
+    <ellipse cx="140" cy="160" rx="95" ry="70"/><ellipse cx="140" cy="160" rx="62" ry="45"/><ellipse cx="140" cy="160" rx="30" ry="22"/>
+  </g>
+  <g fill="none" stroke="#e07b1f" stroke-opacity="0.5">
+    <ellipse cx="335" cy="160" rx="80" ry="64"/><ellipse cx="335" cy="160" rx="50" ry="40"/><ellipse cx="335" cy="160" rx="24" ry="18"/>
+  </g>
+  <text x="140" y="250" font-size="10" text-anchor="middle" fill="#3556d4">盆地 A</text>
+  <text x="335" y="250" font-size="10" text-anchor="middle" fill="#e07b1f">盆地 B</text>
+  <circle cx="132" cy="158" r="7" fill="#3556d4"/><text x="114" y="146" font-size="12" font-style="italic" fill="#3556d4">θ<tspan baseline-shift="sub" font-size="75%">A</tspan></text>
+  <circle cx="342" cy="160" r="7" fill="#e07b1f"/><text x="352" y="150" font-size="12" font-style="italic" fill="#e07b1f">θ<tspan baseline-shift="sub" font-size="75%">B</tspan></text>
+
+  <g class="m1">
+    <line x1="139" y1="158" x2="335" y2="160" stroke="#d43d51" stroke-width="2.4" stroke-dasharray="6 4"/>
+    <text x="236" y="146" font-size="10.5" text-anchor="middle" fill="#d43d51">素朴な線形補間</text>
+    <text x="236" y="182" font-size="10" text-anchor="middle" fill="#d43d51">→ 尾根を越える</text>
+  </g>
+  <g class="m2">
+    <g class="mover">
+      <circle cx="270" cy="170" r="7" fill="#fff" stroke="#e07b1f" stroke-width="2.5"/>
+      <text x="284" y="196" font-size="11" font-style="italic" fill="#e07b1f">π(θ<tspan baseline-shift="sub" font-size="75%">B</tspan>)</text>
+    </g>
+    <path d="M 340 168 Q 300 230 160 182" fill="none" stroke="#7b46c9" stroke-width="1.6" stroke-dasharray="4 4" marker-end="url(#arrL)"/>
+    <text x="300" y="272" font-size="10" text-anchor="middle" fill="#7b46c9">置換 π で同じ軌道の別表現へ</text>
+  </g>
+  <g class="m3">
+    <line x1="132" y1="158" x2="142" y2="164" stroke="#1e9e6a" stroke-width="3"/>
+    <text x="80" y="120" font-size="10.5" fill="#1e9e6a" font-weight="bold">盆地内で補間</text>
+  </g>
+
+  <!-- loss along interpolation -->
+  <text x="690" y="24" font-size="12.5" font-weight="bold" text-anchor="middle" fill="#1c2333">補間係数 α に沿った損失(模式図)</text>
+  <rect x="470" y="36" width="450" height="250" rx="10" fill="#fff" stroke="#dde2ee"/>
+  <line x1="510" y1="250" x2="890" y2="250" stroke="#5b6478" marker-end="url(#arrL)"/>
+  <line x1="510" y1="250" x2="510" y2="56" stroke="#5b6478" marker-end="url(#arrL)"/>
+  <text x="894" y="254" font-size="12" fill="#5b6478" font-style="italic">α</text>
+  <text x="500" y="64" font-size="11" text-anchor="end" fill="#5b6478">損失</text>
+  <text x="520" y="268" font-size="10" fill="#5b6478">θ<tspan baseline-shift="sub" font-size="75%">A</tspan></text>
+  <g class="m1">
+    <path d="M 520 226 C 600 226, 640 80, 700 80 S 800 226, 870 226" fill="none" stroke="#d43d51" stroke-width="2.6"/>
+    <text x="700" y="72" font-size="10.5" text-anchor="middle" fill="#d43d51" font-weight="bold">損失障壁 (barrier)</text>
+    <text x="860" y="268" font-size="10" fill="#e07b1f">θ<tspan baseline-shift="sub" font-size="75%">B</tspan></text>
+  </g>
+  <g class="m3">
+    <path d="M 520 226 C 620 230, 780 230, 870 224" fill="none" stroke="#1e9e6a" stroke-width="2.8"/>
+    <text x="700" y="214" font-size="10.5" text-anchor="middle" fill="#1e9e6a" font-weight="bold">障壁がほぼ消える</text>
+    <text x="840" y="244" font-size="10" fill="#1e9e6a">π(θ<tspan baseline-shift="sub" font-size="75%">B</tspan>)</text>
+  </g>
+
+  <g font-size="11.5">
+    <text class="m1" x="20" y="316" fill="#d43d51"><tspan font-weight="bold">① 素朴な補間:</tspan> 独立に学習した θ<tspan baseline-shift="sub" font-size="75%">A</tspan> と θ<tspan baseline-shift="sub" font-size="75%">B</tspan> を直線で結ぶと、途中で損失が跳ね上がる</text>
+    <text class="m2" x="20" y="336" fill="#7b46c9"><tspan font-weight="bold">② 整列 (Git Re-Basin):</tspan> θ<tspan baseline-shift="sub" font-size="75%">B</tspan> の隠れユニットを置換して θ<tspan baseline-shift="sub" font-size="75%">A</tspan> に揃える —— 関数は変わらない(式 1)</text>
+    <text class="m3" x="20" y="356" fill="#1e9e6a"><tspan font-weight="bold">③ 整列後の補間:</tspan> 低損失のまま結べる → モデルマージ・重み空間 mixup に使える</text>
+  </g>
+</svg>
+<figcaption>
+線形モード連結性(Entezari+ 2022 / Git Re-Basin)の考え方。地形・曲線の形は説明のための<strong>模式図</strong>で、
+特定の実験結果をプロットしたものではありません。置換は関数を変えないので、
+「障壁」は関数の違いではなく<strong>座標系(ニューロンの並び順)の食い違い</strong>から生じていた、と読めます。
+</figcaption>
+</figure>
+
+<div class="callout math">
+<span class="callout-title">「なぜ重要か」(§2.1.1 Why it matters)</span>
+“Because multiple configurations correspond to the same function, optimization does not search for a single global minimum
+but for <strong>an entire equivalence class of solutions</strong>.”
+<br><br>
+不変性を明示的に扱えば、生のパラメータではなく<strong>関数的に意味のある多様体の上で</strong>動く最適化アルゴリズムが作れ、
+独立に学習したモデル間の線形モード連結性(→ マージ)や、原理的な重み空間補間(→ データ拡張)につながる、とサーベイはまとめます。
+</div>
+
+<h2 id="usecases">技術レベルのユースケース(§2.2)</h2>
+<p>
+WSU の知見は 3 つの実用的な方向に結びついています。
+</p>
+
+<figure class="diagram" id="use-fig" data-cycle-ms="12000" data-step-count="3">
+<svg viewBox="0 0 930 270" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="WSU の 3 つのユースケース: 圧縮・最適化・データ拡張">
+  <defs>
+    <marker id="arrU" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#5b6478"/>
+    </marker>
+  </defs>
+  <g class="u1">
+    <rect x="10" y="10" width="295" height="250" rx="12" fill="#e5eafc" stroke="#3556d4" stroke-width="2"/>
+    <text x="157" y="36" font-size="13.5" font-weight="bold" text-anchor="middle" fill="#3556d4">モデル圧縮 (§2.2.1)</text>
+    <g>
+      <circle cx="60" cy="90" r="11" fill="#d43d51"/><circle cx="60" cy="125" r="11" fill="#d43d51" opacity="0.5"/>
+      <circle cx="60" cy="160" r="11" fill="#1e9e6a"/><circle cx="60" cy="195" r="11" fill="#1e9e6a" opacity="0.5"/>
+      <text x="85" y="112" font-size="10" fill="#5b6478">等価な</text><text x="85" y="126" font-size="10" fill="#5b6478">ユニット</text>
+      <path d="M 135 140 L 175 140" stroke="#5b6478" stroke-width="2" marker-end="url(#arrU)"/>
+      <circle cx="215" cy="115" r="11" fill="#d43d51"/><circle cx="215" cy="165" r="11" fill="#1e9e6a"/>
+      <text x="245" y="144" font-size="10" fill="#5b6478">統合</text>
+    </g>
+    <text x="157" y="232" font-size="10.5" text-anchor="middle" fill="#5b6478">対称な計算グラフの統合 [Sourek+ 2021]、</text>
+    <text x="157" y="249" font-size="10.5" text-anchor="middle" fill="#5b6478">直交不変性の因子分解 [Ganev+ 2021] など</text>
+  </g>
+  <g class="u2">
+    <rect x="318" y="10" width="295" height="250" rx="12" fill="#fdeeda" stroke="#e07b1f" stroke-width="2"/>
+    <text x="465" y="36" font-size="13.5" font-weight="bold" text-anchor="middle" fill="#e07b1f">最適化 (§2.2.2)</text>
+    <path d="M 350 190 C 400 190, 420 80, 465 80 S 530 190, 585 190" fill="none" stroke="#e07b1f" stroke-opacity="0.35" stroke-width="16" stroke-linecap="round"/>
+    <text x="465" y="74" font-size="10" text-anchor="middle" fill="#8a93ad">同じ損失の軌道(orbit)</text>
+    <circle cx="375" cy="184" r="7" fill="#1c2333"/>
+    <circle cx="560" cy="184" r="7" fill="#fff" stroke="#1c2333" stroke-width="2"/>
+    <path d="M 382 176 Q 465 120 552 176" fill="none" stroke="#7b46c9" stroke-width="2" stroke-dasharray="5 4" marker-end="url(#arrU)"/>
+    <text x="465" y="140" font-size="10.5" text-anchor="middle" fill="#7b46c9" font-weight="bold">テレポート</text>
+    <text x="465" y="232" font-size="10.5" text-anchor="middle" fill="#5b6478">Symmetry Teleportation [Zhao+ 2022]、</text>
+    <text x="465" y="249" font-size="10.5" text-anchor="middle" fill="#5b6478">Path-SGD・𝒢-SGD(スケール不変な更新)</text>
+  </g>
+  <g class="u3">
+    <rect x="626" y="10" width="295" height="250" rx="12" fill="#e0f5ec" stroke="#1e9e6a" stroke-width="2"/>
+    <text x="773" y="36" font-size="13.5" font-weight="bold" text-anchor="middle" fill="#1e9e6a">重み空間データ拡張 (§2.2.3)</text>
+    <circle cx="680" cy="130" r="9" fill="#3556d4"/><text x="680" y="158" font-size="11" text-anchor="middle" font-style="italic">θ<tspan baseline-shift="sub" font-size="75%">A</tspan></text>
+    <circle cx="866" cy="130" r="9" fill="#e07b1f"/><text x="866" y="158" font-size="11" text-anchor="middle" font-style="italic">π(θ<tspan baseline-shift="sub" font-size="75%">B</tspan>)</text>
+    <line x1="689" y1="130" x2="857" y2="130" stroke="#1e9e6a" stroke-width="2"/>
+    <circle cx="726" cy="130" r="5" fill="#1e9e6a"/><circle cx="773" cy="130" r="5" fill="#1e9e6a"/><circle cx="820" cy="130" r="5" fill="#1e9e6a"/>
+    <text x="773" y="108" font-size="10.5" text-anchor="middle" fill="#1e9e6a" font-weight="bold">mixup で新しい重みを合成</text>
+    <text x="773" y="190" font-size="10.5" text-anchor="middle" fill="#5b6478">λθ<tspan baseline-shift="sub" font-size="75%">A</tspan> + (1−λ)π(θ<tspan baseline-shift="sub" font-size="75%">B</tspan>)</text>
+    <text x="773" y="232" font-size="10.5" text-anchor="middle" fill="#5b6478">Weight space MixUp [Shamsian+ 2023]、</text>
+    <text x="773" y="249" font-size="10.5" text-anchor="middle" fill="#5b6478">置換拡張 [Schürholt+ 2021]、EQUIGEN</text>
+  </g>
+</svg>
+<figcaption>
+WSU の 3 つのユースケース。いずれも「重みを軌道・同値類として見る」ことから出てきます。
+特に<strong>データ拡張</strong>は、重みが少ない(= 学習データが少ない)INR のメタ学習で効いている、とサーベイは述べています。
+</figcaption>
+</figure>
+
+<table>
+  <tr><th>ユースケース</th><th>サーベイの要点</th></tr>
+  <tr><td><strong>モデル圧縮</strong></td>
+  <td>“Symmetries such as neuron permutation, scaling, or orthogonal transformation imply that many parameters encode equivalent functions,
+  suggesting that large models often inhabit <strong>lower-dimensional manifolds</strong> in weight space.”
+  —— 等価なパラメータを見つけて取り除く。対称性に導かれた枝刈りや低ランク分解(Abronin+ 2024、Li+ 2024b、Martinez+ 2021)も含む</td></tr>
+  <tr><td><strong>最適化</strong></td>
+  <td>最適解は点ではなく<strong>軌道 (orbit)</strong> を成す。Symmetry Teleportation は同じ軌道上の、より幾何が良い位置へ「跳ぶ」。
+  Path-SGD はパス正則化計量で、𝒢-SGD は正のスケール不変多様体上で、再スケーリングに鈍感な更新を行う</td></tr>
+  <tr><td><strong>データ拡張</strong></td>
+  <td>対称変換は「関数的に等価だが見た目は違う」重みを作るので、<strong>重み空間でのデータ拡張</strong>になる。
+  Weight space MixUp とその整列ベース版、置換同変な写像による INR の拡張など</td></tr>
+</table>
+
+<h2 id="discussion">議論 — WSU の強みと限界(§2.3)</h2>
+<div class="callout point">
+<span class="callout-title">強み</span>
+対称性ベースの見方は、それまでばらばらだった観察 ——
+<strong>なぜ異なるパラメータ化が同じ関数を表すのか、なぜ最適化地形に連結した最小値があるのか、
+なぜ大きなモデルを損失なくマージ・補間できるのか</strong> —— に一貫した説明を与えました。
+さらに「重みをデータとして見る」ことで、後続の表現・生成の理論的基盤になっています。
+</div>
+<div class="callout warn">
+<span class="callout-title">限界と未解決問題</span>
+<ul style="margin:0.3rem 0 0">
+  <li><strong>対称性の特徴づけが部分的</strong>: Transformer のような実用的アーキテクチャは複雑なパラメータ結合を持ち、単純な群構造に収まらない</li>
+  <li><strong>理論と実践のギャップ</strong>: 理想化した設定で導いた原理は、正規化・残差接続・混合精度を持つ大規模モデルに移らないことが多い</li>
+  <li><strong>計算量</strong>: 商空間で動くには対称性を「割る」必要があり、それはしばしばグラフマッチングのような
+  <strong>NP 困難</strong>な大規模組合せ最適化になる [Ainsworth et al., 2023]</li>
+  <li><strong>異種アーキテクチャ</strong>: さまざまな重み空間を置換対称性を保ったまま扱うメタモデルは、ほぼ未解決</li>
+</ul>
+</div>
+<p>
+展望としてサーベイは、WSU を「<strong>記述的</strong>な枠組みから<strong>予測的</strong>な枠組みへ」変えること ——
+曲率・連結性・スペクトル統計のような測れる量を通じて、重み空間の幾何と汎化・頑健性・適応性を結びつけること —— を挙げています。
+</p>
+
+<nav class="pager">
+  <a href="index.html"><span class="dir">← 前へ</span><span class="title">WSL 概要</span></a>
+  <a class="next" href="representation.html"><span class="dir">次へ →</span><span class="title">2. 重み空間の表現 (WSR)</span></a>
+</nav>
+
+</main>
+
+<footer class="site-footer">
+  <p>論文: <em>A Survey of Weight Space Learning: Understanding, Representation, and Generation</em>(Han, Wang+, 2026)/
+  <a href="https://arxiv.org/abs/2603.10090" target="_blank" rel="noopener">arXiv:2603.10090</a></p>
+  <p>このサイトのコンテンツはAIとの協働で作成しています。記述されている内容には間違いが含まれることがあるので、正確性については一次資料をチェックしてください。</p>
+</footer>
+
+<script>
+MathJax = { tex: { inlineMath: [['\\(', '\\)']], displayMath: [['$$', '$$']] } };
+</script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js" async></script>
+<script src="assets/diagram-controls.js"></script>
+<script>
+// ===== permutation / scaling invariance demo (pure JS, no deps) =====
+(() => {
+  const root = document.getElementById('perm-demo');
+  if (!root) return;
+  const COLORS = ['#d43d51', '#1e9e6a', '#3556d4'];
+  const base = {
+    W1: [[0.8, -0.5], [-0.3, 0.9], [0.6, 0.4]],
+    b1: [0.1, -0.2, 0.05],
+    W2: [1.2, -0.7, 0.9],
+    b2: 0.1,
+    tag: [0, 1, 2], // original identity of each hidden unit (for colouring)
+  };
+  const clone = (n) => JSON.parse(JSON.stringify(n));
+  let net = clone(base);
+  const inputs = [[0.5, -1.0], [1.0, 1.0], [-0.8, 0.3]];
+  const relu = (u) => Math.max(0, u);
+  const forward = (n, x) => n.b2 + n.W2.reduce((s, w2, i) =>
+    s + w2 * relu(n.W1[i][0] * x[0] + n.W1[i][1] * x[1] + n.b1[i]), 0);
+  const flat = (n) => [...n.W1.flat(), ...n.b1, ...n.W2, n.b2];
+  const dist = (a, b) => Math.sqrt(a.reduce((s, v, i) => s + (v - b[i]) ** 2, 0));
+  // fixed "naive" linear encoder over the flattened vector
+  const naiveW = [0.9, -0.4, 0.3, 0.7, -0.6, 0.2, 0.5, -0.8, 0.1, 0.6, -0.3, 0.4, 0.2];
+  const naive = (n) => flat(n).reduce((s, v, i) => s + v * naiveW[i], 0);
+  // DeepSets-style aggregation: same function per hidden unit, then sum
+  const deepsets = (n) => n.W2.reduce((s, w2, i) =>
+    s + Math.tanh(w2 * (n.W1[i][0] + n.W1[i][1] + n.b1[i])), 0);
+  const fmt = (v) => (v >= 0 ? ' ' : '') + v.toFixed(3);
+
+  const matEl = root.querySelector('#pd-mat');
+  const vecEl = root.querySelector('#pd-vec');
+  const cmpEl = root.querySelector('#pd-cmp');
+
+  const render = () => {
+    let h = '<tr><td></td><td>W₁[:,0]</td><td>W₁[:,1]</td><td>b₁</td><td>W₂</td></tr>';
+    net.W1.forEach((row, i) => {
+      const c = COLORS[net.tag[i]];
+      h += `<tr style="color:${c}"><td>h${i + 1}</td><td>${fmt(row[0])}</td><td>${fmt(row[1])}</td><td>${fmt(net.b1[i])}</td><td>${fmt(net.W2[i])}</td></tr>`;
+    });
+    matEl.innerHTML = h;
+    vecEl.textContent = 'vec(θ) = [' + flat(net).map((v) => v.toFixed(2)).join(', ') + ']';
+    const d = dist(flat(net), flat(base));
+    let c = `<div>‖θ − θ₀‖ = <strong>${d.toFixed(3)}</strong></div>`;
+    let same = true;
+    c += '<table class="mat"><tr><td>x</td><td>f(θ₀; x)</td><td>f(θ; x)</td></tr>';
+    inputs.forEach((x) => {
+      const a = forward(base, x), b = forward(net, x);
+      if (Math.abs(a - b) > 1e-9) same = false;
+      c += `<tr><td>(${x.join(', ')})</td><td>${fmt(a)}</td><td>${fmt(b)}</td></tr>`;
+    });
+    c += '</table>';
+    c += same ? '<div class="ok">✓ 関数は同一(全入力で出力が一致)</div>'
+              : '<div class="ng">✗ 関数が変わった</div>';
+    const n0 = naive(base), n1 = naive(net), s0 = deepsets(base), s1 = deepsets(net);
+    c += `<div style="margin-top:0.5rem">素朴なエンコーダ: ${fmt(n0)} → ${fmt(n1)} ` +
+         (Math.abs(n0 - n1) < 1e-9 ? '<span class="ok">不変</span>' : '<span class="ng">変化</span>') + '</div>';
+    c += `<div>DeepSets 型の集約: ${fmt(s0)} → ${fmt(s1)} ` +
+         (Math.abs(s0 - s1) < 1e-9 ? '<span class="ok">不変</span>' : '<span class="ng">変化</span>') + '</div>';
+    cmpEl.innerHTML = c;
+  };
+
+  const actions = {
+    perm() {
+      const idx = [0, 1, 2];
+      do { idx.sort(() => Math.random() - 0.5); } while (idx.every((v, i) => v === i));
+      net = { W1: idx.map((i) => net.W1[i].slice()), b1: idx.map((i) => net.b1[i]),
+              W2: idx.map((i) => net.W2[i]), b2: net.b2, tag: idx.map((i) => net.tag[i]) };
+    },
+    scale() {
+      net.W1.forEach((row, i) => {
+        const a = 0.3 + Math.random() * 2.7;
+        row[0] *= a; row[1] *= a; net.b1[i] *= a; net.W2[i] /= a;
+      });
+    },
+    noise() {
+      net.W1.forEach((row) => { row[0] += (Math.random() - 0.5) * 0.2; row[1] += (Math.random() - 0.5) * 0.2; });
+    },
+    reset() { net = clone(base); },
+  };
+  root.querySelectorAll('button[data-act]').forEach((btn) => {
+    btn.addEventListener('click', () => { actions[btn.dataset.act](); render(); });
+  });
+  render();
+})();
+</script>
+</body>
+</html>
