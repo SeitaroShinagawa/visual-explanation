@@ -1,0 +1,505 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>EmbeddingGemma 2 図解 — テキスト・画像・音声・動画を 1 つの空間へ</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🧭</text></svg>">
+<link rel="stylesheet" href="assets/style.css">
+<style>
+/* ===== motivation diagram: 3 stages (12s) ===== */
+@keyframes mot-turn {
+  0%, 2% { opacity: 0.22; }
+  6%, 30% { opacity: 1; }
+  34%, 100% { opacity: 0.22; }
+}
+#mot-fig .v1 { animation: mot-turn 12s ease-in-out infinite backwards; }
+#mot-fig .v2 { animation: mot-turn 12s ease-in-out infinite backwards; animation-delay: 4s; }
+#mot-fig .v3 { animation: mot-turn 12s ease-in-out infinite backwards; animation-delay: 8s; }
+
+/* ===== overview diagram: 5 stages (15s) ===== */
+/* `backwards` は必須: これが無いと遅延中のグループが基底 opacity(1) のまま表示され、
+   1 周目だけ全段が同時に強調されてしまう */
+@keyframes ov-bright {
+  0%, 22%, 100% { opacity: 0.35; }
+  5%, 17% { opacity: 1; }
+}
+#ov-fig .s1 { animation: ov-bright 15s ease-in-out infinite backwards; }
+#ov-fig .s2 { animation: ov-bright 15s ease-in-out infinite backwards; animation-delay: 3s; }
+#ov-fig .s3 { animation: ov-bright 15s ease-in-out infinite backwards; animation-delay: 6s; }
+#ov-fig .s4 { animation: ov-bright 15s ease-in-out infinite backwards; animation-delay: 9s; }
+#ov-fig .s5 { animation: ov-bright 15s ease-in-out infinite backwards; animation-delay: 12s; }
+
+/* 埋め込み空間の点がゆっくり集まる */
+@keyframes ov-gather {
+  0%, 60% { transform: translate(var(--dx), var(--dy)); }
+  80%, 100% { transform: translate(0, 0); }
+}
+#ov-fig .dot { animation: ov-gather 15s ease-in-out infinite backwards; }
+
+/* ===== modular parameter diagram: 3 configurations (12s) ===== */
+@keyframes mod-turn {
+  0%, 2% { opacity: 0.2; }
+  6%, 30% { opacity: 1; }
+  34%, 100% { opacity: 0.2; }
+}
+#mod-fig .m1 { animation: mod-turn 12s ease-in-out infinite backwards; }
+#mod-fig .m2 { animation: mod-turn 12s ease-in-out infinite backwards; animation-delay: 4s; }
+#mod-fig .m3 { animation: mod-turn 12s ease-in-out infinite backwards; animation-delay: 8s; }
+
+@media (prefers-reduced-motion: reduce) {
+  #mot-fig .v1, #mot-fig .v2, #mot-fig .v3,
+  #ov-fig .s1, #ov-fig .s2, #ov-fig .s3, #ov-fig .s4, #ov-fig .s5,
+  #mod-fig .m1, #mod-fig .m2, #mod-fig .m3 { opacity: 1; }
+  #ov-fig .dot { transform: none; }
+}
+</style>
+</head>
+<body>
+
+<nav class="topnav">
+  <a class="home-link" href="../index.html">Visual Explanation</a><span class="sep">/</span>
+  <a href="./index.html" class="current">EG2 概要</a>
+  <a href="architecture.html">1. アーキテクチャ</a>
+  <a href="training.html">2. 学習の仕組み</a>
+  <a href="inference.html">3. 埋め込みの生成</a>
+  <a href="evaluation.html">4. 評価と議論</a>
+</nav>
+
+<header class="page-header">
+  <h1>EmbeddingGemma 2 図解</h1>
+  <p>テキスト・コード・画像・音声・動画、そしてそれらが<strong>入り混じった入力</strong>を、
+  <strong>1 本の 768 次元ベクトル</strong>に写す 744M パラメータのオープン埋め込みモデル
+  (<em>EmbeddingGemma 2: Unified and Efficient Multimodal Representations</em>, Google DeepMind, 2026)。
+  「大きな MLLM を埋め込みに転用する」流れに対し、<strong>小さく・モジュール式で・端末で動く</strong>ことを正面から狙った技術報告です。</p>
+</header>
+
+<main class="article">
+
+<h2 id="what">この論文は何をしたのか</h2>
+<p>
+本シリーズでこれまで扱ってきた <a href="../NExT-GPT/index.html">NExT-GPT</a>・<a href="../CoDi-2/index.html">CoDi-2</a>・<a href="../BAGEL/index.html">BAGEL</a>
+は、いずれも<strong>「何かを生成する」</strong>モデルでした。
+本作は違います。出力は文章でも画像でもなく、<strong>単位ノルムのベクトル 1 本</strong>です。
+そのベクトル同士の内積(コサイン類似度)で、検索・分類・クラスタリング・類似度判定をすべてこなします。
+</p>
+
+<div class="callout point">
+<span class="callout-title">この論文の一行要約</span>
+<strong>「マルチモーダル埋め込みの品質を、数十億パラメータ級の MLLM ではなく 1B 未満のモデルで出す」</strong>ために、
+Gemma 4 の重みを出発点に、<strong>① 簡略化した Per-Layer Embeddings</strong>、
+<strong>② モダリティと目的関数を段階的に切り替える 3 段のカリキュラム</strong>、
+<strong>③ 切り詰め可能な次元・可変の視覚トークン数・量子化・エンコーダの取り外し</strong>という 3 つの工夫を重ねた技術報告です。
+著者らの言葉では “EmbeddingGemma 2 establishes a <strong>new Pareto frontier</strong>, outperforming both specialist models and models
+<strong>two to twelve times larger</strong>.”(Abstract)
+</div>
+
+<h2 id="background">研究背景 — 埋め込みモデルが抱えていた 2 つの壁</h2>
+<p>
+Introduction の議論は短く、3 段で進みます。
+</p>
+
+<div class="callout warn">
+<span class="callout-title">論文 §1 の問題意識(要約と引用)</span>
+<strong>① テキスト埋め込みは強いが、他モダリティには迂回が必要</strong> ——
+“to work with audio and visual data, these require additional tools like automatic speech recognition (ASR) and image captioners
+which both <strong>add computational cost and fail to capture signals like fine-grained visual details and non-verbal or environmental sounds</strong>.”
+<br><br>
+<strong>② CLIP 型は cross-modal に強いが、混在入力を扱えない</strong> ——
+CLIP / ALIGN / SigLIP は “are <strong>unable to natively process mixed-modal input</strong> to capture interactions between input modalities.”
+<br><br>
+<strong>③ MLLM 転用型は何でも扱えるが、重すぎる</strong> ——
+“These models typically contain <strong>several billion parameters</strong>, making them prohibitively expensive for applications that are
+latency-sensitive, high-throughput, or require on-device deployment for privacy or offline access.”
+</div>
+
+<figure class="diagram" id="mot-fig" data-cycle-ms="12000" data-step-count="3">
+<svg viewBox="0 0 900 380" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="既存の 3 系統の埋め込みモデルが抱える壁">
+  <defs>
+    <marker id="arrM" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#8a93ad"/>
+    </marker>
+  </defs>
+
+  <!-- 1: text + ASR / captioner -->
+  <g class="v1">
+    <text x="16" y="26" font-size="13" font-weight="bold" fill="#e07b1f">① テキスト埋め込み + 変換器</text>
+    <rect x="16" y="38" width="270" height="196" rx="10" fill="#fdeeda" stroke="#e07b1f" stroke-width="2"/>
+    <rect x="30" y="56" width="60" height="30" rx="6" fill="#fff" stroke="#e07b1f"/>
+    <text x="60" y="76" font-size="11" text-anchor="middle">🔊 音声</text>
+    <rect x="30" y="100" width="60" height="30" rx="6" fill="#fff" stroke="#e07b1f"/>
+    <text x="60" y="120" font-size="11" text-anchor="middle">🖼️ 画像</text>
+    <rect x="112" y="56" width="70" height="30" rx="6" fill="#fff" stroke="#d43d51" stroke-dasharray="4 3"/>
+    <text x="147" y="76" font-size="10.5" text-anchor="middle" fill="#d43d51">ASR</text>
+    <rect x="112" y="100" width="70" height="30" rx="6" fill="#fff" stroke="#d43d51" stroke-dasharray="4 3"/>
+    <text x="147" y="120" font-size="10.5" text-anchor="middle" fill="#d43d51">キャプション</text>
+    <rect x="204" y="76" width="70" height="36" rx="6" fill="#fff" stroke="#3556d4" stroke-width="1.5"/>
+    <text x="239" y="98" font-size="10.5" text-anchor="middle" fill="#3556d4">テキスト埋込</text>
+    <g fill="none" stroke="#8a93ad" stroke-width="1.6" marker-end="url(#arrM)">
+      <path d="M 92 71 L 110 71"/><path d="M 92 115 L 110 115"/>
+      <path d="M 184 71 L 202 88"/><path d="M 184 115 L 202 100"/>
+    </g>
+    <text x="30" y="160" font-size="11" fill="#5b6478">変換で<tspan fill="#d43d51" font-weight="bold">失われる</tspan>もの:</text>
+    <text x="30" y="180" font-size="10.5" fill="#5b6478">・細かな視覚的ディテール</text>
+    <text x="30" y="198" font-size="10.5" fill="#5b6478">・声色・環境音などの非言語情報</text>
+    <text x="30" y="216" font-size="10.5" fill="#5b6478">・追加モデル分の計算コスト</text>
+  </g>
+
+  <!-- 2: dual tower -->
+  <g class="v2">
+    <text x="314" y="26" font-size="13" font-weight="bold" fill="#1e9e6a">② CLIP 型(二塔)</text>
+    <rect x="314" y="38" width="270" height="196" rx="10" fill="#e0f5ec" stroke="#1e9e6a" stroke-width="2"/>
+    <rect x="330" y="56" width="90" height="30" rx="6" fill="#fff" stroke="#1e9e6a"/>
+    <text x="375" y="76" font-size="10.5" text-anchor="middle">画像タワー</text>
+    <rect x="478" y="56" width="90" height="30" rx="6" fill="#fff" stroke="#1e9e6a"/>
+    <text x="523" y="76" font-size="10.5" text-anchor="middle">テキストタワー</text>
+    <circle cx="449" cy="116" r="14" fill="#fff" stroke="#1e9e6a" stroke-width="2"/>
+    <text x="449" y="121" font-size="11" text-anchor="middle" fill="#1e9e6a">·</text>
+    <g fill="none" stroke="#8a93ad" stroke-width="1.6" marker-end="url(#arrM)">
+      <path d="M 375 88 L 437 108"/><path d="M 523 88 L 461 108"/>
+    </g>
+    <text x="449" y="150" font-size="10.5" text-anchor="middle" fill="#1e9e6a" font-weight="bold">cross-modal 検索は得意</text>
+    <text x="330" y="178" font-size="10.5" fill="#5b6478">しかし「画像 + 質問文」のような</text>
+    <text x="330" y="196" font-size="10.5" fill="#d43d51" font-weight="bold">混在入力を 1 つとして読めない</text>
+    <text x="330" y="216" font-size="10.5" fill="#5b6478">(タワー同士は最後の内積でしか出会わない)</text>
+  </g>
+
+  <!-- 3: MLLM-based -->
+  <g class="v3">
+    <text x="612" y="26" font-size="13" font-weight="bold" fill="#7b46c9">③ MLLM 転用型</text>
+    <rect x="612" y="38" width="272" height="196" rx="10" fill="#efe6fb" stroke="#7b46c9" stroke-width="2"/>
+    <rect x="636" y="56" width="224" height="62" rx="8" fill="#fff" stroke="#7b46c9" stroke-width="2"/>
+    <text x="748" y="82" font-size="12" text-anchor="middle" font-weight="bold" fill="#7b46c9">数 B〜数十 B の MLLM</text>
+    <text x="748" y="102" font-size="10" text-anchor="middle" fill="#5b6478">E5-V / VLM2Vec / GME / Omni-Embed …</text>
+    <text x="628" y="146" font-size="10.5" fill="#7b46c9" font-weight="bold">混在入力も、動画・音声も扱える</text>
+    <text x="628" y="172" font-size="10.5" fill="#5b6478">しかし</text>
+    <text x="628" y="192" font-size="10.5" fill="#d43d51" font-weight="bold">遅延・スループット・端末実行に不向き</text>
+    <text x="628" y="212" font-size="10.5" fill="#5b6478">(プライバシー/オフライン用途に載らない)</text>
+  </g>
+
+  <rect x="16" y="262" width="868" height="98" rx="10" fill="#f2f4fa" stroke="#3556d4" stroke-width="2"/>
+  <text x="450" y="288" font-size="13" font-weight="bold" text-anchor="middle" fill="#3556d4">本作の狙い: ③ の表現力を、① のような軽さで</text>
+  <text x="450" y="312" font-size="11.5" text-anchor="middle" fill="#5b6478">1 つの Transformer がテキスト・画像・音声・動画を<tspan font-weight="bold">ネイティブに</tspan>読み、混在入力にも対応しつつ、</text>
+  <text x="450" y="334" font-size="11.5" text-anchor="middle" fill="#5b6478">本体は <tspan font-weight="bold">271M</tspan>、全部載せても <tspan font-weight="bold">744M</tspan>。int4 量子化で Pixel 11 Pro 上のピークメモリ <tspan font-weight="bold">567 MB</tspan>(§2.4)。</text>
+</svg>
+<figcaption>
+論文の動機。既存の 3 系統はそれぞれ<strong>情報の欠落・混在入力の不可・重さ</strong>という壁を抱えていました。
+本作は ③ の「1 つのモデルで全部読む」設計を保ったまま、サイズを 1 桁落とすことを目指します。
+</figcaption>
+</figure>
+
+<h2 id="related">関連研究 — 3 つの系譜と本作の位置</h2>
+<p>
+論文には独立した Related Work 節はなく、Introduction・§2.4・§3.3 に引用が散らばっています。
+ここではそれを 3 つの系譜に整理し直しました。
+</p>
+
+<table>
+  <tr><th>系譜</th><th>代表例(論文の引用)</th><th>特徴</th><th>本作との関係</th></tr>
+  <tr>
+    <td><strong>二塔型の対照学習</strong></td>
+    <td>CLIP [1]・ALIGN [2]・SigLIP 2 [3]</td>
+    <td>画像タワーとテキストタワーを対照損失で揃える。cross-modal に強いが混在入力は不可</td>
+    <td>本作は<strong>タワーを分けず</strong>、モダリティエンコーダの出力を<strong>1 本の系列</strong>として共有バックボーンに流す</td>
+  </tr>
+  <tr>
+    <td><strong>LLM / MLLM の埋め込み転用</strong></td>
+    <td>テキスト: E5 [34]・GTE [35]・Gemini Embedding [36]・LLM2Vec [37]・NV-Embed [38]・GritLM [39]<br>
+    マルチモーダル: E5-V [4]・VLM2Vec [5]・MM-Embed [6]・GME [7]<br>
+    オムニ: Gemini Embedding 2 [8]・Omni-Embed-Nemotron [9]・LCO [10]・e5-omni [11]・Ovis-Embedding [12]</td>
+    <td>デコーダ LLM を<strong>双方向注意 + プーリング</strong>に改造して埋め込み器にする。表現力は高いが数 B 規模</td>
+    <td>同じ「LLM 転用」路線を、<strong>Gemma 4 の小型版</strong>で行う。LLM2Vec 系の<strong>双方向化の適応段を省略</strong>するのが特徴</td>
+  </tr>
+  <tr>
+    <td><strong>小型テキスト埋め込みの系譜</strong></td>
+    <td>EmbeddingGemma 1 [23]・Matryoshka [33]・EmbedDistill [30]・GOR [22]</td>
+    <td>教師(Gemini Embedding)からの蒸留・スプレッドアウト正則化・MRL で、300M 級でも高品質に</td>
+    <td>直接の前作。レシピ(蒸留 → 対照 → マージ → QAT)を引き継ぎつつ<strong>マルチモーダル化</strong>と<strong>本体の縮小</strong>(308M → 271M)を行う</td>
+  </tr>
+</table>
+
+<div class="callout point">
+<span class="callout-title">本シリーズを順番に読んできた人への注記</span>
+<a href="../NExT-GPT/index.html">NExT-GPT</a> がエンコーダに使った <strong>ImageBind</strong> も「複数モダリティを 1 つの空間に揃える」モデルでした。
+ただし ImageBind は<strong>画像を錨(アンカー)にした二塔型の束</strong>で、混在入力は扱いません。
+本作は同じ「統一埋め込み空間」というゴールを、<strong>共有 Transformer に系列として流し込む</strong>という MLLM 型の手段で達成します。
+また <a href="../BAGEL/index.html">BAGEL</a> などが<strong>視覚エンコーダを凍結</strong>するのが通例だったのに対し、
+本作は §3.3 で<strong>視覚エンコーダを学習させるほうが大きく効く</strong>(MMEB-v2 で +4.09)と報告します。
+</div>
+
+<h2 id="problem">問題設定 — 何を入力し、何を出力し、何を最適化するのか</h2>
+
+<div class="callout math">
+<span class="callout-title">入力・出力・学習データの定式化(§2.2)</span>
+<strong>入力</strong>: \(M \ge 1\) 個のモダリティ区間の順序付き列
+$$x = (s_1, s_2, \dots, s_M),\qquad s_m \in \{\text{text},\ \text{image},\ \text{audio},\ \text{video}\}$$
+<strong>出力</strong>: 単位ノルムの埋め込み \(\mathbf{E} \in \mathbb{R}^{d}\)(\(d = 768\)、MRL により 512 / 256 / 128 にも切り詰め可)。
+<br><br>
+<strong>学習例</strong>: クエリ \(q_i\)、正例ターゲット \(p_i^{+}\)、任意でハードネガティブ \(\{p_i^{-}\}\)、
+さらにタスクを記述する接頭辞 \(t_q, t_p\)。両者は同じモデルで埋め込まれます。
+$$\mathbf{q}_i = f\big(\mathcal{P}(\mathcal{M}_n(\mathcal{T}(t_q \oplus q_i)))\big),\qquad
+\mathbf{p}_i^{+} = f\big(\mathcal{P}(\mathcal{M}_n(\mathcal{T}(t_p \oplus p_i^{+})))\big)\tag{1}$$
+\(\mathcal{T}\): 系列化(トークン化 + エンコーダ)、\(\mathcal{M}_n\): \(n\) 層の双方向 Transformer、
+\(\mathcal{P}\): 平均プーリング、\(f\): 線形射影 + \(\ell_2\) 正規化。
+</div>
+
+<p>
+ポイントは<strong>クエリもターゲットも同じ 1 つのモデル</strong>(シングルタワー)で埋め込むことです。
+「画像 + 質問」をクエリに、「動画」をターゲットに、といった<strong>任意の組み合わせ</strong>が、同じ式 (1) で表せます。
+これにより、論文が区別する 3 種の評価状況 ——
+<strong>unimodal</strong>(テキスト→テキスト)、<strong>cross-modal</strong>(テキスト→画像など)、
+<strong>mixed-modal</strong>(画像 + テキスト → …)—— がすべて同じ枠組みに入ります。
+</p>
+
+<h2 id="overview">全体像 — 5 つの段階でベクトルになるまで</h2>
+
+<figure class="diagram" id="ov-fig" data-cycle-ms="15000" data-step-count="5">
+<svg viewBox="0 0 960 520" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="EmbeddingGemma 2 の全体データフロー">
+  <defs>
+    <marker id="arrO" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#8a93ad"/>
+    </marker>
+  </defs>
+
+  <!-- 1. inputs -->
+  <g class="s1">
+    <text x="16" y="24" font-size="12.5" font-weight="bold" fill="#5b6478">① 入力(混在してよい)</text>
+    <rect x="14" y="36" width="150" height="34" rx="7" fill="#e5eafc" stroke="#3556d4"/>
+    <text x="89" y="58" font-size="11" text-anchor="middle">📝 テキスト / コード</text>
+    <rect x="14" y="80" width="150" height="34" rx="7" fill="#fdeeda" stroke="#e07b1f"/>
+    <text x="89" y="102" font-size="11" text-anchor="middle">🖼️ 画像</text>
+    <rect x="14" y="124" width="150" height="34" rx="7" fill="#fdeeda" stroke="#e07b1f"/>
+    <text x="89" y="146" font-size="11" text-anchor="middle">🎬 動画(1 fps)</text>
+    <rect x="14" y="168" width="150" height="34" rx="7" fill="#fbe4e8" stroke="#d43d51"/>
+    <text x="89" y="190" font-size="11" text-anchor="middle">🔊 音声</text>
+    <text x="16" y="224" font-size="9.5" fill="#5b6478">+ タスク接頭辞 “task: search result | query: …”</text>
+  </g>
+
+  <!-- 2. encoders -->
+  <g class="s2">
+    <rect x="196" y="36" width="160" height="40" rx="8" fill="#fff" stroke="#3556d4" stroke-width="2"/>
+    <text x="276" y="54" font-size="11.5" font-weight="bold" text-anchor="middle" fill="#3556d4">Embedder (141M)</text>
+    <text x="276" y="69" font-size="9.5" text-anchor="middle" fill="#5b6478">語彙表引き → d_M = 512</text>
+    <rect x="196" y="92" width="160" height="62" rx="8" fill="#fff" stroke="#e07b1f" stroke-width="2"/>
+    <text x="276" y="111" font-size="11.5" font-weight="bold" text-anchor="middle" fill="#e07b1f">Vision Encoder (167M)</text>
+    <text x="276" y="127" font-size="9.5" text-anchor="middle" fill="#5b6478">ViT / patch 16 → d_V = 768</text>
+    <text x="276" y="143" font-size="9.5" text-anchor="middle" fill="#5b6478">画像 280・動画 140 tok/枚</text>
+    <rect x="196" y="164" width="160" height="50" rx="8" fill="#fff" stroke="#d43d51" stroke-width="2"/>
+    <text x="276" y="183" font-size="11.5" font-weight="bold" text-anchor="middle" fill="#d43d51">Audio Encoder (305M) 🧊</text>
+    <text x="276" y="200" font-size="9.5" text-anchor="middle" fill="#5b6478">USM 系 Conformer / 25 tok/秒</text>
+  </g>
+
+  <!-- 3. sequence -->
+  <g class="s3">
+    <text x="392" y="24" font-size="12.5" font-weight="bold" fill="#5b6478">③ 1 本の系列(最大 8192)</text>
+    <g font-size="8.5" text-anchor="middle">
+      <rect x="390" y="36" width="34" height="24" rx="4" fill="#e9ecf5" stroke="#8a93ad"/><text x="407" y="52">BOS</text>
+      <rect x="428" y="36" width="24" height="24" rx="4" fill="#e5eafc" stroke="#3556d4"/><text x="440" y="52">t</text>
+      <rect x="456" y="36" width="24" height="24" rx="4" fill="#e5eafc" stroke="#3556d4"/><text x="468" y="52">t</text>
+      <rect x="484" y="36" width="30" height="24" rx="4" fill="#efe6fb" stroke="#7b46c9"/><text x="499" y="52" fill="#7b46c9">SOI</text>
+      <rect x="518" y="36" width="24" height="24" rx="4" fill="#fdeeda" stroke="#e07b1f"/><text x="530" y="52">v</text>
+      <rect x="546" y="36" width="24" height="24" rx="4" fill="#fdeeda" stroke="#e07b1f"/><text x="558" y="52">v</text>
+      <rect x="574" y="36" width="30" height="24" rx="4" fill="#efe6fb" stroke="#7b46c9"/><text x="589" y="52" fill="#7b46c9">EOI</text>
+      <rect x="608" y="36" width="24" height="24" rx="4" fill="#fbe4e8" stroke="#d43d51"/><text x="620" y="52">a</text>
+      <rect x="636" y="36" width="34" height="24" rx="4" fill="#e9ecf5" stroke="#8a93ad"/><text x="653" y="52">EOS</text>
+    </g>
+    <text x="392" y="80" font-size="9.5" fill="#5b6478">φ_vis / φ_aud(線形)で d_M = 512 に射影し、元の位置に差し込む</text>
+  </g>
+
+  <!-- 4. backbone -->
+  <g class="s4">
+    <rect x="390" y="100" width="280" height="150" rx="12" fill="#fff" stroke="#1c2333" stroke-width="2.5"/>
+    <text x="530" y="124" font-size="13.5" font-weight="bold" text-anchor="middle">Backbone (130M)</text>
+    <text x="530" y="141" font-size="9.5" text-anchor="middle" fill="#5b6478">Gemma 4 から初期化・24 層・<tspan font-weight="bold">双方向注意</tspan></text>
+    <rect x="404" y="152" width="252" height="28" rx="6" fill="#e5eafc" stroke="#3556d4"/>
+    <text x="530" y="171" font-size="10.5" text-anchor="middle" fill="#3556d4">Self-Attention(causal マスクを外す)</text>
+    <rect x="404" y="186" width="252" height="28" rx="6" fill="#efe6fb" stroke="#7b46c9"/>
+    <text x="530" y="205" font-size="10.5" text-anchor="middle" fill="#7b46c9">PLE: 入力埋め込みを各層へ注入(簡略版)</text>
+    <text x="530" y="236" font-size="9.5" text-anchor="middle" fill="#5b6478">× 24 層</text>
+  </g>
+
+  <!-- 5. pooling + embedding space -->
+  <g class="s5">
+    <rect x="704" y="100" width="114" height="34" rx="7" fill="#e0f5ec" stroke="#1e9e6a"/>
+    <text x="761" y="121" font-size="10.5" text-anchor="middle" fill="#1e9e6a">平均プーリング 𝒫</text>
+    <rect x="704" y="146" width="114" height="34" rx="7" fill="#e0f5ec" stroke="#1e9e6a"/>
+    <text x="761" y="167" font-size="10.5" text-anchor="middle" fill="#1e9e6a">線形 f: 512→768</text>
+    <rect x="704" y="192" width="114" height="34" rx="7" fill="#e0f5ec" stroke="#1e9e6a"/>
+    <text x="761" y="213" font-size="10.5" text-anchor="middle" fill="#1e9e6a">ℓ₂ 正規化</text>
+    <circle cx="890" cy="160" r="56" fill="#f7f8fb" stroke="#1e9e6a" stroke-width="1.5" stroke-dasharray="4 3"/>
+    <text x="890" y="236" font-size="10" text-anchor="middle" fill="#1e9e6a" font-weight="bold">E ∈ ℝ⁷⁶⁸, ‖E‖=1</text>
+    <circle class="dot" style="--dx:-30px;--dy:-20px" cx="878" cy="146" r="5" fill="#3556d4"/>
+    <circle class="dot" style="--dx:24px;--dy:-26px" cx="886" cy="150" r="5" fill="#e07b1f"/>
+    <circle class="dot" style="--dx:-22px;--dy:24px" cx="874" cy="156" r="5" fill="#d43d51"/>
+    <circle class="dot" style="--dx:30px;--dy:20px" cx="902" cy="176" r="5" fill="#3556d4"/>
+    <circle class="dot" style="--dx:20px;--dy:-10px" cx="908" cy="182" r="5" fill="#e07b1f"/>
+    <circle class="dot" style="--dx:-26px;--dy:6px" cx="896" cy="188" r="5" fill="#d43d51"/>
+    <text x="890" y="80" font-size="9.5" text-anchor="middle" fill="#5b6478">意味が近ければ</text>
+    <text x="890" y="93" font-size="9.5" text-anchor="middle" fill="#5b6478">モダリティを問わず近い</text>
+  </g>
+
+  <g fill="none" stroke="#8a93ad" stroke-width="2" marker-end="url(#arrO)">
+    <path class="flow-edge" d="M 166 53 L 194 56"/>
+    <path class="flow-edge" d="M 166 97 L 194 118"/>
+    <path class="flow-edge" d="M 166 141 L 194 128"/>
+    <path class="flow-edge" d="M 166 185 L 194 189"/>
+    <path class="flow-edge" d="M 358 56 L 388 48"/>
+    <path class="flow-edge" d="M 358 123 L 388 60"/>
+    <path class="flow-edge" d="M 358 189 L 388 64"/>
+    <path class="flow-edge" d="M 530 86 L 530 98"/>
+    <path class="flow-edge" d="M 672 117 L 702 117"/>
+    <path class="flow-edge" d="M 761 136 L 761 144"/>
+    <path class="flow-edge" d="M 761 182 L 761 190"/>
+    <path class="flow-edge" d="M 820 209 L 838 190"/>
+  </g>
+
+  <rect x="14" y="280" width="932" height="222" rx="11" fill="#f2f4fa" stroke="#3556d4" stroke-width="2"/>
+  <text x="480" y="306" font-size="12.5" font-weight="bold" text-anchor="middle" fill="#3556d4">設計の要点(本解説の章との対応)</text>
+  <rect x="30" y="320" width="290" height="80" rx="8" fill="#fff" stroke="#7b46c9"/>
+  <text x="175" y="342" font-size="11" text-anchor="middle" fill="#7b46c9" font-weight="bold">アーキテクチャ(1 章)</text>
+  <text x="44" y="362" font-size="10" fill="#5b6478">・PLE の専用表を捨て、射影だけにする</text>
+  <text x="44" y="380" font-size="10" fill="#5b6478">・エンコーダは差し込み式(取り外せる)</text>
+  <rect x="335" y="320" width="290" height="80" rx="8" fill="#fff" stroke="#e07b1f"/>
+  <text x="480" y="342" font-size="11" text-anchor="middle" fill="#e07b1f" font-weight="bold">学習(2 章)</text>
+  <text x="349" y="362" font-size="10" fill="#5b6478">・蒸留 → 蒸留 → 対照 の 3 段 + マージ + QAT</text>
+  <text x="349" y="380" font-size="10" fill="#5b6478">・テキスト → マルチモーダルのカリキュラム</text>
+  <rect x="640" y="320" width="290" height="80" rx="8" fill="#fff" stroke="#1e9e6a"/>
+  <text x="785" y="342" font-size="11" text-anchor="middle" fill="#1e9e6a" font-weight="bold">埋め込みの生成(3 章)</text>
+  <text x="654" y="362" font-size="10" fill="#5b6478">・768/512/256/128 次元に切り詰め可</text>
+  <text x="654" y="380" font-size="10" fill="#5b6478">・視覚トークン 70〜1120 を推論時に選べる</text>
+  <text x="44" y="430" font-size="11" fill="#5b6478">🧊 = 凍結。音声エンコーダは Gemma 4 E2B / E4B と<tspan font-weight="bold">ビット単位で同一</tspan>で、学習中は更新されない。</text>
+  <text x="44" y="452" font-size="11" fill="#5b6478">視覚エンコーダは Gemma 4 の小さいほうから初期化し、<tspan font-weight="bold">マルチモーダル 2 段で一緒に学習</tspan>する(§2.4・§3.3)。</text>
+  <text x="44" y="478" font-size="11" fill="#d43d51" font-weight="bold">パラメータ: 本体 271M(Embedder 141M + Backbone 130M) + 視覚 167M + 音声 305M = 744M</text>
+</svg>
+<figcaption>
+EmbeddingGemma 2 の全体像(論文 Figure 1 を再構成)。各モダリティは<strong>専用エンコーダでソフトトークン列</strong>になり、
+テキストトークンと一緒に<strong>1 本の系列として共有バックボーン</strong>に入ります。
+出口は平均プーリング → 射影 → 正規化の 1 本道で、点群(埋め込み空間)にはモダリティの区別がありません。
+</figcaption>
+</figure>
+
+<h3 id="modular">モジュール性 — 必要なエンコーダだけ載せる</h3>
+<p>
+モダリティエンコーダは<strong>独立にソフトトークンを作ってから</strong>共有バックボーンに入るので、
+使わないエンコーダは読み込まなくても動きます。論文 §1 の言葉では
+“these parameters are <strong>modular</strong>: EmbeddingGemma 2 can alternatively be run with 271M parameters as a text-only model,
+with 439M as a vision-language model, or with 577M as an audio-language model.”
+</p>
+
+<figure class="diagram" id="mod-fig" data-cycle-ms="12000" data-step-count="3">
+<svg viewBox="0 0 900 250" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="エンコーダの組み合わせによる 3 つの構成">
+  <g class="m1">
+    <rect x="16" y="20" width="276" height="210" rx="10" fill="#e5eafc" stroke="#3556d4" stroke-width="2"/>
+    <text x="154" y="46" font-size="13" font-weight="bold" text-anchor="middle" fill="#3556d4">テキスト専用 271M</text>
+    <rect x="40" y="62" width="228" height="36" rx="6" fill="#fff" stroke="#3556d4"/>
+    <text x="154" y="85" font-size="11" text-anchor="middle">Embedder 141M + Backbone 130M</text>
+    <text x="154" y="128" font-size="10.5" text-anchor="middle" fill="#5b6478">テキスト・コード</text>
+    <text x="154" y="160" font-size="10.5" text-anchor="middle" fill="#5b6478">int4 (Q4_C) 端末メモリ</text>
+    <text x="154" y="186" font-size="20" text-anchor="middle" font-weight="bold" fill="#3556d4">191 MB</text>
+  </g>
+  <g class="m2">
+    <rect x="312" y="20" width="276" height="210" rx="10" fill="#fdeeda" stroke="#e07b1f" stroke-width="2"/>
+    <text x="450" y="46" font-size="13" font-weight="bold" text-anchor="middle" fill="#e07b1f">視覚 + 言語 439M</text>
+    <rect x="336" y="62" width="228" height="36" rx="6" fill="#fff" stroke="#3556d4"/>
+    <text x="450" y="85" font-size="11" text-anchor="middle">本体 271M</text>
+    <rect x="336" y="104" width="228" height="28" rx="6" fill="#fff" stroke="#e07b1f"/>
+    <text x="450" y="123" font-size="11" text-anchor="middle">+ Vision 167M</text>
+    <text x="450" y="160" font-size="10.5" text-anchor="middle" fill="#5b6478">int4 (Q4_C) 端末メモリ</text>
+    <text x="450" y="186" font-size="20" text-anchor="middle" font-weight="bold" fill="#e07b1f">447 MB</text>
+  </g>
+  <g class="m3">
+    <rect x="608" y="20" width="276" height="210" rx="10" fill="#fbe4e8" stroke="#d43d51" stroke-width="2"/>
+    <text x="746" y="46" font-size="13" font-weight="bold" text-anchor="middle" fill="#d43d51">フル構成 744M</text>
+    <rect x="632" y="62" width="228" height="36" rx="6" fill="#fff" stroke="#3556d4"/>
+    <text x="746" y="85" font-size="11" text-anchor="middle">本体 271M</text>
+    <rect x="632" y="104" width="110" height="28" rx="6" fill="#fff" stroke="#e07b1f"/>
+    <text x="687" y="123" font-size="10.5" text-anchor="middle">+ Vision 167M</text>
+    <rect x="750" y="104" width="110" height="28" rx="6" fill="#fff" stroke="#d43d51"/>
+    <text x="805" y="123" font-size="10.5" text-anchor="middle">+ Audio 305M</text>
+    <text x="746" y="160" font-size="10.5" text-anchor="middle" fill="#5b6478">int4 (Q4_C) 端末メモリ</text>
+    <text x="746" y="186" font-size="20" text-anchor="middle" font-weight="bold" fill="#d43d51">567 MB</text>
+  </g>
+  <text x="450" y="246" font-size="10" text-anchor="middle" fill="#5b6478">メモリ値は Google Pixel 11 Pro 上の推論時ピーク(ランタイムのコンパイル込み、§2.4)。音声のみ構成(577M)は論文に端末メモリ値の記載なし。</text>
+</svg>
+<figcaption>
+モジュール式の 3 構成。エンコーダを外しても<strong>バックボーンの重みは同じ</strong>なので、
+テキストの埋め込みはどの構成で計算しても同じ空間に乗ります
+(論文はこの運用を明言していないので、ここは本解説による補足です)。
+</figcaption>
+</figure>
+
+<h2 id="series">本シリーズの中での位置づけ</h2>
+<table>
+  <tr><th></th><th>NExT-GPT / CoDi-2</th><th>BAGEL</th><th>本作(EmbeddingGemma 2)</th></tr>
+  <tr><th>出力</th><td>テキスト + 外部拡散モデルで画像・音声・動画</td><td>テキスト + 画像(自前のフロー)</td><td><strong>ベクトル 1 本</strong>(生成はしない)</td></tr>
+  <tr><th>注意の向き</th><td>causal(自己回帰)</td><td>causal + 画像内双方向</td><td><strong>完全に双方向</strong>(causal マスクを外す)</td></tr>
+  <tr><th>規模</th><td>7B 級 LLM</td><td>7B アクティブ / 14B 総</td><td><strong>271M〜744M</strong></td></tr>
+  <tr><th>視覚エンコーダ</th><td>ImageBind(凍結)</td><td>SigLIP 2 + VAE</td><td>Gemma 4 ViT(<strong>学習する</strong>)</td></tr>
+  <tr><th>音声</th><td>ImageBind 経由</td><td>—</td><td>USM 系 Conformer(凍結)をネイティブに</td></tr>
+  <tr><th>主な損失</th><td>交差エントロピー + 拡散</td><td>交差エントロピー + Rectified Flow</td><td><strong>蒸留 + 対照 + スプレッドアウト + MRL</strong></td></tr>
+</table>
+
+<h2 id="sources">本解説の依拠する一次資料</h2>
+<div class="callout point">
+<span class="callout-title">学習コードは公開されていません</span>
+論文はモデル重みを公開していると述べ(脚注 2: <a href="https://ai.google.dev/gemma/docs/embeddinggemma" target="_blank" rel="noopener">ai.google.dev/gemma/docs/embeddinggemma</a>)、
+QAT 済みのチェックポイントも配布するとしていますが、<strong>学習コード・データ混合の詳細は論文に付随していません</strong>。
+そのため本解説は <a href="../BeyondLM/index.html">Beyond Language Modeling</a> 回と同じ方針で、
+<strong>① 論文の数式(そのまま)、② 論文の表の数値(再掲)、③ 論文の記述から組み立てた擬似コード</strong>を使います。
+③ は必ず <span style="color:#e07b1f">⚠️ 擬似コード</span> と明記し、<strong>論文に書かれていないことは補わない</strong>方針です。
+</div>
+<ul>
+  <li><strong>論文</strong>: <em>EmbeddingGemma 2: Unified and Efficient Multimodal Representations</em>
+  (Schechter Vera*, Dua*, Andonov, Smoot, Russo, Llanos ほか EmbeddingGemma Team / Google DeepMind)。
+  <a href="https://arxiv.org/abs/2610.37364" target="_blank" rel="noopener">arXiv:2610.37364v1</a>(2026 年 10 月 27 日)。
+  本解説は提供された PDF(本文 15 ページ + 参考文献 + 付録、全 28 ページ)を通読して書いています</li>
+  <li><strong>前作</strong>: EmbeddingGemma 1 [23](<a href="https://arxiv.org/abs/2509.20354" target="_blank" rel="noopener">arXiv:2509.20354</a>)。
+  本作がたびたび「前作と同様に」と参照するレシピの出典</li>
+  <li><strong>教師モデル</strong>: Gemini Embedding 2 [8](<a href="https://arxiv.org/abs/2605.27295" target="_blank" rel="noopener">arXiv:2605.27295</a>)</li>
+</ul>
+
+<h2 id="chapters">章立て</h2>
+<div class="chapter-grid">
+  <a class="chapter-card" href="architecture.html">
+    <span class="num">CHAPTER 1</span>
+    <h3>アーキテクチャ</h3>
+    <p>双方向バックボーンとプーリング、簡略化した Per-Layer Embeddings(PLE)、視覚・音声エンコーダ、そして 4 モダリティを 1 本の系列にする入力形式</p>
+  </a>
+  <a class="chapter-card" href="training.html">
+    <span class="num">CHAPTER 2</span>
+    <h3>学習の仕組み</h3>
+    <p>対照損失(ハード・バッチ内・同タワー負例)、リストワイズ損失、スプレッドアウト正則化、埋め込み蒸留、MRL。そして 3 段のカリキュラム、モデルマージ、QAT</p>
+  </a>
+  <a class="chapter-card" href="inference.html">
+    <span class="num">CHAPTER 3</span>
+    <h3>埋め込みの生成と推論</h3>
+    <p>タスク接頭辞、検索の流れ、次元の切り詰め、視覚トークン予算(70〜1120)のトレードオフ、量子化チェックポイント</p>
+  </a>
+  <a class="chapter-card" href="evaluation.html">
+    <span class="num">CHAPTER 4</span>
+    <h3>評価方法と議論</h3>
+    <p>7 つのベンチマークと評価プロトコル、パレートフロンティア、アブレーションの総覧、ASR 対ネイティブ音声、近年のトレンドと残る課題</p>
+  </a>
+</div>
+
+<nav class="pager">
+  <a href="../index.html"><span class="dir">← 戻る</span><span class="title">Visual Explanation トップ</span></a>
+  <a class="next" href="architecture.html"><span class="dir">次へ →</span><span class="title">1. アーキテクチャ</span></a>
+</nav>
+
+</main>
+
+<footer class="site-footer">
+  <p>論文: <em>EmbeddingGemma 2: Unified and Efficient Multimodal Representations</em>(Google DeepMind, 2026)/
+  <a href="https://arxiv.org/abs/2610.37364" target="_blank" rel="noopener">arXiv:2610.37364</a> /
+  <a href="https://ai.google.dev/gemma/docs/embeddinggemma" target="_blank" rel="noopener">モデル配布ページ</a>(学習コードは未公開)</p>
+  <p>このサイトのコンテンツはAIとの協働で作成しています。記述されている内容には間違いが含まれることがあるので、正確性については一次資料をチェックしてください。</p>
+</footer>
+
+<script>
+MathJax = { tex: { inlineMath: [['\\(', '\\)']], displayMath: [['$$', '$$']], tags: 'none' } };
+</script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js" async></script>
+<script src="assets/diagram-controls.js"></script>
+</body>
+</html>

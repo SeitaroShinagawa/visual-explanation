@@ -1,0 +1,435 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>EG2 評価方法と議論 — 7 つのベンチマーク、パレートフロンティア、残る課題</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🧭</text></svg>">
+<link rel="stylesheet" href="assets/style.css">
+<style>
+/* ===== pareto panels: 4 benchmarks (14s) ===== */
+@keyframes pp-turn {
+  0%, 2% { opacity: 0.25; }
+  5%, 23% { opacity: 1; }
+  26%, 100% { opacity: 0.25; }
+}
+#pp-fig .pp1 { animation: pp-turn 14s ease-in-out infinite backwards; }
+#pp-fig .pp2 { animation: pp-turn 14s ease-in-out infinite backwards; animation-delay: 3.5s; }
+#pp-fig .pp3 { animation: pp-turn 14s ease-in-out infinite backwards; animation-delay: 7s; }
+#pp-fig .pp4 { animation: pp-turn 14s ease-in-out infinite backwards; animation-delay: 10.5s; }
+
+/* ===== ASR vs native: bars grow in 3 steps (12s) ===== */
+@keyframes asr-grow {
+  0% { transform: scaleX(0); }
+  8%, 100% { transform: scaleX(1); }
+}
+@keyframes asr-show {
+  0%, 6% { opacity: 0; }
+  10%, 100% { opacity: 1; }
+}
+#asr-fig .bar { transform-box: fill-box; transform-origin: left center; }
+#asr-fig .g1 .bar { animation: asr-grow 12s ease-out infinite backwards; }
+#asr-fig .g2 .bar { animation: asr-grow 12s ease-out infinite backwards; animation-delay: 4s; }
+#asr-fig .g3 .bar { animation: asr-grow 12s ease-out infinite backwards; animation-delay: 8s; }
+#asr-fig .g1 { animation: asr-show 12s ease-out infinite backwards; }
+#asr-fig .g2 { animation: asr-show 12s ease-out infinite backwards; animation-delay: 4s; }
+#asr-fig .g3 { animation: asr-show 12s ease-out infinite backwards; animation-delay: 8s; }
+
+/* ===== trends & challenges: 4 + 4 cards (16s) ===== */
+@keyframes tc-bright {
+  0%, 24%, 100% { opacity: 0.3; }
+  4%, 20% { opacity: 1; }
+}
+#tc-fig .k1 { animation: tc-bright 16s ease-in-out infinite backwards; }
+#tc-fig .k2 { animation: tc-bright 16s ease-in-out infinite backwards; animation-delay: 4s; }
+#tc-fig .k3 { animation: tc-bright 16s ease-in-out infinite backwards; animation-delay: 8s; }
+#tc-fig .k4 { animation: tc-bright 16s ease-in-out infinite backwards; animation-delay: 12s; }
+
+@media (prefers-reduced-motion: reduce) {
+  #pp-fig .pp1, #pp-fig .pp2, #pp-fig .pp3, #pp-fig .pp4,
+  #asr-fig .g1, #asr-fig .g2, #asr-fig .g3,
+  #tc-fig .k1, #tc-fig .k2, #tc-fig .k3, #tc-fig .k4 { opacity: 1; }
+  #asr-fig .bar { transform: none; }
+}
+</style>
+</head>
+<body>
+
+<nav class="topnav">
+  <a class="home-link" href="../index.html">Visual Explanation</a><span class="sep">/</span>
+  <a href="./index.html">EG2 概要</a>
+  <a href="architecture.html">1. アーキテクチャ</a>
+  <a href="training.html">2. 学習の仕組み</a>
+  <a href="inference.html">3. 埋め込みの生成</a>
+  <a href="evaluation.html" class="current">4. 評価と議論</a>
+</nav>
+
+<header class="page-header">
+  <h1>4. 評価方法と議論</h1>
+  <p>テキスト・コード・画像・動画・文書画像・音声・音声言語にまたがる <strong>7 つのベンチマーク群</strong>で、
+  どのような比較ルールのもとに何が示されたのか。そして、この論文が置かれている
+  <strong>マルチモーダル埋め込みの近年の流れ</strong>と、まだ残っている課題を整理します(§4〜§6)。</p>
+</header>
+
+<main class="article">
+
+<h2 id="benchmarks">7 つのベンチマーク群</h2>
+<table>
+  <tr><th>ベンチマーク</th><th>対象</th><th>規模・中身</th><th>主な指標</th></tr>
+  <tr><td><strong>MTEB(Multilingual, v2)</strong> [55]</td><td rowspan="3">テキスト・コード</td><td rowspan="3">MTEB 全体で 162 タスク、250+ 言語、14+ プログラミング言語、20 ドメイン、
+  10 タスク型(bitext mining・分類・クラスタリング・指示つき検索・多ラベル分類・ペア分類・リランキング・検索・STS・要約)</td><td>Mean(Task) / Mean(Type)</td></tr>
+  <tr><td><strong>MTEB(English, v2)</strong> [55]</td><td>同上</td></tr>
+  <tr><td><strong>MTEB(Code)</strong> [55]</td><td>Mean(Task)</td></tr>
+  <tr><td><strong>MMEB-v2</strong> [57]</td><td>画像・動画・文書画像</td><td>78 タスク。検索・分類・QA・視覚的グラウンディング・モーメント検索。PDF・スライド・チャートを含む</td><td>Hit@1 / NDCG@5</td></tr>
+  <tr><td><strong>MIEB(lite)</strong> [58]</td><td>画像</td><td>線形プローブ分類・クラスタリング・多肢選択・合成性・視覚的 STS など</td><td>Mean(Task) / Mean(Type)</td></tr>
+  <tr><td><strong>MAEB</strong> [60]</td><td>音声(環境音・音楽・発話・生物音響・感情)</td><td>30 タスク。単一/cross-modal の検索・リランキング・クラスタリング・各種分類</td><td>Mean(Task) / Mean(Type)</td></tr>
+  <tr><td><strong>MSEB(Retrieval)</strong> [59]</td><td>多言語の音声</td><td>音声のクエリからテキストの文章を引く。同一言語・言語横断、26 言語・地域</td><td>MRR@10</td></tr>
+</table>
+<p>
+MMEB-v2 と MIEB(lite) は物体検出・計数・OCR・時間推論といった視覚スキルを暗黙に測り、
+cross-modal・mixed-modal の様々な組み合わせを含みます。アブレーション(§3)ではこのうち
+<strong>音声以外をまとめて測れる MMEB-v2</strong> が使われました。
+</p>
+
+<h2 id="protocol">評価プロトコル — 何と比べるか(§4.1)</h2>
+<div class="callout warn">
+<span class="callout-title">比較のルール</span>
+<ul style="margin:0.3rem 0 0">
+  <li><strong>比較対象</strong>: 各ベンチマークの上位モデル(専門特化型も汎用型も)。MTEB・MAEB・MIEB(lite) は<strong>1B 未満</strong>、
+  MMEB-v2 は小型モデルが少ないため<strong>2B 未満</strong>に限る</li>
+  <li><strong>単一ベクトルのみ</strong>: 保存・遅延コストが桁違いなマルチベクトル(ColBERT 型)は除外</li>
+  <li><strong>汚染対策</strong>: 評価データの <strong>25% 超</strong>で学習したモデルは除外</li>
+  <li><strong>パラメータの数え方</strong>: 本作は<strong>そのベンチマークで使った部分だけ</strong>を数える(テキストなら 271M、画像なら 439M、音声なら 577M)。他モデルはリーダーボード記載値</li>
+  <li><strong>本作の設定</strong>: bfloat16、7 種のタスク指示、動画は最大 32 フレーム × 140 トークン、画像は 280 トークン</li>
+  <li><strong>スコアの出典</strong>: 基本はリーダーボード。最も近い比較相手 jina-embeddings-v5-omni-nano だけは公式実装で MMEB-v2 を自前評価し、
+  論文報告のサブセットでは再現値がやや高いことを確認</li>
+</ul>
+</div>
+<p>
+「使った部分だけを数える」ルールは、モジュール式の本作には有利にも公平にも働きえます。
+テキスト評価で 744M ではなく 271M と数えるのは、実際に<strong>テキスト専用構成(271M)で同じ数値が出る</strong>からです
+(<a href="index.html#modular">概要のモジュール性</a>)。
+</p>
+
+<h2 id="pareto">パレートフロンティア — 「小さいのに強い」の中身</h2>
+
+<figure class="diagram" id="pp-fig" data-cycle-ms="14000" data-step-count="4">
+<svg viewBox="0 0 940 330" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="4 つのベンチマークにおけるパラメータ数とスコアの散布図">
+  <g class="pp1">
+    <rect x="40" y="60" width="200" height="200" fill="#fff" stroke="#dde2ee"/>
+    <text x="140.0" y="34" font-size="13" font-weight="bold" text-anchor="middle">MTEB(Code)</text>
+    <text x="140.0" y="50" font-size="9.5" text-anchor="middle" fill="#5b6478">Table 7 · Mean(Task)</text>
+    <line x1="84.3" y1="60" x2="84.3" y2="260" stroke="#eef0f6"/>
+    <text x="84.3" y="274" font-size="9" text-anchor="middle" fill="#5b6478">100M</text>
+    <line x1="195.7" y1="60" x2="195.7" y2="260" stroke="#eef0f6"/>
+    <text x="195.7" y="274" font-size="9" text-anchor="middle" fill="#5b6478">1B</text>
+    <text x="36" y="68" font-size="9" text-anchor="end" fill="#5b6478">82</text>
+    <text x="36" y="260" font-size="9" text-anchor="end" fill="#5b6478">50</text>
+    <circle cx="170.7" cy="98.8" r="4.5" fill="#8a93ad" opacity="0.85"><title>pplx-embed-v1-0.6b: 596M, 75.8</title></circle>
+    <circle cx="104.2" cy="114.4" r="4.5" fill="#8a93ad" opacity="0.85"><title>UltraBERT-150M: 151M, 73.3</title></circle>
+    <circle cx="160.6" cy="116.9" r="4.5" fill="#8a93ad" opacity="0.85"><title>Giga-Emb-instruct: 484M, 72.9</title></circle>
+    <circle cx="170.7" cy="101.2" r="4.5" fill="#8a93ad" opacity="0.85"><title>Qwen3-Emb-0.6B: 596M, 75.4</title></circle>
+    <circle cx="139.3" cy="173.8" r="4.5" fill="#8a93ad" opacity="0.85"><title>granite-311m-multi: 312M, 63.8</title></circle>
+    <circle cx="82.8" cy="195.0" r="4.5" fill="#8a93ad" opacity="0.85"><title>granite-97m-multi: 97M, 60.4</title></circle>
+    <circle cx="103.6" cy="215.0" r="4.5" fill="#8a93ad" opacity="0.85"><title>granite-english-r2: 149M, 57.2</title></circle>
+    <circle cx="48.8" cy="223.8" r="4.5" fill="#8a93ad" opacity="0.85"><title>granite-small-eng: 48M, 55.8</title></circle>
+    <circle cx="132.5" cy="80.6" r="7" fill="#d43d51" stroke="#fff" stroke-width="1.5"/>
+    <text x="122.5" y="70.6" font-size="9.5" text-anchor="end" font-weight="bold" fill="#d43d51">EG2 78.7</text>
+    <circle cx="138.7" cy="142.5" r="5" fill="#e07b1f"/>
+    <text x="146.7" y="154.5" font-size="8.5" fill="#e07b1f">EG1 68.8</text>
+    <text x="236" y="92" font-size="8.5" text-anchor="end" fill="#5b6478">pplx-embed-v1-0.6b 75.8</text>
+  </g>
+  <g class="pp2">
+    <rect x="265" y="60" width="200" height="200" fill="#fff" stroke="#dde2ee"/>
+    <text x="365.0" y="34" font-size="13" font-weight="bold" text-anchor="middle">MMEB-v2</text>
+    <text x="365.0" y="50" font-size="9.5" text-anchor="middle" fill="#5b6478">Table 8 · Mean(Task)</text>
+    <line x1="309.3" y1="60" x2="309.3" y2="260" stroke="#eef0f6"/>
+    <text x="309.3" y="274" font-size="9" text-anchor="middle" fill="#5b6478">100M</text>
+    <line x1="420.7" y1="60" x2="420.7" y2="260" stroke="#eef0f6"/>
+    <text x="420.7" y="274" font-size="9" text-anchor="middle" fill="#5b6478">1B</text>
+    <text x="261" y="68" font-size="9" text-anchor="end" fill="#5b6478">66</text>
+    <text x="261" y="260" font-size="9" text-anchor="end" fill="#5b6478">40</text>
+    <circle cx="452.5" cy="81.5" r="4.5" fill="#8a93ad" opacity="0.85"><title>Eddy-vl_embed_1.9B: 1930M, 63.2</title></circle>
+    <circle cx="415.3" cy="188.5" r="4.5" fill="#8a93ad" opacity="0.85"><title>interestFM-UIR-CAFe: 894M, 49.3</title></circle>
+    <circle cx="420.0" cy="232.3" r="4.5" fill="#8a93ad" opacity="0.85"><title>jina-v5-omni-nano: 986M, 43.6</title></circle>
+    <circle cx="380.9" cy="113.8" r="7" fill="#d43d51" stroke="#fff" stroke-width="1.5"/>
+    <text x="370.9" y="103.8" font-size="9.5" text-anchor="end" font-weight="bold" fill="#d43d51">EG2 59.0</text>
+    <text x="446.5" y="73.5" font-size="8.5" text-anchor="end" fill="#5b6478">Eddy-vl_embed_1.9B 63.2</text>
+  </g>
+  <g class="pp3">
+    <rect x="490" y="60" width="200" height="200" fill="#fff" stroke="#dde2ee"/>
+    <text x="590.0" y="34" font-size="13" font-weight="bold" text-anchor="middle">MIEB(lite)</text>
+    <text x="590.0" y="50" font-size="9.5" text-anchor="middle" fill="#5b6478">Table 9 · Mean(Task)</text>
+    <line x1="534.3" y1="60" x2="534.3" y2="260" stroke="#eef0f6"/>
+    <text x="534.3" y="274" font-size="9" text-anchor="middle" fill="#5b6478">100M</text>
+    <line x1="645.7" y1="60" x2="645.7" y2="260" stroke="#eef0f6"/>
+    <text x="645.7" y="274" font-size="9" text-anchor="middle" fill="#5b6478">1B</text>
+    <text x="486" y="68" font-size="9" text-anchor="end" fill="#5b6478">64</text>
+    <text x="486" y="260" font-size="9" text-anchor="end" fill="#5b6478">40</text>
+    <circle cx="639.4" cy="157.5" r="4.5" fill="#8a93ad" opacity="0.85"><title>siglip-so400m: 878M, 52.3</title></circle>
+    <circle cx="625.0" cy="165.0" r="4.5" fill="#8a93ad" opacity="0.85"><title>siglip-large: 652M, 51.4</title></circle>
+    <circle cx="568.8" cy="180.0" r="4.5" fill="#8a93ad" opacity="0.85"><title>siglip-base-512: 204M, 49.6</title></circle>
+    <circle cx="604.6" cy="185.0" r="4.5" fill="#8a93ad" opacity="0.85"><title>CLIP-ViT-L DataComp: 428M, 49.0</title></circle>
+    <circle cx="645.0" cy="182.5" r="4.5" fill="#8a93ad" opacity="0.85"><title>CLIP-ViT-H laion2B: 986M, 49.3</title></circle>
+    <circle cx="645.0" cy="225.0" r="4.5" fill="#8a93ad" opacity="0.85"><title>jina-v5-omni-nano: 986M, 44.2</title></circle>
+    <circle cx="553.9" cy="214.2" r="4.5" fill="#8a93ad" opacity="0.85"><title>CLIP-ViT-B-16 DataComp: 150M, 45.5</title></circle>
+    <circle cx="605.9" cy="91.7" r="7" fill="#d43d51" stroke="#fff" stroke-width="1.5"/>
+    <text x="595.9" y="81.7" font-size="9.5" text-anchor="end" font-weight="bold" fill="#d43d51">EG2 60.2</text>
+    <text x="633.4" y="149.5" font-size="8.5" text-anchor="end" fill="#5b6478">siglip-so400m 52.3</text>
+  </g>
+  <g class="pp4">
+    <rect x="715" y="60" width="200" height="200" fill="#fff" stroke="#dde2ee"/>
+    <text x="815.0" y="34" font-size="13" font-weight="bold" text-anchor="middle">MAEB</text>
+    <text x="815.0" y="50" font-size="9.5" text-anchor="middle" fill="#5b6478">Table 10 · Mean(Task)</text>
+    <line x1="759.3" y1="60" x2="759.3" y2="260" stroke="#eef0f6"/>
+    <text x="759.3" y="274" font-size="9" text-anchor="middle" fill="#5b6478">100M</text>
+    <line x1="870.7" y1="60" x2="870.7" y2="260" stroke="#eef0f6"/>
+    <text x="870.7" y="274" font-size="9" text-anchor="middle" fill="#5b6478">1B</text>
+    <text x="711" y="68" font-size="9" text-anchor="end" fill="#5b6478">54</text>
+    <text x="711" y="260" font-size="9" text-anchor="end" fill="#5b6478">25</text>
+    <circle cx="870.0" cy="86.9" r="4.5" fill="#8a93ad" opacity="0.85"><title>jina-v5-omni-nano: 986M, 50.1</title></circle>
+    <circle cx="791.4" cy="191.0" r="4.5" fill="#8a93ad" opacity="0.85"><title>larger_clap_general: 194M, 35.0</title></circle>
+    <circle cx="782.0" cy="197.9" r="4.5" fill="#8a93ad" opacity="0.85"><title>msclap-2023: 160M, 34.0</title></circle>
+    <circle cx="779.9" cy="204.8" r="4.5" fill="#8a93ad" opacity="0.85"><title>clap-htsat-unfused: 153M, 33.0</title></circle>
+    <circle cx="848.3" cy="237.9" r="4.5" fill="#8a93ad" opacity="0.85"><title>MuQ-MuLan-large: 630M, 28.2</title></circle>
+    <circle cx="812.1" cy="250.3" r="4.5" fill="#8a93ad" opacity="0.85"><title>speecht5_multimodal: 298M, 26.4</title></circle>
+    <circle cx="844.1" cy="88.3" r="7" fill="#d43d51" stroke="#fff" stroke-width="1.5"/>
+    <text x="834.1" y="78.3" font-size="9.5" text-anchor="end" font-weight="bold" fill="#d43d51">EG2 49.9</text>
+    <text x="908" y="160" font-size="8.5" text-anchor="end" fill="#5b6478">jina-v5-omni-nano 50.1</text>
+  </g>
+  <text x="470" y="300" font-size="11" text-anchor="middle" fill="#5b6478">横軸: パラメータ数(対数、40M〜2.5B) / 縦軸: Mean(Task)。● 赤 = EmbeddingGemma 2、橙 = EmbeddingGemma 1、灰 = 各表の比較モデル</text>
+  <text x="470" y="320" font-size="10" text-anchor="middle" fill="#8a93ad">各パネルは論文の Table 7〜10 に載っているモデルのみ(リーダーボード全体ではない)。点にカーソルを当てるとモデル名が出ます。</text>
+</svg>
+<figcaption>
+論文 Figure 2 の要旨を、本文の表(Table 7〜10)に数値があるモデルだけで描き直したもの。
+<strong>MAEB だけは jina-v5-omni-nano(986M)がわずかに上</strong>(50.1 vs 49.9)で、
+MMEB-v2 では 2B 級の Eddy-vl_embed(63.2)が上にいます。それ以外のパネルでは同規模以下の全モデルを上回ります。
+</figcaption>
+</figure>
+
+<h2 id="results">モダリティ別の結果(Table 6 ほか)</h2>
+<table>
+  <tr><th>ベンチマーク</th><th>EG 2</th><th>EG 1</th><th>Jina v5 Omni Nano</th><th>Qwen3 Emb 0.6B</th><th>CAFe 0.5B</th><th>SigLIP SoViT 400M</th><th>LAION CLAP</th></tr>
+  <tr><th>総パラメータ / 次元</th><td>744M / 768</td><td>308M / 768</td><td>986M / 768</td><td>596M / 1024</td><td>894M / 896</td><td>878M / 1152</td><td>194M / 512</td></tr>
+  <tr><td>MTEB(Multi, v2) Task / Type</td><td>61.36 / 53.82</td><td>61.15 / 54.31</td><td><strong>65.52 / 57.66</strong></td><td>64.34 / 56.01</td><td>–</td><td>–</td><td>–</td></tr>
+  <tr><td>MTEB(Eng, v2) Task / Type</td><td>68.46 / 63.86</td><td>69.67 / 65.11</td><td><strong>71.11 / 65.22</strong></td><td>70.47 / 64.72</td><td>–</td><td>–</td><td>–</td></tr>
+  <tr><td>MTEB(Code)</td><td><strong>78.68</strong></td><td>68.76</td><td>–</td><td>75.42</td><td>–</td><td>–</td><td>–</td></tr>
+  <tr><td>MMEB-v2 Mean(Task)</td><td><strong>59.01</strong></td><td>*</td><td>43.61</td><td>*</td><td>49.33</td><td>–</td><td>*</td></tr>
+  <tr><td>&nbsp;– Image / Video / VisDoc</td><td><strong>57.28 / 50.67</strong> / 67.84</td><td>*</td><td>31.56 / 30.73 / <strong>71.34</strong></td><td>*</td><td>55.43 / 35.87 / 50.26</td><td>–</td><td>*</td></tr>
+  <tr><td>MIEB(lite) Task / Type</td><td><strong>60.17 / 65.67</strong></td><td>*</td><td>44.24 / 49.38</td><td>*</td><td>–</td><td>52.28 / 53.50</td><td>*</td></tr>
+  <tr><td>MAEB Task / Type</td><td>49.87 / 48.65</td><td>*</td><td><strong>50.14 / 55.31</strong></td><td>*</td><td>*</td><td>*</td><td>34.98 / 41.08</td></tr>
+  <tr><td>MSEB(Retrieval)</td><td><strong>69.54</strong></td><td>50.95†</td><td>–</td><td>*</td><td>*</td><td>*</td><td>–</td></tr>
+</table>
+<p style="font-size:0.85rem;color:var(--muted)">* モダリティ非対応 / – スコアなし / † 音声を ASR で書き起こして計算。</p>
+
+<h3 id="text">テキストとコード</h3>
+<p>
+多言語テキストでは、テキスト用パラメータが前作より少なく(308M → 271M)、しかも視覚・音声と空間を共有しているにもかかわらず、
+<strong>前作を上回ります</strong>(61.15 → 61.36。bitext mining と分類が牽引)。
+一方<strong>英語では小幅に後退</strong>しています(69.67 → 68.46)。テキスト評価で数える EG 2 のパラメータ(271M)より<strong>小さい</strong>モデルで上回るのは、多言語で 2 つ(harrier-oss-v1-270m・jina-embed-v5-text-nano)、英語で 1 つ(jina-embed-v5-text-nano)だけで、いずれもテキスト専門モデルだと論文は付記しています(§4.2・付録 B の Table 13・14)。なお上の Table 6 のとおり、より大きい Jina v5 Omni Nano(986M)や Qwen3 Emb 0.6B(596M)は多言語・英語とも EG 2 を上回ります。
+<br>
+コードは際立っており、<strong>4B 未満の全モデルを上回り、28 倍大きい首位モデルとの差は 2 点以内</strong>(Table 7, §4.2)。
+</p>
+
+<h3 id="vision">画像・動画・文書画像</h3>
+<p>
+MMEB-v2 のリーダーボードで<strong>最小のモデル</strong>で、分類と検索が特に強く、Overall で上にいるのは約 2B のモデルだけ。
+8B 超の視覚言語専門モデルも上回ります。MIEB(lite) では 1B 未満の比較で <strong>Task +7.9、Type +12.2</strong> と大差をつけ、
+特に<strong>多言語の視覚 STS(+22.8)と多言語検索(+12.5)</strong>で大きく勝ちます。テキスト側の多言語能力が視覚にも転移している、と読める結果です。
+ただし<strong>文書画像(VisDoc)では jina-v5-omni-nano のほうが上</strong>(71.34 vs 67.84)で、
+推論編で見た通り、視覚トークン予算を上げれば伸びる余地のあるカテゴリでもあります。
+</p>
+
+<h3 id="audio">音声 — 「意味に寄った」表現</h3>
+<p>
+MAEB では 1B 未満で <strong>any-to-any 検索と音声分類で最高</strong>、音声ペア分類では全サイズで最高。
+平均は 1B 未満の首位と 0.2 点差、全体首位と約 3.5 点差です。興味深いのは<strong>得意・不得意の分かれ方</strong>です。
+</p>
+<ul>
+  <li>車両音のクラスタリング(VehicleSoundClustering)では CLAP 系に勝つが、音声キャプション検索(ClothoT2ARetrieval)では CLAP 系が強い</li>
+  <li>多言語の発話(FleursT2ARetrieval)や歌声(JamAltLyricA2TRetrieval)では最高性能</li>
+  <li>しかし話者の性別でのゼロショットクラスタリング(VoxPopuliGenderClustering)は <strong>0.40</strong> と壊滅的。
+  ところが同じ性別を<strong>線形プローブ</strong>で当てる IEMOCAPGender は <strong>66.40</strong></li>
+</ul>
+<div class="callout point">
+<span class="callout-title">論文の解釈 — パラ言語情報は「消えた」のではなく「奥にしまわれた」</span>
+“This indicates the model's speech representations are <strong>dominated by semantics</strong>, desirably avoiding biases such as speaker demographic
+while <strong>retaining paralinguistic and acoustic attributes for extraction when needed</strong>.”
+埋め込み空間の主要な方向は「何を言ったか」に使われ、「誰がどう言ったか」は線形に取り出せる形で残っている、という読みです。
+</div>
+
+<h3 id="asr">ASR を挟むか、音声をそのまま読むか(Table 11)</h3>
+
+<figure class="diagram" id="asr-fig" data-cycle-ms="12000" data-step-count="3">
+<svg viewBox="0 0 900 330" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="MSEB における ASR 経由とネイティブ音声の比較">
+  <g font-size="11" fill="#5b6478">
+    <line x1="260" y1="30" x2="260" y2="250" stroke="#dde2ee"/>
+    <text x="260" y="268" text-anchor="middle">0</text>
+    <text x="460" y="268" text-anchor="middle">40</text>
+    <text x="660" y="268" text-anchor="middle">80</text>
+    <line x1="460" y1="30" x2="460" y2="250" stroke="#eef0f6" stroke-dasharray="3 3"/>
+    <line x1="660" y1="30" x2="660" y2="250" stroke="#eef0f6" stroke-dasharray="3 3"/>
+    <text x="460" y="290" text-anchor="middle">MSEB(Retrieval) Overall MRR@10(1 単位 = 5px)</text>
+  </g>
+  <g class="g1">
+    <text x="250" y="52" font-size="11.5" text-anchor="end">EG 1 + ASR(308M)</text>
+    <rect class="bar" x="260" y="38" width="254.75" height="22" rx="3" fill="#e07b1f" opacity="0.75"/>
+    <text x="522" y="54" font-size="11" font-weight="bold">50.95</text>
+    <text x="250" y="88" font-size="11.5" text-anchor="end">EG 2 + ASR(271M)</text>
+    <rect class="bar" x="260" y="74" width="287.95" height="22" rx="3" fill="#e07b1f"/>
+    <text x="556" y="90" font-size="11" font-weight="bold">57.59</text>
+  </g>
+  <g class="g2">
+    <text x="250" y="132" font-size="11.5" text-anchor="end" font-weight="bold" fill="#d43d51">EG 2 ネイティブ(577M)</text>
+    <rect class="bar" x="260" y="118" width="347.7" height="22" rx="3" fill="#d43d51"/>
+    <text x="616" y="134" font-size="11" font-weight="bold" fill="#d43d51">69.54</text>
+    <text x="250" y="168" font-size="11.5" text-anchor="end">EG 2 ネイティブ 256 次元</text>
+    <rect class="bar" x="260" y="154" width="333.8" height="22" rx="3" fill="#d43d51" opacity="0.6"/>
+    <text x="602" y="170" font-size="11" font-weight="bold">66.76</text>
+  </g>
+  <g class="g3">
+    <text x="250" y="212" font-size="11.5" text-anchor="end" fill="#5b6478">Gemini Emb 2 + ASR(3072 次元)</text>
+    <rect class="bar" x="260" y="198" width="352" height="22" rx="3" fill="#8a93ad" opacity="0.6"/>
+    <text x="620" y="214" font-size="11" fill="#5b6478">70.40</text>
+    <text x="250" y="248" font-size="11.5" text-anchor="end" fill="#5b6478">Gemini Emb 2 ネイティブ</text>
+    <rect class="bar" x="260" y="234" width="369.95" height="22" rx="3" fill="#8a93ad"/>
+    <text x="638" y="250" font-size="11" fill="#5b6478">73.99</text>
+  </g>
+  <text x="700" y="64" font-size="11" fill="#e07b1f">① 書き起こし経由でも</text>
+  <text x="700" y="82" font-size="11" fill="#e07b1f">前作より +6.6</text>
+  <text x="700" y="140" font-size="11" fill="#d43d51">② ネイティブで +12.0</text>
+  <text x="700" y="158" font-size="11" fill="#d43d51">256 次元でも ASR 超え</text>
+  <text x="700" y="224" font-size="11" fill="#5b6478">③ 教師との差は</text>
+  <text x="700" y="242" font-size="11" fill="#5b6478">約 4.5 点</text>
+</svg>
+<figcaption>
+Table 11 の Overall 列。<strong>ASR を挟むと</strong>アクセント・同音異義語・書き起こしの誤りで情報が落ちますが、
+ネイティブ音声入力ならそれらの信号をモデル自身が扱えます。
+“even the 256-dimensional embeddings greatly outperform the full-dimension ASR embeddings.”(§4.4)
+</figcaption>
+</figure>
+
+<p>
+特に<strong>言語横断(Cross-Lang)</strong>での差が大きく、EG 2 は ASR 経由 53.52 に対してネイティブ 67.68(+14.2)。
+教師 Gemini Embedding 2 では ASR の不利が 3.6 点(73.99 vs 70.40)にとどまるのに対し、
+EG 2 では 12 点近いので、<strong>小さなモデルほどネイティブ入力の恩恵が大きい</strong>とも読めます(本解説の読み)。
+</p>
+
+<h2 id="ablations">アブレーションの総覧(§3)</h2>
+<table>
+  <tr><th>問い</th><th>比較</th><th>MMEB-v2 Overall</th><th>結論</th><th>詳細</th></tr>
+  <tr><td>PLE に専用表は要るか</td><td>射影のみ vs 表あり</td><td>55.46 vs 55.07</td><td><strong>要らない</strong>(しかもテキストでも改善)</td><td><a href="architecture.html#ple-ablation">1 章</a></td></tr>
+  <tr><td>FT 段の効果はレシピか、学習量か</td><td>対照 FT vs 蒸留続行</td><td>55.46 vs 52.28</td><td><strong>レシピ</strong>。蒸留は頭打ち</td><td><a href="training.html#ft-ablation">2 章</a></td></tr>
+  <tr><td>視覚エンコーダを学習するか</td><td>学習 vs 凍結</td><td>52.27 vs 48.18</td><td><strong>学習する</strong>(+4.09)</td><td><a href="training.html#vision-enc">2 章</a></td></tr>
+  <tr><td>推論時の視覚トークン予算</td><td>70 / 140 / 280 / 560</td><td>50.07 → 57.02</td><td>単調増加。ただし動画は 560 で劣化</td><td><a href="inference.html#budget">3 章</a></td></tr>
+  <tr><td>学習時の動画予算</td><td>70 vs 140</td><td>54.66 vs 55.46(評価 140)</td><td><strong>140</strong> が両評価条件で有利</td><td><a href="inference.html#budget-train">3 章</a></td></tr>
+  <tr><td>音声をネイティブに読むか</td><td>ネイティブ vs ASR(MSEB)</td><td>69.54 vs 57.59</td><td><strong>ネイティブ</strong></td><td><a href="#asr">本章</a></td></tr>
+</table>
+
+<h2 id="trends">近年のトレンドと、この論文の位置</h2>
+<p>
+論文の引用と議論から読み取れる、2024〜2026 年のマルチモーダル埋め込みの流れを 4 つにまとめます(整理は本解説によるもの)。
+</p>
+
+<figure class="diagram" id="tc-fig" data-cycle-ms="16000" data-step-count="4">
+<svg viewBox="0 0 940 420" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="マルチモーダル埋め込みの 4 つのトレンドと本作の答え">
+  <g class="k1">
+    <rect x="16" y="16" width="440" height="180" rx="11" fill="#e5eafc" stroke="#3556d4" stroke-width="2"/>
+    <text x="32" y="42" font-size="13.5" font-weight="bold" fill="#3556d4">① 二塔 → 単一の (M)LLM バックボーン</text>
+    <text x="32" y="68" font-size="11" fill="#5b6478">CLIP/SigLIP の二塔から、E5-V・VLM2Vec・GME など</text>
+    <text x="32" y="86" font-size="11" fill="#5b6478">MLLM をそのまま埋め込み器にする流れへ。さらに</text>
+    <text x="32" y="104" font-size="11" fill="#5b6478">Omni-Embed・LCO・e5-omni・Ovis-Embedding で</text>
+    <text x="32" y="122" font-size="11" fill="#5b6478">音声・動画まで含む「オムニ」埋め込みへ。</text>
+    <text x="32" y="152" font-size="11.5" fill="#3556d4" font-weight="bold">本作: 同じ設計を 1B 未満で。双方向化の適応段も省略。</text>
+    <text x="32" y="174" font-size="10.5" fill="#5b6478">課題: 小型化しても英語テキストは前作から −1.2</text>
+  </g>
+  <g class="k2">
+    <rect x="484" y="16" width="440" height="180" rx="11" fill="#efe6fb" stroke="#7b46c9" stroke-width="2"/>
+    <text x="500" y="42" font-size="13.5" font-weight="bold" fill="#7b46c9">② 巨大教師からの蒸留</text>
+    <text x="500" y="68" font-size="11" fill="#5b6478">スコア蒸留(NV-Retriever 等)から、埋め込みそのものを</text>
+    <text x="500" y="86" font-size="11" fill="#5b6478">合わせる EmbedDistill 型へ。教師が MRL 対応なら</text>
+    <text x="500" y="104" font-size="11" fill="#5b6478">切り詰めるだけで次元を合わせられる。</text>
+    <text x="500" y="134" font-size="11.5" fill="#7b46c9" font-weight="bold">本作: 2.3T トークンを蒸留、最後の 600B で教師を離れる。</text>
+    <text x="500" y="156" font-size="10.5" fill="#5b6478">課題: 教師 Gemini Embedding 2 は非公開。レシピの</text>
+    <text x="500" y="174" font-size="10.5" fill="#5b6478">外部再現は難しい(本解説の指摘)</text>
+  </g>
+  <g class="k3">
+    <rect x="16" y="220" width="440" height="180" rx="11" fill="#e0f5ec" stroke="#1e9e6a" stroke-width="2"/>
+    <text x="32" y="246" font-size="13.5" font-weight="bold" fill="#1e9e6a">③ 効率のつまみを推論時に</text>
+    <text x="32" y="272" font-size="11" fill="#5b6478">MRL(次元)、QAT(ビット幅)、視覚トークン予算(解像度)、</text>
+    <text x="32" y="290" font-size="11" fill="#5b6478">エンコーダの取り外し(パラメータ)。1 つのチェックポイント</text>
+    <text x="32" y="308" font-size="11" fill="#5b6478">から利用者が品質とコストを選ぶ。</text>
+    <text x="32" y="338" font-size="11.5" fill="#1e9e6a" font-weight="bold">本作: 4 つのつまみをすべて提供、端末で 191〜567 MB。</text>
+    <text x="32" y="360" font-size="10.5" fill="#5b6478">課題: 128 次元は動画・音声検索で大きく劣化。</text>
+    <text x="32" y="378" font-size="10.5" fill="#5b6478">量子化版の画像・音声は −3〜−6</text>
+  </g>
+  <g class="k4">
+    <rect x="484" y="220" width="440" height="180" rx="11" fill="#fdeeda" stroke="#e07b1f" stroke-width="2"/>
+    <text x="500" y="246" font-size="13.5" font-weight="bold" fill="#e07b1f">④ 評価基盤の多モダリティ化</text>
+    <text x="500" y="272" font-size="11" fill="#5b6478">MTEB の多言語・コード化(MMTEB)、MMEB-v2(動画・文書)、</text>
+    <text x="500" y="290" font-size="11" fill="#5b6478">MIEB、そして 2026 年の MAEB・MSEB で音声も</text>
+    <text x="500" y="308" font-size="11" fill="#5b6478">大規模に測れるようになった。</text>
+    <text x="500" y="338" font-size="11.5" fill="#e07b1f" font-weight="bold">本作: 7 群すべてで 1 モデルを評価。</text>
+    <text x="500" y="360" font-size="10.5" fill="#5b6478">課題: 「混在入力 → 混在ターゲット」の all-to-all 検索を</text>
+    <text x="500" y="378" font-size="10.5" fill="#5b6478">測る枠組みはまだ足りない(論文 §5)</text>
+  </g>
+</svg>
+<figcaption>
+マルチモーダル埋め込みの 4 つの流れと、本作の答え・残る課題。各カードの下段(課題)は、
+論文の §5 と結果の表から本解説が拾ったものです。
+</figcaption>
+</figure>
+
+<h2 id="challenges">残る課題 — 論文自身が挙げるもの(§5 Future Work)</h2>
+<table>
+  <tr><th>方向</th><th>論文の記述</th><th>本解説の補足</th></tr>
+  <tr><td><strong>長い文脈</strong></td><td>コンテンツに応じた方法などで文脈長をさらに伸ばせば、<strong>長尺メディアの直接の索引化</strong>、長期タスク、
+  新しいエージェント型メモリシステムが可能になる</td><td>現状は学習時 8192 トークン、動画 32 フレーム。平均プーリングの「薄まり」(Table 5 の動画劣化)も長文脈化の障害になりうる</td></tr>
+  <tr><td><strong>エンコーダフリー</strong></td><td>エンコーダを持たない構成で、品質とメモリ・遅延の両方を改善できる可能性</td><td>現状 744M のうち 472M(約 63%)がモダリティエンコーダ</td></tr>
+  <tr><td><strong>学習パラダイム</strong></td><td>エンドツーエンドの RAG 学習のような変化で、下流用途に最適化できる</td><td>現在は検索結果を使う側(生成器)と独立に学習している</td></tr>
+  <tr><td><strong>評価</strong></td><td>interleaved な all-to-all のマルチモーダル検索が広がるにつれ、新しい使い方を表す評価枠組みが重要に</td><td>上の ④</td></tr>
+  <tr><td><strong>汎用エンコーダとしての転用</strong></td><td>最終埋め込みや<strong>プーリング前のトークン表現</strong>を使えば、意思決定モデル・モデルルータ [65]・報酬モデル [66]・
+  リランカ [67]・音声認識 [68, 69]・late interaction 検索器 [70–72] などにも適応できる(ゼロショットで優れる可能性も)</td><td>単一ベクトル検索を超えた「小さな多モダリティ基盤エンコーダ」としての位置づけ</td></tr>
+</table>
+
+<div class="callout warn">
+<span class="callout-title">本解説が結果から読み取った注意点</span>
+論文が明示的に「限界」として書いていない点も含め、読むときに気をつけたい点を挙げます。
+<ul style="margin:0.3rem 0 0">
+  <li><strong>英語テキストは前作より後退</strong>(Mean(Task) 69.67 → 68.46、Mean(Type) 65.11 → 63.86)。多モダリティ化と小型化のコストが最も見える箇所</li>
+  <li><strong>音声エンコーダは凍結のまま</strong>。視覚で +4.09 を生んだ「エンコーダの共学習」は音声には適用されていない(論文も「同様の改善がありうる」と述べるのみ)</li>
+  <li><strong>パラ言語のゼロショット性能</strong>が極端に低いタスクがある(性別クラスタリング 0.40)。意味重視の設計の裏返し</li>
+  <li><strong>アブレーションは中間レシピ</strong>で、数値は最終モデルと直接比較できない。また各アブレーションは 1 回ずつで、ばらつきの報告はない</li>
+  <li><strong>量子化版の評価ハーネスが float 版と異なる</strong>ため、Table 1 の画像・音声の差は量子化の影響だけとは限らない</li>
+  <li><strong>比較対象は 1B(MMEB-v2 は 2B)未満・単一ベクトル</strong>に限定。Abstract の「2〜12 倍大きいモデルを上回る」は Figure 2 の各パネルにおける比較で、全ベンチマーク・全モデルに対して一様に成り立つわけではない(MAEB・VisDoc・多言語テキストでは jina-v5-omni-nano などが上)</li>
+</ul>
+</div>
+
+<h2 id="summary">まとめ</h2>
+<div class="callout point">
+<span class="callout-title">EmbeddingGemma 2 を 5 行で</span>
+<ol style="margin:0.3rem 0 0">
+  <li><strong>何を</strong>: テキスト・画像・音声・動画とその混在を、1 つの 768 次元空間に写す 744M のオープンモデル</li>
+  <li><strong>どう作る</strong>: Gemma 4 を双方向化し、PLE の専用表を捨て、モダリティエンコーダのソフトトークンを 1 本の系列に織り込む</li>
+  <li><strong>どう学ぶ</strong>: テキスト蒸留 → マルチモーダル蒸留 → 対照 FT(+ スプレッドアウト + MRL)→ 軌道内マージ → QAT</li>
+  <li><strong>どう使う</strong>: タスク接頭辞をつけて埋め込み、次元・ビット幅・視覚トークン数・載せるエンコーダを用途に応じて選ぶ</li>
+  <li><strong>何が分かった</strong>: 視覚エンコーダは学習させるべき、蒸留だけでは頭打ち、音声はネイティブに読むべき、そして 1B 未満でも多くのベンチマークでパレート最前線に立てる</li>
+</ol>
+</div>
+
+<nav class="pager">
+  <a href="inference.html"><span class="dir">← 前へ</span><span class="title">3. 埋め込みの生成と推論</span></a>
+  <a class="next" href="index.html"><span class="dir">最初へ →</span><span class="title">EG2 概要</span></a>
+</nav>
+
+</main>
+
+<footer class="site-footer">
+  <p>論文: <em>EmbeddingGemma 2: Unified and Efficient Multimodal Representations</em>(Google DeepMind, 2026)/
+  <a href="https://arxiv.org/abs/2610.37364" target="_blank" rel="noopener">arXiv:2610.37364</a></p>
+  <p>このサイトのコンテンツはAIとの協働で作成しています。記述されている内容には間違いが含まれることがあるので、正確性については一次資料をチェックしてください。</p>
+</footer>
+
+<script src="assets/diagram-controls.js"></script>
+</body>
+</html>

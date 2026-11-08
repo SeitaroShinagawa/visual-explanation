@@ -1,0 +1,449 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>EG2 アーキテクチャ — 双方向バックボーン・簡略 PLE・モダリティエンコーダ</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🧭</text></svg>">
+<link rel="stylesheet" href="assets/style.css">
+<style>
+/* ===== backbone: 4 stages (13s) ===== */
+@keyframes bb-bright {
+  0%, 25%, 100% { opacity: 0.3; }
+  5%, 20% { opacity: 1; }
+}
+#bb-fig .b1 { animation: bb-bright 13s ease-in-out infinite backwards; }
+#bb-fig .b2 { animation: bb-bright 13s ease-in-out infinite backwards; animation-delay: 3.25s; }
+#bb-fig .b3 { animation: bb-bright 13s ease-in-out infinite backwards; animation-delay: 6.5s; }
+#bb-fig .b4 { animation: bb-bright 13s ease-in-out infinite backwards; animation-delay: 9.75s; }
+
+/* ===== attention mask: causal -> bidirectional (8s, 2 steps) ===== */
+@keyframes mask-fill {
+  0%, 45% { opacity: 0; }
+  55%, 95% { opacity: 1; }
+  100% { opacity: 0; }
+}
+@keyframes mask-label-a {
+  0%, 45% { opacity: 1; }
+  55%, 95% { opacity: 0.15; }
+  100% { opacity: 1; }
+}
+#mask-fig .upper { animation: mask-fill 8s ease-in-out infinite backwards; }
+#mask-fig .lab-causal { animation: mask-label-a 8s ease-in-out infinite backwards; }
+#mask-fig .lab-bi { animation: mask-fill 8s ease-in-out infinite backwards; }
+
+/* ===== PLE: 4 steps (14s) ===== */
+@keyframes ple-bright {
+  0%, 24%, 100% { opacity: 0.25; }
+  4%, 20% { opacity: 1; }
+}
+#ple-fig .p1 { animation: ple-bright 14s ease-in-out infinite backwards; }
+#ple-fig .p2 { animation: ple-bright 14s ease-in-out infinite backwards; animation-delay: 3.5s; }
+#ple-fig .p3 { animation: ple-bright 14s ease-in-out infinite backwards; animation-delay: 7s; }
+#ple-fig .p4 { animation: ple-bright 14s ease-in-out infinite backwards; animation-delay: 10.5s; }
+
+/* ===== input formatting: 4 modalities (16s) ===== */
+@keyframes in-turn {
+  0%, 2% { opacity: 0.2; }
+  5%, 23% { opacity: 1; }
+  26%, 100% { opacity: 0.2; }
+}
+#in-fig .i1 { animation: in-turn 16s ease-in-out infinite backwards; }
+#in-fig .i2 { animation: in-turn 16s ease-in-out infinite backwards; animation-delay: 4s; }
+#in-fig .i3 { animation: in-turn 16s ease-in-out infinite backwards; animation-delay: 8s; }
+#in-fig .i4 { animation: in-turn 16s ease-in-out infinite backwards; animation-delay: 12s; }
+
+@media (prefers-reduced-motion: reduce) {
+  #bb-fig .b1, #bb-fig .b2, #bb-fig .b3, #bb-fig .b4,
+  #ple-fig .p1, #ple-fig .p2, #ple-fig .p3, #ple-fig .p4,
+  #in-fig .i1, #in-fig .i2, #in-fig .i3, #in-fig .i4,
+  #mask-fig .upper, #mask-fig .lab-bi, #mask-fig .lab-causal { opacity: 1; }
+}
+</style>
+</head>
+<body>
+
+<nav class="topnav">
+  <a class="home-link" href="../index.html">Visual Explanation</a><span class="sep">/</span>
+  <a href="./index.html">EG2 概要</a>
+  <a href="architecture.html" class="current">1. アーキテクチャ</a>
+  <a href="training.html">2. 学習の仕組み</a>
+  <a href="inference.html">3. 埋め込みの生成</a>
+  <a href="evaluation.html">4. 評価と議論</a>
+</nav>
+
+<header class="page-header">
+  <h1>1. アーキテクチャ</h1>
+  <p>Gemma 4 のデコーダを<strong>双方向エンコーダ</strong>に作り替え、
+  専用の表を持たない<strong>簡略版 Per-Layer Embeddings</strong>で層ごとに入力を注入し、
+  視覚・音声・動画を<strong>1 本の系列</strong>に織り込む —— 論文 §2.1〜§2.2 と §3.1 を読みます。</p>
+</header>
+
+<main class="article">
+
+<h2 id="backbone">バックボーン — トークン列からベクトル 1 本へ</h2>
+
+<div class="callout math">
+<span class="callout-title">論文 §2.1 Backbone の定式化</span>
+トークン化された長さ \(L\) の入力系列 \(\mathbf{T}\) を、埋め込み器 \(\mathcal{E}\) で入力トークン埋め込みにします。
+$$\mathbf{T}_{\text{in}} = \mathcal{E}(\mathbf{T}) \in \mathbb{R}^{L \times d_M}$$
+\(n\) 層の<strong>双方向注意</strong> Transformer \(\mathcal{M}_n\) が出力トークン埋め込みを作り、
+平均プーリング \(\mathcal{P}\) で系列方向に平均します。
+$$\mathbf{T}_{\text{out}} = \mathcal{M}_n(\mathbf{T}_{\text{in}}) \in \mathbb{R}^{L \times d_M},\qquad
+\mathbf{P}_{\text{embed}} = \mathcal{P}(\mathbf{T}_{\text{out}}) \in \mathbb{R}^{d_M}$$
+最後に、<strong>ランダム初期化</strong>の線形射影 \(f\) で目標次元へ写し、\(\ell_2\) 正規化します。
+$$\mathbf{E} = \frac{f(\mathbf{P}_{\text{embed}})}{\|f(\mathbf{P}_{\text{embed}})\|_2} \in \mathbb{R}^{d}$$
+EmbeddingGemma 2 では \(n = 24,\ d_M = 512,\ d = 768\)。
+</div>
+
+<figure class="diagram" id="bb-fig" data-cycle-ms="13000" data-step-count="4">
+<svg viewBox="0 0 920 330" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="バックボーンのテンソル形状の追跡">
+  <defs>
+    <marker id="arrB" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#8a93ad"/>
+    </marker>
+  </defs>
+  <g class="b1">
+    <text x="20" y="28" font-size="12.5" font-weight="bold" fill="#3556d4">① 入力埋め込み</text>
+    <g>
+      <rect x="20" y="44" width="170" height="20" rx="3" fill="#e5eafc" stroke="#3556d4"/>
+      <rect x="20" y="68" width="170" height="20" rx="3" fill="#fdeeda" stroke="#e07b1f"/>
+      <rect x="20" y="92" width="170" height="20" rx="3" fill="#fdeeda" stroke="#e07b1f"/>
+      <rect x="20" y="116" width="170" height="20" rx="3" fill="#e5eafc" stroke="#3556d4"/>
+      <rect x="20" y="140" width="170" height="20" rx="3" fill="#fbe4e8" stroke="#d43d51"/>
+    </g>
+    <text x="105" y="184" font-size="11" text-anchor="middle" class="mono">T_in ∈ ℝ^(L×512)</text>
+    <text x="105" y="204" font-size="10" text-anchor="middle" fill="#5b6478">行 = トークン(モダリティ混在)</text>
+  </g>
+  <g class="b2">
+    <text x="248" y="28" font-size="12.5" font-weight="bold" fill="#1c2333">② 24 層の双方向 Transformer</text>
+    <rect x="248" y="44" width="200" height="116" rx="10" fill="#fff" stroke="#1c2333" stroke-width="2"/>
+    <text x="348" y="80" font-size="12" text-anchor="middle" font-weight="bold">𝓜₂₄</text>
+    <text x="348" y="102" font-size="10" text-anchor="middle" fill="#5b6478">全トークンが全トークンを見る</text>
+    <text x="348" y="122" font-size="10" text-anchor="middle" fill="#7b46c9">各層に PLE で入力を再注入</text>
+    <text x="348" y="184" font-size="11" text-anchor="middle" class="mono">T_out ∈ ℝ^(L×512)</text>
+  </g>
+  <g class="b3">
+    <text x="506" y="28" font-size="12.5" font-weight="bold" fill="#1e9e6a">③ 平均プーリング</text>
+    <g fill="#e0f5ec" stroke="#1e9e6a">
+      <rect x="506" y="44" width="140" height="14" rx="3"/><rect x="506" y="62" width="140" height="14" rx="3"/>
+      <rect x="506" y="80" width="140" height="14" rx="3"/><rect x="506" y="98" width="140" height="14" rx="3"/>
+    </g>
+    <text x="576" y="132" font-size="16" text-anchor="middle" fill="#1e9e6a">↓ mean</text>
+    <rect x="506" y="142" width="140" height="18" rx="3" fill="#1e9e6a" opacity="0.8"/>
+    <text x="576" y="184" font-size="11" text-anchor="middle" class="mono">P_embed ∈ ℝ^512</text>
+  </g>
+  <g class="b4">
+    <text x="702" y="28" font-size="12.5" font-weight="bold" fill="#d43d51">④ 射影 + 正規化</text>
+    <rect x="702" y="44" width="200" height="36" rx="7" fill="#fff" stroke="#d43d51"/>
+    <text x="802" y="67" font-size="11" text-anchor="middle">f: 512 → 768(ランダム初期化)</text>
+    <rect x="702" y="92" width="200" height="36" rx="7" fill="#fff" stroke="#d43d51"/>
+    <text x="802" y="115" font-size="11" text-anchor="middle">÷ ‖·‖₂</text>
+    <rect x="702" y="142" width="200" height="18" rx="3" fill="#d43d51" opacity="0.75"/>
+    <text x="802" y="184" font-size="11" text-anchor="middle" class="mono">E ∈ ℝ^768, ‖E‖ = 1</text>
+  </g>
+  <g fill="none" stroke="#8a93ad" stroke-width="2" marker-end="url(#arrB)">
+    <path class="flow-edge" d="M 194 102 L 244 102"/>
+    <path class="flow-edge" d="M 452 102 L 502 102"/>
+    <path class="flow-edge" d="M 650 151 L 698 151"/>
+  </g>
+  <rect x="20" y="226" width="882" height="84" rx="10" fill="#f2f4fa" stroke="#3556d4" stroke-width="1.5"/>
+  <text x="36" y="252" font-size="11.5" fill="#5b6478"><tspan font-weight="bold" fill="#3556d4">内部次元 512 と出力次元 768 が違う</tspan>のが面白い点です。バックボーンは 512 次元で考え、</text>
+  <text x="36" y="274" font-size="11.5" fill="#5b6478">最後の 1 枚の線形層で 768 次元に<tspan font-weight="bold">広げて</tspan>から正規化します。768 は MRL で 512 / 256 / 128 に切り詰められる</text>
+  <text x="36" y="296" font-size="11.5" fill="#5b6478">「入れ子」構造を持ちます(学習編の MRL を参照)。</text>
+</svg>
+<figcaption>
+バックボーンのテンソル形状。<strong>系列長 \(L\) はプーリングで消え</strong>、出力は入力の長さに関係なく常に 768 次元の単位ベクトル 1 本です。
+</figcaption>
+</figure>
+
+<h3 id="bidir">デコーダを双方向にする — 適応段を挟まない</h3>
+<p>
+初期化は Gemma 4 の<strong>デコーダ専用</strong>モデルです(§2.4 Initialization)。
+埋め込みでは「文末のトークンだけが全体を見られる」causal 注意は都合が悪いので、
+<strong>注意マスクを双方向に切り替えます</strong>。
+</p>
+
+<figure class="diagram" id="mask-fig" data-cycle-ms="8000" data-step-count="2">
+<svg viewBox="0 0 760 260" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="causal マスクから双方向マスクへの切り替え">
+  <g transform="translate(60,30)">
+    <!-- lower triangle (always on) -->
+    <g fill="#3556d4" opacity="0.85">
+      <rect x="0" y="0" width="30" height="30"/>
+      <rect x="0" y="32" width="30" height="30"/><rect x="32" y="32" width="30" height="30"/>
+      <rect x="0" y="64" width="30" height="30"/><rect x="32" y="64" width="30" height="30"/><rect x="64" y="64" width="30" height="30"/>
+      <rect x="0" y="96" width="30" height="30"/><rect x="32" y="96" width="30" height="30"/><rect x="64" y="96" width="30" height="30"/><rect x="96" y="96" width="30" height="30"/>
+      <rect x="0" y="128" width="30" height="30"/><rect x="32" y="128" width="30" height="30"/><rect x="64" y="128" width="30" height="30"/><rect x="96" y="128" width="30" height="30"/><rect x="128" y="128" width="30" height="30"/>
+    </g>
+    <!-- empty upper -->
+    <g fill="#eef0f6" stroke="#dde2ee">
+      <rect x="32" y="0" width="30" height="30"/><rect x="64" y="0" width="30" height="30"/><rect x="96" y="0" width="30" height="30"/><rect x="128" y="0" width="30" height="30"/>
+      <rect x="64" y="32" width="30" height="30"/><rect x="96" y="32" width="30" height="30"/><rect x="128" y="32" width="30" height="30"/>
+      <rect x="96" y="64" width="30" height="30"/><rect x="128" y="64" width="30" height="30"/>
+      <rect x="128" y="96" width="30" height="30"/>
+    </g>
+    <!-- upper filled (animated) -->
+    <g class="upper" fill="#1e9e6a" opacity="0.85">
+      <rect x="32" y="0" width="30" height="30"/><rect x="64" y="0" width="30" height="30"/><rect x="96" y="0" width="30" height="30"/><rect x="128" y="0" width="30" height="30"/>
+      <rect x="64" y="32" width="30" height="30"/><rect x="96" y="32" width="30" height="30"/><rect x="128" y="32" width="30" height="30"/>
+      <rect x="96" y="64" width="30" height="30"/><rect x="128" y="64" width="30" height="30"/>
+      <rect x="128" y="96" width="30" height="30"/>
+    </g>
+    <text x="79" y="182" font-size="11" text-anchor="middle" fill="#5b6478">行 = 見る側 / 列 = 見られる側</text>
+  </g>
+  <g class="lab-causal">
+    <text x="270" y="60" font-size="14" font-weight="bold" fill="#3556d4">Gemma 4(生成用): causal</text>
+    <text x="270" y="84" font-size="11.5" fill="#5b6478">各トークンは自分より前しか見えない。</text>
+    <text x="270" y="104" font-size="11.5" fill="#5b6478">先頭トークンは文全体の意味を知らない。</text>
+  </g>
+  <g class="lab-bi">
+    <text x="270" y="150" font-size="14" font-weight="bold" fill="#1e9e6a">EmbeddingGemma 2: 双方向</text>
+    <text x="270" y="174" font-size="11.5" fill="#5b6478">上三角も開く。全トークンが文脈全体を見たうえで</text>
+    <text x="270" y="194" font-size="11.5" fill="#5b6478">平均プーリングされる。<tspan font-weight="bold">専用の適応段は挟まない</tspan>。</text>
+  </g>
+</svg>
+<figcaption>
+注意マスクの切り替え。LLM2Vec などは双方向化の直後に「マスク付き次トークン予測」などの適応段を挟みますが、
+本作は “We <strong>omit explicit adaptation stages</strong> for bidirectional attention [23, 37], which can be costly and have been shown to be
+unnecessary for learning expressive representations [23, 38].”(§2.4)
+</figcaption>
+</figure>
+
+<div class="callout point">
+<span class="callout-title">では、適応の役割は誰が担うのか</span>
+論文は、最初の<strong>テキスト事前ファインチューニング</strong>段が
+“an <strong>implicit warm-up for the bidirectional attention</strong>, similar to BehnamGhader et al. [37]”
+として働くと解釈しています(§2.4)。
+つまり独立した適応段を作る代わりに、<strong>蒸留中心の本番の学習そのものを、暗黙のウォームアップとして兼用</strong>しています
+(<a href="training.html#recipe">学習編</a>)。
+</div>
+
+<h2 id="ple">Per-Layer Embeddings(PLE)— 表を捨てて射影だけにする</h2>
+<p>
+Gemma 3n / Gemma 4 には <strong>Per-Layer Embeddings(PLE)</strong>という仕組みがあります。
+各層が残差経路とは別に、<strong>入力トークンから直接</strong>「その層向けの情報」を受け取れるようにする機構です。
+元の PLE は、メインの埋め込み表とは<strong>別の大きなルックアップ表</strong>を使います。
+</p>
+<p>
+本作はその表を捨てました。理由は 2 つ —— <strong>① 専用表はテキストトークンにしか引けず、画像や音声のソフトトークンには何の信号も与えない</strong>、
+<strong>② メモリを食う</strong>(§3.1: “a dedicated PLE lookup table provides no direct signals for non-text modalities and consumes additional memory”)。
+代わりに、<strong>すでにモダリティ混在の \(\mathbf{T}_{\text{in}}\) から層ごとに射影</strong>します。
+</p>
+
+<div class="callout math">
+<span class="callout-title">論文 §2.1 の簡略版 PLE(各層 \(l \in [n]\))</span>
+① 入力埋め込みを層専用の表現へ射影:
+$$\mathbf{P}_l = \mathrm{RMSNorm}\big(p_l(\mathbf{T}_{\text{in}})\big) \in \mathbb{R}^{L \times d_P}$$
+② その層の(PLE 前の)出力 \(\mathbf{H}'_l\) からゲートを計算(\(\sigma\) は GELU):
+$$\mathbf{G}_l = \sigma\big(g_l(\mathbf{H}'_l)\big) \in \mathbb{R}^{L \times d_P}$$
+③ ゲートで変調し、モデル次元へ戻す:
+$$\mathbf{U}_l = \mathrm{RMSNorm}\big(u_l(\mathbf{G}_l \odot \mathbf{P}_l)\big) \in \mathbb{R}^{L \times d_M}$$
+④ 残差として加算:
+$$\mathbf{H}_l = \mathbf{H}'_l + \mathbf{U}_l$$
+\(p_l, g_l, u_l\) はすべて線形射影。本作では \(d_P = d_M = 512\)。
+</div>
+
+<figure class="diagram" id="ple-fig" data-cycle-ms="14000" data-step-count="4">
+<svg viewBox="0 0 920 400" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="簡略版 PLE の 1 層分の計算">
+  <defs>
+    <marker id="arrP" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#8a93ad"/>
+    </marker>
+  </defs>
+  <!-- T_in source -->
+  <rect x="20" y="40" width="150" height="56" rx="8" fill="#e5eafc" stroke="#3556d4" stroke-width="2"/>
+  <text x="95" y="64" font-size="12" text-anchor="middle" font-weight="bold" fill="#3556d4">T_in</text>
+  <text x="95" y="84" font-size="9.5" text-anchor="middle" fill="#5b6478">テキスト+画像+音声 混在</text>
+  <!-- layer stack -->
+  <rect x="20" y="170" width="150" height="56" rx="8" fill="#fff" stroke="#1c2333" stroke-width="2"/>
+  <text x="95" y="194" font-size="11" text-anchor="middle" font-weight="bold">第 l 層の Attn + FFN</text>
+  <text x="95" y="213" font-size="10" text-anchor="middle" class="mono">→ H'_l</text>
+
+  <g class="p1">
+    <rect x="236" y="40" width="190" height="56" rx="8" fill="#efe6fb" stroke="#7b46c9" stroke-width="2"/>
+    <text x="331" y="62" font-size="11" text-anchor="middle" font-weight="bold" fill="#7b46c9">① P_l = RMSNorm(p_l(T_in))</text>
+    <text x="331" y="82" font-size="9.5" text-anchor="middle" fill="#5b6478">層ごとに違う射影 p_l</text>
+  </g>
+  <g class="p2">
+    <rect x="236" y="170" width="190" height="56" rx="8" fill="#fdeeda" stroke="#e07b1f" stroke-width="2"/>
+    <text x="331" y="192" font-size="11" text-anchor="middle" font-weight="bold" fill="#e07b1f">② G_l = GELU(g_l(H'_l))</text>
+    <text x="331" y="212" font-size="9.5" text-anchor="middle" fill="#5b6478">現在の文脈がゲートを決める</text>
+  </g>
+  <g class="p3">
+    <circle cx="500" cy="134" r="20" fill="#fff" stroke="#1e9e6a" stroke-width="2"/>
+    <text x="500" y="140" font-size="16" text-anchor="middle" fill="#1e9e6a">⊙</text>
+    <rect x="560" y="106" width="200" height="56" rx="8" fill="#e0f5ec" stroke="#1e9e6a" stroke-width="2"/>
+    <text x="660" y="128" font-size="11" text-anchor="middle" font-weight="bold" fill="#1e9e6a">③ U_l = RMSNorm(u_l(G⊙P))</text>
+    <text x="660" y="148" font-size="9.5" text-anchor="middle" fill="#5b6478">512 → 512(d_P = d_M)</text>
+  </g>
+  <g class="p4">
+    <circle cx="660" cy="250" r="20" fill="#fff" stroke="#d43d51" stroke-width="2"/>
+    <text x="660" y="257" font-size="18" text-anchor="middle" fill="#d43d51">+</text>
+    <rect x="560" y="300" width="200" height="50" rx="8" fill="#fbe4e8" stroke="#d43d51" stroke-width="2"/>
+    <text x="660" y="322" font-size="11" text-anchor="middle" font-weight="bold" fill="#d43d51">④ H_l = H'_l + U_l</text>
+    <text x="660" y="340" font-size="9.5" text-anchor="middle" fill="#5b6478">→ 次の層 l+1 へ</text>
+  </g>
+
+  <g fill="none" stroke="#8a93ad" stroke-width="2" marker-end="url(#arrP)">
+    <path class="flow-edge" d="M 172 68 L 232 68"/>
+    <path class="flow-edge" d="M 172 198 L 232 198"/>
+    <path class="flow-edge" d="M 428 70 L 482 122"/>
+    <path class="flow-edge" d="M 428 196 L 482 146"/>
+    <path class="flow-edge" d="M 522 134 L 556 134"/>
+    <path class="flow-edge" d="M 660 164 L 660 228"/>
+    <path class="flow-edge" d="M 172 214 Q 400 270 638 252"/>
+    <path class="flow-edge" d="M 660 272 L 660 296"/>
+  </g>
+  <text x="400" y="282" font-size="10" fill="#5b6478">残差(H'_l そのもの)</text>
+
+  <rect x="786" y="40" width="120" height="150" rx="9" fill="#fff" stroke="#d43d51" stroke-dasharray="5 4" stroke-width="1.5"/>
+  <text x="846" y="62" font-size="11" text-anchor="middle" font-weight="bold" fill="#d43d51">捨てたもの</text>
+  <text x="846" y="86" font-size="10" text-anchor="middle" fill="#5b6478">PLE 専用の</text>
+  <text x="846" y="102" font-size="10" text-anchor="middle" fill="#5b6478">トークン表</text>
+  <text x="846" y="128" font-size="10" text-anchor="middle" fill="#5b6478">画像・音声の</text>
+  <text x="846" y="144" font-size="10" text-anchor="middle" fill="#5b6478">ソフトトークンは</text>
+  <text x="846" y="160" font-size="10" text-anchor="middle" fill="#d43d51" font-weight="bold">表を引けない</text>
+  <text x="20" y="384" font-size="11" fill="#5b6478">表を引く代わりに T_in を射影するので、<tspan font-weight="bold">非テキストのトークンにも層ごとの入力が届く</tspan>。</text>
+</svg>
+<figcaption>
+簡略版 PLE の 1 層分。<strong>何を注入するか(\(\mathbf{P}_l\))は入力から、どれだけ通すか(\(\mathbf{G}_l\))は現在の文脈から</strong>決まります。
+24 層それぞれが独自の \(p_l, g_l, u_l\) を持ちます。
+</figcaption>
+</figure>
+
+<h3 id="ple-ablation">アブレーション: 表を捨てても(むしろ)良くなる — Table 2</h3>
+<table>
+  <tr><th>PLE の方式</th><th>MMEB-v2 Overall</th><th>Image (Hit@1)</th><th>Video (Hit@1)</th><th>VisDoc (NDCG@5)</th></tr>
+  <tr><td><strong>射影のみ(本作)</strong></td><td><strong>55.46</strong></td><td><strong>54.67</strong></td><td><strong>47.82</strong></td><td><strong>62.37</strong></td></tr>
+  <tr><td>専用ルックアップ表あり</td><td>55.07</td><td>54.57</td><td>47.13</td><td>61.76</td></tr>
+</table>
+<p>
+3 カテゴリすべてで射影のみが上回り、特に<strong>動画 +0.69、文書画像 +0.61</strong>。
+さらに論文は “We also found similar improvements in <strong>text-only evaluations</strong>, where one might expect the lookup table to help the most.”
+と付け加えています(数値は非掲載)。
+「テキスト用の表なのにテキストでも負ける」というのは直観に反する結果で、
+論文の解釈は “deriving per-layer inputs solely from the shared \(d_M\)-dimensional embedding space improves multimodal representation quality”。
+</p>
+<div class="callout warn">
+<span class="callout-title">読むときの注意</span>
+アブレーション(§3)は<strong>中間レシピ</strong>で回されており、数値は最終モデルのものではありません
+(“Baseline and ablation models use an intermediate recipe and so numbers are not representative of the final model.”)。
+比べるべきは<strong>同じ表の中の差</strong>だけです。
+</div>
+
+<h2 id="encoders">モダリティエンコーダ — ソフトトークンを作る外付け部品</h2>
+<table>
+  <tr><th></th><th>視覚エンコーダ \(\mathcal{V}\)</th><th>音声エンコーダ \(\mathcal{A}\)</th></tr>
+  <tr><th>構造</th><td>ViT、パッチサイズ 16</td><td>ダウンサンプリング畳み込み 2 層 + Conformer 12 層(USM 系)</td></tr>
+  <tr><th>パラメータ</th><td>167M</td><td>305M</td></tr>
+  <tr><th>出力次元</th><td>\(d_V = 768\)</td><td>\(d_A = 1536\)</td></tr>
+  <tr><th>本体への橋渡し</th><td>線形 \(\phi_{\text{vis}}\): 768 → 512</td><td>線形 \(\phi_{\text{aud}}\): 1536 → 512</td></tr>
+  <tr><th>初期化</th><td>Gemma 4 の<strong>小さいほう</strong>の視覚エンコーダ</td><td>Gemma 4 E2B / E4B と<strong>ビット単位で同一</strong></td></tr>
+  <tr><th>学習</th><td><strong>マルチモーダル 2 段で学習する</strong></td><td><strong>凍結</strong></td></tr>
+</table>
+<p>
+ソフトトークンは射影後、<strong>元の位置に差し込まれて</strong>テキストのトークン埋め込みと交互に並びます
+(“These soft tokens are interleaved with the token embeddings at their corresponding positions”)。
+視覚エンコーダを学習させるかどうかの判断は、<a href="training.html#vision-enc">学習編</a>のアブレーション(Table 4)で検証されます。
+</p>
+
+<h2 id="input">入力形式 — 4 つのモダリティを 1 本の系列にする</h2>
+
+<figure class="diagram" id="in-fig" data-cycle-ms="16000" data-step-count="4">
+<svg viewBox="0 0 940 420" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="4 つのモダリティの系列化">
+  <g class="i1">
+    <text x="16" y="30" font-size="12.5" font-weight="bold" fill="#3556d4">① テキスト</text>
+    <text x="150" y="30" font-size="10.5" fill="#5b6478">語彙表で引くだけ: T_txt = 𝓔(s) ∈ ℝ^(N_txt×512)</text>
+    <g font-size="9" text-anchor="middle">
+      <rect x="16" y="42" width="40" height="24" rx="4" fill="#e5eafc" stroke="#3556d4"/><text x="36" y="58">task</text>
+      <rect x="60" y="42" width="40" height="24" rx="4" fill="#e5eafc" stroke="#3556d4"/><text x="80" y="58">:</text>
+      <rect x="104" y="42" width="40" height="24" rx="4" fill="#e5eafc" stroke="#3556d4"/><text x="124" y="58">query</text>
+      <rect x="148" y="42" width="40" height="24" rx="4" fill="#e5eafc" stroke="#3556d4"/><text x="168" y="58">…</text>
+    </g>
+  </g>
+  <g class="i2">
+    <text x="16" y="104" font-size="12.5" font-weight="bold" fill="#e07b1f">② 画像</text>
+    <text x="150" y="104" font-size="10.5" fill="#5b6478">ViT → 空間プーリングで N_vis 個以下に → φ_vis → 区切りで囲む</text>
+    <g font-size="9" text-anchor="middle">
+      <rect x="16" y="116" width="44" height="24" rx="4" fill="#efe6fb" stroke="#7b46c9"/><text x="38" y="132" fill="#7b46c9">&lt;|SOI|&gt;</text>
+      <rect x="64" y="116" width="26" height="24" rx="4" fill="#fdeeda" stroke="#e07b1f"/>
+      <rect x="94" y="116" width="26" height="24" rx="4" fill="#fdeeda" stroke="#e07b1f"/>
+      <rect x="124" y="116" width="26" height="24" rx="4" fill="#fdeeda" stroke="#e07b1f"/>
+      <text x="166" y="132">…</text>
+      <rect x="182" y="116" width="26" height="24" rx="4" fill="#fdeeda" stroke="#e07b1f"/>
+      <rect x="212" y="116" width="44" height="24" rx="4" fill="#efe6fb" stroke="#7b46c9"/><text x="234" y="132" fill="#7b46c9">&lt;|EOI|&gt;</text>
+    </g>
+    <text x="280" y="132" font-size="10.5" fill="#5b6478">N_vis: 学習時は画像 <tspan font-weight="bold">280</tspan>・動画フレーム <tspan font-weight="bold">140</tspan>。推論時 70 / 140 / 280 / 560 / 1120 から選択 → 長さ N_vis + 2</text>
+  </g>
+  <g class="i3">
+    <text x="16" y="178" font-size="12.5" font-weight="bold" fill="#d43d51">③ 音声</text>
+    <text x="150" y="178" font-size="10.5" fill="#5b6478">40 ms チャンクの Mel フィルタバンク → Conformer → <tspan font-weight="bold">毎秒 25 ソフトトークン</tspan> → φ_aud</text>
+    <g font-size="9" text-anchor="middle">
+      <rect x="16" y="190" width="44" height="24" rx="4" fill="#efe6fb" stroke="#7b46c9"/><text x="38" y="206" fill="#7b46c9">&lt;|SOA|&gt;</text>
+      <rect x="64" y="190" width="18" height="24" rx="3" fill="#fbe4e8" stroke="#d43d51"/>
+      <rect x="85" y="190" width="18" height="24" rx="3" fill="#fbe4e8" stroke="#d43d51"/>
+      <rect x="106" y="190" width="18" height="24" rx="3" fill="#fbe4e8" stroke="#d43d51"/>
+      <rect x="127" y="190" width="18" height="24" rx="3" fill="#fbe4e8" stroke="#d43d51"/>
+      <text x="158" y="206">…</text>
+      <rect x="172" y="190" width="18" height="24" rx="3" fill="#fbe4e8" stroke="#d43d51"/>
+      <rect x="194" y="190" width="44" height="24" rx="4" fill="#efe6fb" stroke="#7b46c9"/><text x="216" y="206" fill="#7b46c9">&lt;|EOA|&gt;</text>
+    </g>
+    <text x="262" y="206" font-size="10.5" fill="#5b6478">10 秒の音声 ≈ 250 トークン + 区切り 2 個(画像とは<tspan font-weight="bold">別の区切り記号</tspan>)</text>
+  </g>
+  <g class="i4">
+    <text x="16" y="252" font-size="12.5" font-weight="bold" fill="#1e9e6a">④ 動画(音声つき)</text>
+    <text x="170" y="252" font-size="10.5" fill="#5b6478">1 fps でサンプル → 最大 N_frm = 32 フレーム(先頭から切る or 等間隔)。各フレームの後にその 1 秒の音声</text>
+    <g font-size="9" text-anchor="middle">
+      <rect x="16" y="266" width="44" height="24" rx="4" fill="#e5eafc" stroke="#3556d4"/><text x="38" y="282">00:00</text>
+      <rect x="64" y="266" width="120" height="24" rx="4" fill="#fdeeda" stroke="#e07b1f"/><text x="124" y="282">SOI · 140 tok · EOI</text>
+      <rect x="188" y="266" width="44" height="24" rx="4" fill="#e5eafc" stroke="#3556d4"/><text x="210" y="282">00:00</text>
+      <rect x="236" y="266" width="110" height="24" rx="4" fill="#fbe4e8" stroke="#d43d51"/><text x="291" y="282">SOA · 25 tok · EOA</text>
+      <rect x="350" y="266" width="44" height="24" rx="4" fill="#e5eafc" stroke="#3556d4"/><text x="372" y="282">00:01</text>
+      <rect x="398" y="266" width="120" height="24" rx="4" fill="#fdeeda" stroke="#e07b1f"/><text x="458" y="282">SOI · 140 tok · EOI</text>
+      <rect x="522" y="266" width="44" height="24" rx="4" fill="#e5eafc" stroke="#3556d4"/><text x="544" y="282">00:01</text>
+      <rect x="570" y="266" width="110" height="24" rx="4" fill="#fbe4e8" stroke="#d43d51"/><text x="625" y="282">SOA · 25 tok · EOA</text>
+      <text x="700" y="282">…</text>
+    </g>
+    <text x="16" y="314" font-size="10.5" fill="#5b6478">MM:SS 形式の<tspan font-weight="bold">テキストのタイムスタンプ</tspan>を、各フレームと各音声区間の前に置く。等間隔サンプルでは 1 フレームの後に音声区間が複数並ぶこともある。</text>
+  </g>
+
+  <rect x="16" y="336" width="908" height="70" rx="10" fill="#f2f4fa" stroke="#1c2333" stroke-width="1.5"/>
+  <text x="470" y="362" font-size="12.5" text-anchor="middle" font-weight="bold">最終系列: 𝒯(x) = &lt;|BOS|&gt; ⊕ T₁ ⊕ T₂ ⊕ ⋯ ⊕ T_M ⊕ &lt;|EOS|&gt; ∈ ℝ^(L×512)</text>
+  <text x="470" y="386" font-size="11" text-anchor="middle" fill="#5b6478">学習時の全長 L は最大 8192。これがそのまま前節の T_in になる。</text>
+</svg>
+<figcaption>
+4 モダリティの系列化(§2.2)。<strong>動画は新しいモダリティではなく、テキスト・画像・音声の組み合わせ</strong>として表現されます
+(“video is represented as a combination of the former modalities”)。
+32 フレーム × (140 + 2) ≈ 4.5k トークンに音声やタイムスタンプが加わるので、8192 の上限がここで効いてきます。
+</figcaption>
+</figure>
+
+<div class="callout point">
+<span class="callout-title">動画を「専用エンコーダなし」で扱う設計の意味</span>
+動画用の時空間エンコーダを持たず、<strong>フレームは画像エンコーダで 1 枚ずつ</strong>、時間関係は
+<strong>系列上の並び順とテキストのタイムスタンプ</strong>だけで表します。
+フレーム間の関係づけは、すべて共有バックボーンの双方向注意に任されます。
+そのため視覚トークン予算(1 フレームあたり何トークンにするか)が、<strong>動画の品質と系列長のトレードオフ</strong>を直接決めます
+—— この話は<a href="inference.html#budget">推論編</a>の Table 5 につながります。
+</div>
+
+<nav class="pager">
+  <a href="index.html"><span class="dir">← 前へ</span><span class="title">EG2 概要</span></a>
+  <a class="next" href="training.html"><span class="dir">次へ →</span><span class="title">2. 学習の仕組み</span></a>
+</nav>
+
+</main>
+
+<footer class="site-footer">
+  <p>論文: <em>EmbeddingGemma 2: Unified and Efficient Multimodal Representations</em>(Google DeepMind, 2026)/
+  <a href="https://arxiv.org/abs/2610.37364" target="_blank" rel="noopener">arXiv:2610.37364</a></p>
+  <p>このサイトのコンテンツはAIとの協働で作成しています。記述されている内容には間違いが含まれることがあるので、正確性については一次資料をチェックしてください。</p>
+</footer>
+
+<script>
+MathJax = { tex: { inlineMath: [['\\(', '\\)']], displayMath: [['$$', '$$']] } };
+</script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js" async></script>
+<script src="assets/diagram-controls.js"></script>
+</body>
+</html>
